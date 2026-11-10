@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>just a... WEBcreator</title>
+<link rel="stylesheet" href="style.css">
+<header class="top"><div class="wrap">
+<h1><a href="index.html" style="color:inherit;text-decoration:none">just a... COLLECTION of apps</a></h1>
+<p class="mute" style="margin:0">Simple applications for Linux, each one a ground-up recreation.</p>
+</div></header>
+<div class="wrap">
+
+<nav class="crumbs mute"><a href="index.html">just a... COLLECTION of apps</a> &rsaquo; just a&hellip; WEBcreator</nav>
+<h2 style="margin-top:0">just a&hellip; WEBcreator</h2>
+<p class="lede">A desktop website designer for Linux. Lay pages out freely, put
+the header and the menu on a master page so every page shares them, preview in
+your browser, and publish plain HTML to a folder you can upload anywhere.</p>
+<p>It is a <strong>ground-up recreation</strong> of the easy end of a desktop web
+designer: menus where you expect them, a toolbar, a page in front of you, and a
+Site tree down the side. If you have used one of the <strong>ARTcraft</strong>
+apps to lay out a page, nothing here should need learning. The powerful,
+complicated half &mdash; the parts most people never open &mdash; is not here on
+purpose.</p>
+<img class="shot" src="assets/screenshot.png" alt="just a... WEBcreator: menu bar, toolbar, tool palette, canvas and the Site tree">
+
+<h2>What it does</h2>
+<table>
+<tr><th>New site</th><td>From any of 92 templates, or empty, through the Startup Assistant</td></tr>
+<tr><th>Pages</th><td>Add, delete, reorder, nest &mdash; the Site tab draws the tree to whatever depth it has</td></tr>
+<tr><th>Master pages</th><td>Create, edit and assign per page, so headers and menus are written once</td></tr>
+<tr><th>Objects</th><td>Text, pictures, shapes, buttons, navigation bars, tables, forms, embedded HTML &mdash; drag, resize, rotate, align</td></tr>
+<tr><th>Publish</th><td>Plain HTML and CSS into a folder, with your own filenames. No build step, nothing to host but files</td></tr>
+<tr><th>Opens</th><td>Its own <code>.webc</code> sites, a website folder, and a Serif <strong>WebPlus</strong> <code>.wpp</code> publication &mdash; read-only on your original</td></tr>
+</table>
+
+<h2>Install</h2>
+<pre><code>sudo pacman -S --needed pyside6 python-beautifulsoup4 qt6-webengine
+git clone https://github.com/janszafranski/just-a-collection-of-apps.git
+just-a-collection-of-apps/apps/webcreator/install.sh</code></pre>
+<p class="small mute">Only <code>pyside6</code> is required, and use the distro
+package rather than pip or the app will not pick up your desktop theme.
+<code>python-beautifulsoup4</code> is for importing a website folder;
+<code>qt6-webengine</code> makes an import match the original layout.</p>
+
+<h2 id="templates">92 templates</h2>
+<img class="shot" src="assets/chooser.png" alt="The Startup Assistant: the template tree, a preview, the colour scheme picker and the page tick boxes">
+<p>Pick one on the left, pick a colour scheme, untick any pages you don't want,
+and open it. Eighty-nine of these follow the page trees of the templates
+<strong>Serif WebPlus X8</strong> shipped &mdash; the page names, the filenames
+each page publishes as, which page hangs off which, and the colour schemes that
+template was drawn in, read off the install disc.</p>
+<p><strong>The pictures below are not Serif's.</strong> No artwork, copy or code
+of theirs is used or redistributed here. Every picture on this page is the home
+page WEBcreator itself builds from that template, drawn by the app in its own
+procedural artwork, in that template's first colour scheme. The structure is the
+part that was worth recreating; the drawing is ours.</p>
+
+<div class="filter"><input id="q" type="search" placeholder="Filter 92 templates by name, page or colour scheme&hellip;" autocomplete="off"></div>
+<p class="none" id="none">Nothing matches that.</p>
+<h2 data-section="ours">Design templates <span class="mute small">(3)</span></h2><p class="mute small" data-section="ours">Three originals that ship with the app &mdash; a small business, a community group and a portfolio.</p><div class="grid" id="g-ours"><div class="tile" data-section="ours" data-find="harbour small business  home about us services contact">
+<img src="previews/ours-harbour.jpg" alt="Harbour home page" loading="lazy">
+<div class="body"><div class="name">Harbour</div>
+<div class="meta">Small business</div>
+<div class="swatches"><i style="background:#13324a"></i><i style="background:#1f4e6e"></i><i style="background:#e8dcc4"></i><i style="background:#c2703d"></i><i style="background:#f7f4ee"></i><i style="background:#2b2b2b"></i></div>
+<details><summary>4 pages</summary><ol><li>Home</li><li>About Us</li><li>Services</li><li>Contact</li></ol></details>
+</div></div><div class="tile" data-section="ours" data-find="meadow community group  home our groups events get involved volunteering">
+<img src="previews/ours-meadow.jpg" alt="Meadow home page" loading="lazy">
+<div class="body"><div class="name">Meadow</div>
+<div class="meta">Community group</div>
+<div class="swatches"><i style="background:#2f5d3a"></i><i style="background:#6a9a4f"></i><i style="background:#f1efe2"></i><i style="background:#e3b23c"></i><i style="background:#ffffff"></i><i style="background:#26302a"></i></div>
+<details><summary>5 pages</summary><ol><li>Home</li><li>Our Groups</li><li>Events</li><li>Get Involved</li><li>Volunteering</li></ol></details>
+</div></div><div class="tile" data-section="ours" data-find="folio portfolio  work about contact">
+<img src="previews/ours-folio.jpg" alt="Folio home page" loading="lazy">
+<div class="body"><div class="name">Folio</div>
+<div class="meta">Portfolio</div>
+<div class="swatches"><i style="background:#16181a"></i><i style="background:#26292c"></i><i style="background:#f2efe9"></i><i style="background:#d9a441"></i><i style="background:#8a9096"></i><i style="background:#ffffff"></i></div>
+<details><summary>3 pages</summary><ol><li>Work</li><li>About</li><li>Contact</li></ol></details>
+</div></div></div><h2 data-section="theme-desktop">Theme Layouts &mdash; Desktop <span class="mute small">(32)</span></h2><p class="mute small" data-section="theme-desktop">Thirty-two starting points: a full page tree, three colour schemes of their own, and room to work.</p><div class="grid" id="g-theme-desktop"><div class="tile" data-section="theme-desktop" data-find="active 9 pages · desktop websites active 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-active.jpg" alt="Active home page" loading="lazy">
+<div class="body"><div class="name">Active</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Active 01</div>
+<div class="swatches"><i style="background:#e6e7e4"></i><i style="background:#ffffff"></i><i style="background:#425766"></i><i style="background:#f5f7f9"></i><i style="background:#2d4354"></i><i style="background:#c6302b"></i><i style="background:#27353f"></i><i style="background:#000000"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="aperture 9 pages · desktop websites aperture 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-aperture.jpg" alt="Aperture home page" loading="lazy">
+<div class="body"><div class="name">Aperture</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Aperture 01</div>
+<div class="swatches"><i style="background:#272525"></i><i style="background:#919492"></i><i style="background:#b2b2b3"></i><i style="background:#82a4a0"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="arctic 9 pages · desktop websites arctic 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-arctic.jpg" alt="Arctic home page" loading="lazy">
+<div class="body"><div class="name">Arctic</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Arctic 01</div>
+<div class="swatches"><i style="background:#3d4c7c"></i><i style="background:#ffffff"></i><i style="background:#4995c4"></i><i style="background:#e0e0e0"></i><i style="background:#b2e5f9"></i><i style="background:#446395"></i><i style="background:#2c3651"></i><i style="background:#00a9ec"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="beta 9 pages · desktop websites beta 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-beta.jpg" alt="Beta home page" loading="lazy">
+<div class="body"><div class="name">Beta</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Beta 01</div>
+<div class="swatches"><i style="background:#d271c8"></i><i style="background:#ffffff"></i><i style="background:#6d6d6d"></i><i style="background:#d283a4"></i><i style="background:#949393"></i><i style="background:#9a0052"></i><i style="background:#454544"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="bygone 18 pages · desktop websites bygone 01 home about us gallery products product 01 product 02 product 03 product 04 product 05 product 06 product 07 product 08 product 09 contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-bygone.jpg" alt="Bygone home page" loading="lazy">
+<div class="body"><div class="name">Bygone</div>
+<div class="meta">18 pages · Desktop Websites</div><div class="meta">Bygone 01</div>
+<div class="swatches"><i style="background:#ffe7d2"></i><i style="background:#735c47"></i><i style="background:#bfa38a"></i><i style="background:#3c6873"></i><i style="background:#8ab5bf"></i><i style="background:#ffffff"></i></div>
+<details><summary>18 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Product 01</li><li>Product 02</li><li>Product 03</li><li>Product 04</li><li>Product 05</li><li>Product 06</li><li>Product 07</li><li>Product 08</li><li>Product 09</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="clean 9 pages · desktop websites clean 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-clean.jpg" alt="Clean home page" loading="lazy">
+<div class="body"><div class="name">Clean</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Clean 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#2d2b2b"></i><i style="background:#cbcbcb"></i><i style="background:#e1e1e1"></i><i style="background:#0070bc"></i><i style="background:#28aae2"></i><i style="background:#404040"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="decor 9 pages · desktop websites decor 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-decor.jpg" alt="Decor home page" loading="lazy">
+<div class="body"><div class="name">Decor</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Decor 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#344b5f"></i><i style="background:#3a4357"></i><i style="background:#828b93"></i><i style="background:#467bae"></i><i style="background:#4487c6"></i><i style="background:#233341"></i><i style="background:#72ab34"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="doodle 17 pages · desktop websites doodle 01 home about us gallery products product 01 product 02 product 03 product 04 product 05 product 07 product 08 product 06 contact us article 01 article 02 terms &amp; conditions links">
+<img src="previews/theme-layouts-desktop-websites-doodle.jpg" alt="Doodle home page" loading="lazy">
+<div class="body"><div class="name">Doodle</div>
+<div class="meta">17 pages · Desktop Websites</div><div class="meta">Doodle 01</div>
+<div class="swatches"><i style="background:#f6e9cf"></i><i style="background:#ffffff"></i><i style="background:#f4b1c8"></i><i style="background:#e7398e"></i><i style="background:#ad8dc1"></i><i style="background:#fbe7ee"></i><i style="background:#e85d8d"></i><i style="background:#a4a293"></i></div>
+<details><summary>17 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Product 01</li><li>Product 02</li><li>Product 03</li><li>Product 04</li><li>Product 05</li><li>Product 07</li><li>Product 08</li><li>Product 06</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Terms &amp; Conditions</li><li>Links</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="dribble 9 pages · desktop websites dribble 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-dribble.jpg" alt="Dribble home page" loading="lazy">
+<div class="body"><div class="name">Dribble</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Dribble 01</div>
+<div class="swatches"><i style="background:#56585c"></i><i style="background:#338583"></i><i style="background:#90c263"></i><i style="background:#f6622a"></i><i style="background:#f5cd70"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="eco 14 pages · desktop websites eco 01 home about us gallery products product 01 product 02 product 03 product 04 product 05 contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-eco.jpg" alt="Eco home page" loading="lazy">
+<div class="body"><div class="name">Eco</div>
+<div class="meta">14 pages · Desktop Websites</div><div class="meta">Eco 01</div>
+<div class="swatches"><i style="background:#dcbe78"></i><i style="background:#5b5a5f"></i><i style="background:#78a333"></i><i style="background:#f0eb80"></i><i style="background:#8bbe3c"></i><i style="background:#000000"></i><i style="background:#5e5a54"></i></div>
+<details><summary>14 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Product 01</li><li>Product 02</li><li>Product 03</li><li>Product 04</li><li>Product 05</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="ecrue 9 pages · desktop websites ecrue 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-ecrue.jpg" alt="Ecrue home page" loading="lazy">
+<div class="body"><div class="name">Ecrue</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Ecrue 01</div>
+<div class="swatches"><i style="background:#fff7ed"></i><i style="background:#b7c9cd"></i><i style="background:#d96167"></i><i style="background:#aea795"></i><i style="background:#3c3c43"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="elements 9 pages · desktop websites elements 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-elements.jpg" alt="Elements home page" loading="lazy">
+<div class="body"><div class="name">Elements</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Elements 01</div>
+<div class="swatches"><i style="background:#373d4e"></i><i style="background:#6abfc6"></i><i style="background:#4699ce"></i><i style="background:#94bdd9"></i><i style="background:#59726a"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="glitch 9 pages · desktop websites glitch 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-glitch.jpg" alt="Glitch home page" loading="lazy">
+<div class="body"><div class="name">Glitch</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Glitch 01</div>
+<div class="swatches"><i style="background:#c8457c"></i><i style="background:#7c468a"></i><i style="background:#272628"></i><i style="background:#8dbd36"></i><i style="background:#f6df63"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="globose 9 pages · desktop websites globose 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-globose.jpg" alt="Globose home page" loading="lazy">
+<div class="body"><div class="name">Globose</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Globose 01</div>
+<div class="swatches"><i style="background:#992580"></i><i style="background:#14a9ff"></i><i style="background:#a7b1bc"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="heirloom 9 pages · desktop websites heirloom 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-heirloom.jpg" alt="Heirloom home page" loading="lazy">
+<div class="body"><div class="name">Heirloom</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Heirloom 01</div>
+<div class="swatches"><i style="background:#f8d3af"></i><i style="background:#b7afa0"></i><i style="background:#e8e3dd"></i><i style="background:#3e3731"></i><i style="background:#2c2423"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="kitsch 9 pages · desktop websites kitsch 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-kitsch.jpg" alt="Kitsch home page" loading="lazy">
+<div class="body"><div class="name">Kitsch</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Kitsch 01</div>
+<div class="swatches"><i style="background:#89afb1"></i><i style="background:#d16981"></i><i style="background:#a59f8b"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="ledger 9 pages · desktop websites ledger 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-ledger.jpg" alt="Ledger home page" loading="lazy">
+<div class="body"><div class="name">Ledger</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Ledger 01</div>
+<div class="swatches"><i style="background:#e6e7e4"></i><i style="background:#ffffff"></i><i style="background:#b80d0d"></i><i style="background:#f7f1d0"></i><i style="background:#c00202"></i><i style="background:#6c6c6c"></i><i style="background:#fafafa"></i><i style="background:#c6302b"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="level 9 pages · desktop websites level 01 home about us products contact us gallery article 01 links terms &amp; conditions article 02">
+<img src="previews/theme-layouts-desktop-websites-level.jpg" alt="Level home page" loading="lazy">
+<div class="body"><div class="name">Level</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Level 01</div>
+<div class="swatches"><i style="background:#d68f63"></i><i style="background:#ad97c1"></i><i style="background:#99c393"></i><i style="background:#515c61"></i><i style="background:#71adc1"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Products</li><li>Contact Us</li><li>Gallery</li><li>Article 01</li><li>Links</li><li>Terms &amp; Conditions</li><li>Article 02</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="partition 9 pages · desktop websites partition 01 home about us gallery products contact us article 01 article 02 links terms + conditions">
+<img src="previews/theme-layouts-desktop-websites-partition.jpg" alt="Partition home page" loading="lazy">
+<div class="body"><div class="name">Partition</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Partition 01</div>
+<div class="swatches"><i style="background:#369393"></i><i style="background:#38a394"></i><i style="background:#546f78"></i><i style="background:#3b3c3c"></i><i style="background:#ffffff"></i><i style="background:#c5654f"></i><i style="background:#dc683b"></i><i style="background:#6dbeb1"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms + Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="pop 9 pages · desktop websites pop 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-pop.jpg" alt="Pop home page" loading="lazy">
+<div class="body"><div class="name">Pop</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Pop 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#777777"></i><i style="background:#00a9ec"></i><i style="background:#e60e88"></i><i style="background:#2988d0"></i><i style="background:#e60e40"></i><i style="background:#f6cc00"></i><i style="background:#000000"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="prospectus 9 pages · desktop websites prospectus 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-prospectus.jpg" alt="Prospectus home page" loading="lazy">
+<div class="body"><div class="name">Prospectus</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Prospectus 01</div>
+<div class="swatches"><i style="background:#b0586d"></i><i style="background:#3aa68c"></i><i style="background:#e9cd70"></i><i style="background:#735c4a"></i><i style="background:#327590"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="quote 15 pages · desktop websites quote 01 home about us gallery products product 01 product 06 product 05 product 04 product 03 product 02 contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-quote.jpg" alt="Quote home page" loading="lazy">
+<div class="body"><div class="name">Quote</div>
+<div class="meta">15 pages · Desktop Websites</div><div class="meta">Quote 01</div>
+<div class="swatches"><i style="background:#33302c"></i><i style="background:#514e4d"></i><i style="background:#ba9e3c"></i><i style="background:#706745"></i><i style="background:#6f6b4e"></i><i style="background:#ffffff"></i></div>
+<details><summary>15 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Product 01</li><li>Product 06</li><li>Product 05</li><li>Product 04</li><li>Product 03</li><li>Product 02</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="renovate 9 pages · desktop websites renovate 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-renovate.jpg" alt="Renovate home page" loading="lazy">
+<div class="body"><div class="name">Renovate</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Renovate 01</div>
+<div class="swatches"><i style="background:#e1e364"></i><i style="background:#619ba7"></i><i style="background:#d6d4ce"></i><i style="background:#a39b87"></i><i style="background:#756e5c"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="ribbon 9 pages · desktop websites ribbon 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-ribbon.jpg" alt="Ribbon home page" loading="lazy">
+<div class="body"><div class="name">Ribbon</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Ribbon 01</div>
+<div class="swatches"><i style="background:#7f0047"></i><i style="background:#540047"></i><i style="background:#341f2b"></i><i style="background:#a7b1bc"></i><i style="background:#000000"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="rugged 9 pages · desktop websites rugged 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-rugged.jpg" alt="Rugged home page" loading="lazy">
+<div class="body"><div class="name">Rugged</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Rugged 01</div>
+<div class="swatches"><i style="background:#ddf3f6"></i><i style="background:#22262b"></i><i style="background:#b72122"></i><i style="background:#d75a4b"></i><i style="background:#58c3d6"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="shabby 9 pages · desktop websites shabby 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-shabby.jpg" alt="Shabby home page" loading="lazy">
+<div class="body"><div class="name">Shabby</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Shabby 01</div>
+<div class="swatches"><i style="background:#f7efde"></i><i style="background:#ffffff"></i><i style="background:#928a70"></i><i style="background:#b9d3d2"></i><i style="background:#c4b996"></i><i style="background:#f1f6f6"></i><i style="background:#000000"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="stack 9 pages · desktop websites stack 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-stack.jpg" alt="Stack home page" loading="lazy">
+<div class="body"><div class="name">Stack</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Stack 01</div>
+<div class="swatches"><i style="background:#66b5ba"></i><i style="background:#494655"></i><i style="background:#dc5247"></i><i style="background:#cecfcf"></i><i style="background:#595354"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="stitch 9 pages · desktop websites stitch 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-stitch.jpg" alt="Stitch home page" loading="lazy">
+<div class="body"><div class="name">Stitch</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Stitch 01</div>
+<div class="swatches"><i style="background:#ba2900"></i><i style="background:#003c6e"></i><i style="background:#fffcea"></i><i style="background:#d3ffd2"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="tessellate 9 pages · desktop websites tessellate 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-tessellate.jpg" alt="Tessellate home page" loading="lazy">
+<div class="body"><div class="name">Tessellate</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Tessellate 01</div>
+<div class="swatches"><i style="background:#474576"></i><i style="background:#cc4c71"></i><i style="background:#9f9bbb"></i><i style="background:#d57595"></i><i style="background:#74b4cb"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="trace 9 pages · desktop websites trace 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-trace.jpg" alt="Trace home page" loading="lazy">
+<div class="body"><div class="name">Trace</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Trace 01</div>
+<div class="swatches"><i style="background:#c93068"></i><i style="background:#14a9ff"></i><i style="background:#80aa2c"></i><i style="background:#999999"></i><i style="background:#bbbbbb"></i><i style="background:#dbdbdb"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="vintage 9 pages · desktop websites vintage 01 home about us gallery contact us products article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-vintage.jpg" alt="Vintage home page" loading="lazy">
+<div class="body"><div class="name">Vintage</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Vintage 01</div>
+<div class="swatches"><i style="background:#114a77"></i><i style="background:#ede7da"></i><i style="background:#7c4959"></i><i style="background:#e6d1a6"></i><i style="background:#425766"></i><i style="background:#6b8ead"></i><i style="background:#5c3842"></i><i style="background:#5f152a"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Contact Us</li><li>Products</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="theme-desktop" data-find="warehouse 9 pages · desktop websites warehouse 01 home about us gallery products contact us article 01 article 02 links terms &amp; conditions">
+<img src="previews/theme-layouts-desktop-websites-warehouse.jpg" alt="Warehouse home page" loading="lazy">
+<div class="body"><div class="name">Warehouse</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Warehouse 01</div>
+<div class="swatches"><i style="background:#5592c7"></i><i style="background:#62605e"></i><i style="background:#343433"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Gallery</li><li>Products</li><li>Contact Us</li><li>Article 01</li><li>Article 02</li><li>Links</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div></div><h2 data-section="theme-mobile">Theme Layouts &mdash; Mobile <span class="mute small">(32)</span></h2><p class="mute small" data-section="theme-mobile">The same thirty-two as narrow, single-column sites.</p><div class="grid" id="g-theme-mobile"><div class="tile" data-section="theme-mobile" data-find="active 2 pages · mobile websites active 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-active.jpg" alt="Active home page" loading="lazy">
+<div class="body"><div class="name">Active</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Active 01</div>
+<div class="swatches"><i style="background:#e6e7e4"></i><i style="background:#ffffff"></i><i style="background:#425766"></i><i style="background:#f5f7f9"></i><i style="background:#2d4354"></i><i style="background:#c6302b"></i><i style="background:#27353f"></i><i style="background:#000000"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="aperture 2 pages · mobile websites aperture 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-aperture.jpg" alt="Aperture home page" loading="lazy">
+<div class="body"><div class="name">Aperture</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Aperture 01</div>
+<div class="swatches"><i style="background:#272525"></i><i style="background:#919492"></i><i style="background:#b2b2b3"></i><i style="background:#82a4a0"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="arctic 2 pages · mobile websites arctic 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-arctic.jpg" alt="Arctic home page" loading="lazy">
+<div class="body"><div class="name">Arctic</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Arctic 01</div>
+<div class="swatches"><i style="background:#3d4c7c"></i><i style="background:#ffffff"></i><i style="background:#4995c4"></i><i style="background:#e0e0e0"></i><i style="background:#b2e5f9"></i><i style="background:#446395"></i><i style="background:#2c3651"></i><i style="background:#00a9ec"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="beta 2 pages · mobile websites beta 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-beta.jpg" alt="Beta home page" loading="lazy">
+<div class="body"><div class="name">Beta</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Beta 01</div>
+<div class="swatches"><i style="background:#d271c8"></i><i style="background:#ffffff"></i><i style="background:#6d6d6d"></i><i style="background:#d283a4"></i><i style="background:#949393"></i><i style="background:#9a0052"></i><i style="background:#454544"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="bygone 2 pages · mobile websites bygone 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-bygone.jpg" alt="Bygone home page" loading="lazy">
+<div class="body"><div class="name">Bygone</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Bygone 01</div>
+<div class="swatches"><i style="background:#ffe7d2"></i><i style="background:#735c47"></i><i style="background:#bfa38a"></i><i style="background:#3c6873"></i><i style="background:#8ab5bf"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="clean 2 pages · mobile websites clean 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-clean.jpg" alt="Clean home page" loading="lazy">
+<div class="body"><div class="name">Clean</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Clean 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#2d2b2b"></i><i style="background:#cbcbcb"></i><i style="background:#e1e1e1"></i><i style="background:#0070bc"></i><i style="background:#28aae2"></i><i style="background:#404040"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="decor 2 pages · mobile websites decor 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-decor.jpg" alt="Decor home page" loading="lazy">
+<div class="body"><div class="name">Decor</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Decor 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#344b5f"></i><i style="background:#3a4357"></i><i style="background:#828b93"></i><i style="background:#467bae"></i><i style="background:#4487c6"></i><i style="background:#233341"></i><i style="background:#72ab34"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="doodle 2 pages · mobile websites doodle 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-doodle.jpg" alt="Doodle home page" loading="lazy">
+<div class="body"><div class="name">Doodle</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Doodle 01</div>
+<div class="swatches"><i style="background:#f6e9cf"></i><i style="background:#ffffff"></i><i style="background:#f4b1c8"></i><i style="background:#e7398e"></i><i style="background:#ad8dc1"></i><i style="background:#fbe7ee"></i><i style="background:#e85d8d"></i><i style="background:#a4a293"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="dribble 2 pages · mobile websites dribble 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-dribble.jpg" alt="Dribble home page" loading="lazy">
+<div class="body"><div class="name">Dribble</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Dribble 01</div>
+<div class="swatches"><i style="background:#56585c"></i><i style="background:#338583"></i><i style="background:#90c263"></i><i style="background:#f6622a"></i><i style="background:#f5cd70"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="eco 2 pages · mobile websites eco 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-eco.jpg" alt="Eco home page" loading="lazy">
+<div class="body"><div class="name">Eco</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Eco 01</div>
+<div class="swatches"><i style="background:#dcbe78"></i><i style="background:#5b5a5f"></i><i style="background:#78a333"></i><i style="background:#f0eb80"></i><i style="background:#8bbe3c"></i><i style="background:#000000"></i><i style="background:#5e5a54"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="ecrue 2 pages · mobile websites ecrue 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-ecrue.jpg" alt="Ecrue home page" loading="lazy">
+<div class="body"><div class="name">Ecrue</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Ecrue 01</div>
+<div class="swatches"><i style="background:#fff7ed"></i><i style="background:#b7c9cd"></i><i style="background:#d96167"></i><i style="background:#aea795"></i><i style="background:#3c3c43"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="elements 2 pages · mobile websites elements 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-elements.jpg" alt="Elements home page" loading="lazy">
+<div class="body"><div class="name">Elements</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Elements 01</div>
+<div class="swatches"><i style="background:#373d4e"></i><i style="background:#6abfc6"></i><i style="background:#4699ce"></i><i style="background:#94bdd9"></i><i style="background:#59726a"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="glitch 2 pages · mobile websites glitch 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-glitch.jpg" alt="Glitch home page" loading="lazy">
+<div class="body"><div class="name">Glitch</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Glitch 01</div>
+<div class="swatches"><i style="background:#c8457c"></i><i style="background:#7c468a"></i><i style="background:#272628"></i><i style="background:#8dbd36"></i><i style="background:#f6df63"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="globose 2 pages · mobile websites globose 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-globose.jpg" alt="Globose home page" loading="lazy">
+<div class="body"><div class="name">Globose</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Globose 01</div>
+<div class="swatches"><i style="background:#992580"></i><i style="background:#14a9ff"></i><i style="background:#a7b1bc"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="heirloom 2 pages · mobile websites heirloom 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-heirloom.jpg" alt="Heirloom home page" loading="lazy">
+<div class="body"><div class="name">Heirloom</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Heirloom 01</div>
+<div class="swatches"><i style="background:#f8d3af"></i><i style="background:#b7afa0"></i><i style="background:#e8e3dd"></i><i style="background:#3e3731"></i><i style="background:#2c2423"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="kitsch 2 pages · mobile websites kitsch 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-kitsch.jpg" alt="Kitsch home page" loading="lazy">
+<div class="body"><div class="name">Kitsch</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Kitsch 01</div>
+<div class="swatches"><i style="background:#89afb1"></i><i style="background:#d16981"></i><i style="background:#a59f8b"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="ledger 2 pages · mobile websites ledger 01 home contact">
+<img src="previews/theme-layouts-mobile-websites-ledger.jpg" alt="Ledger home page" loading="lazy">
+<div class="body"><div class="name">Ledger</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Ledger 01</div>
+<div class="swatches"><i style="background:#e6e7e4"></i><i style="background:#ffffff"></i><i style="background:#b80d0d"></i><i style="background:#f7f1d0"></i><i style="background:#c00202"></i><i style="background:#6c6c6c"></i><i style="background:#fafafa"></i><i style="background:#c6302b"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="level 2 pages · mobile websites level 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-level.jpg" alt="Level home page" loading="lazy">
+<div class="body"><div class="name">Level</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Level 01</div>
+<div class="swatches"><i style="background:#d68f63"></i><i style="background:#ad97c1"></i><i style="background:#99c393"></i><i style="background:#515c61"></i><i style="background:#71adc1"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="partition 2 pages · mobile websites partition 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-partition.jpg" alt="Partition home page" loading="lazy">
+<div class="body"><div class="name">Partition</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Partition 01</div>
+<div class="swatches"><i style="background:#369393"></i><i style="background:#38a394"></i><i style="background:#546f78"></i><i style="background:#3b3c3c"></i><i style="background:#ffffff"></i><i style="background:#c5654f"></i><i style="background:#dc683b"></i><i style="background:#6dbeb1"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="pop 2 pages · mobile websites pop 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-pop.jpg" alt="Pop home page" loading="lazy">
+<div class="body"><div class="name">Pop</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Pop 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#777777"></i><i style="background:#00a9ec"></i><i style="background:#e60e88"></i><i style="background:#2988d0"></i><i style="background:#e60e40"></i><i style="background:#f6cc00"></i><i style="background:#000000"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="prospectus 2 pages · mobile websites prospectus 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-prospectus.jpg" alt="Prospectus home page" loading="lazy">
+<div class="body"><div class="name">Prospectus</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Prospectus 01</div>
+<div class="swatches"><i style="background:#b0586d"></i><i style="background:#3aa68c"></i><i style="background:#e9cd70"></i><i style="background:#735c4a"></i><i style="background:#327590"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="quote 2 pages · mobile websites quote 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-quote.jpg" alt="Quote home page" loading="lazy">
+<div class="body"><div class="name">Quote</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Quote 01</div>
+<div class="swatches"><i style="background:#33302c"></i><i style="background:#514e4d"></i><i style="background:#ba9e3c"></i><i style="background:#706745"></i><i style="background:#6f6b4e"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="renovate 2 pages · mobile websites renovate 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-renovate.jpg" alt="Renovate home page" loading="lazy">
+<div class="body"><div class="name">Renovate</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Renovate 01</div>
+<div class="swatches"><i style="background:#e1e364"></i><i style="background:#619ba7"></i><i style="background:#d6d4ce"></i><i style="background:#a39b87"></i><i style="background:#756e5c"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="ribbon 2 pages · mobile websites ribbon 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-ribbon.jpg" alt="Ribbon home page" loading="lazy">
+<div class="body"><div class="name">Ribbon</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Ribbon 01</div>
+<div class="swatches"><i style="background:#7f0047"></i><i style="background:#540047"></i><i style="background:#341f2b"></i><i style="background:#a7b1bc"></i><i style="background:#000000"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="rugged 2 pages · mobile websites rugged 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-rugged.jpg" alt="Rugged home page" loading="lazy">
+<div class="body"><div class="name">Rugged</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Rugged 01</div>
+<div class="swatches"><i style="background:#ddf3f6"></i><i style="background:#22262b"></i><i style="background:#b72122"></i><i style="background:#d75a4b"></i><i style="background:#58c3d6"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="shabby 2 pages · mobile websites shabby 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-shabby.jpg" alt="Shabby home page" loading="lazy">
+<div class="body"><div class="name">Shabby</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Shabby 01</div>
+<div class="swatches"><i style="background:#f7efde"></i><i style="background:#ffffff"></i><i style="background:#928a70"></i><i style="background:#b9d3d2"></i><i style="background:#c4b996"></i><i style="background:#f1f6f6"></i><i style="background:#000000"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="stack 2 pages · mobile websites stack 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-stack.jpg" alt="Stack home page" loading="lazy">
+<div class="body"><div class="name">Stack</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Stack 01</div>
+<div class="swatches"><i style="background:#66b5ba"></i><i style="background:#494655"></i><i style="background:#dc5247"></i><i style="background:#cecfcf"></i><i style="background:#595354"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="stitch 2 pages · mobile websites stitch 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-stitch.jpg" alt="Stitch home page" loading="lazy">
+<div class="body"><div class="name">Stitch</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Stitch 01</div>
+<div class="swatches"><i style="background:#ba2900"></i><i style="background:#003c6e"></i><i style="background:#fffcea"></i><i style="background:#d3ffd2"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="tessellate 2 pages · mobile websites tessellate 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-tessellate.jpg" alt="Tessellate home page" loading="lazy">
+<div class="body"><div class="name">Tessellate</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Tessellate 01</div>
+<div class="swatches"><i style="background:#474576"></i><i style="background:#cc4c71"></i><i style="background:#9f9bbb"></i><i style="background:#d57595"></i><i style="background:#74b4cb"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="trace 2 pages · mobile websites trace 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-trace.jpg" alt="Trace home page" loading="lazy">
+<div class="body"><div class="name">Trace</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Trace 01</div>
+<div class="swatches"><i style="background:#c93068"></i><i style="background:#14a9ff"></i><i style="background:#80aa2c"></i><i style="background:#999999"></i><i style="background:#bbbbbb"></i><i style="background:#dbdbdb"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="vintage 2 pages · mobile websites vintage 01 home contact">
+<img src="previews/theme-layouts-mobile-websites-vintage.jpg" alt="Vintage home page" loading="lazy">
+<div class="body"><div class="name">Vintage</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Vintage 01</div>
+<div class="swatches"><i style="background:#114a77"></i><i style="background:#ede7da"></i><i style="background:#7c4959"></i><i style="background:#e6d1a6"></i><i style="background:#425766"></i><i style="background:#6b8ead"></i><i style="background:#5c3842"></i><i style="background:#5f152a"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact</li></ol></details>
+</div></div><div class="tile" data-section="theme-mobile" data-find="warehouse 2 pages · mobile websites warehouse 01 home contact us">
+<img src="previews/theme-layouts-mobile-websites-warehouse.jpg" alt="Warehouse home page" loading="lazy">
+<div class="body"><div class="name">Warehouse</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Warehouse 01</div>
+<div class="swatches"><i style="background:#5592c7"></i><i style="background:#62605e"></i><i style="background:#343433"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div></div><h2 data-section="pro-desktop">Pro Templates &mdash; Desktop <span class="mute small">(7)</span></h2><p class="mute small" data-section="pro-desktop">Seven complete sites rather than starting points &mdash; longer page trees, deeper structure.</p><div class="grid" id="g-pro-desktop"><div class="tile" data-section="pro-desktop" data-find="ready digital marketing 2 pages · desktop websites ready digital marketing 01 home search results">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-ready-digital-marketing.jpg" alt="Ready Digital Marketing home page" loading="lazy">
+<div class="body"><div class="name">Ready Digital Marketing</div>
+<div class="meta">2 pages · Desktop Websites</div><div class="meta">Ready Digital Marketing 01</div>
+<div class="swatches"><i style="background:#38b3a2"></i><i style="background:#4ebfd5"></i><i style="background:#efba51"></i><i style="background:#e65372"></i><i style="background:#ef927a"></i><i style="background:#b9d688"></i><i style="background:#50484b"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Search Results</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="stack &amp; stone 9 pages · desktop websites stack and stone scenic tours 01 home search results about tours contact article 01 terms and conditions privacy policy grizzly encounter">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-stack-stone.jpg" alt="Stack &amp; Stone home page" loading="lazy">
+<div class="body"><div class="name">Stack &amp; Stone</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Stack and Stone Scenic Tours 01</div>
+<div class="swatches"><i style="background:#494848"></i><i style="background:#f9f2f4"></i><i style="background:#d2d0c0"></i><i style="background:#6d332d"></i><i style="background:#79674f"></i><i style="background:#eb6e61"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>Search Results</li><li>About</li><li>Tours</li><li>Contact</li><li>Article 01</li><li>Terms and Conditions</li><li>Privacy Policy</li><li>Grizzly Encounter</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="ski resort &amp; leisure 5 pages · desktop websites ski resort 01 home facilities locations bookings about">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-ski-resort-leisure.jpg" alt="Ski Resort &amp; Leisure home page" loading="lazy">
+<div class="body"><div class="name">Ski Resort &amp; Leisure</div>
+<div class="meta">5 pages · Desktop Websites</div><div class="meta">Ski Resort 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ea6887"></i><i style="background:#e8f6fd"></i><i style="background:#929392"></i><i style="background:#4a4a47"></i><i style="background:#6cb0f4"></i><i style="background:#f09aae"></i></div>
+<details><summary>5 pages</summary><ol><li>Home</li><li>Facilities</li><li>Locations</li><li>Bookings</li><li>About</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="alleberry bed &amp; breakfast 11 pages · desktop websites alleberry bed and breakfast 01 home about us rooms contact us article 01 privacy policy terms &amp; conditions search results standard double room deluxe king room master suite">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-alleberry-bed-breakfast.jpg" alt="Alleberry Bed &amp; Breakfast home page" loading="lazy">
+<div class="body"><div class="name">Alleberry Bed &amp; Breakfast</div>
+<div class="meta">11 pages · Desktop Websites</div><div class="meta">Alleberry Bed and Breakfast 01</div>
+<div class="swatches"><i style="background:#b7b7ad"></i><i style="background:#ede9e0"></i><i style="background:#575752"></i><i style="background:#e29250"></i><i style="background:#ff6551"></i><i style="background:#eb721d"></i><i style="background:#ffffff"></i></div>
+<details><summary>11 pages</summary><ol><li>Home</li><li>About Us</li><li>Rooms</li><li>Contact Us</li><li>Article 01</li><li>Privacy Policy</li><li>Terms &amp; Conditions</li><li>Search Results</li><li>Standard Double Room</li><li>Deluxe King Room</li><li>Master Suite</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="beach house lifestyle 8 pages · desktop websites beach house lifestyle 01 home about us services contact us article 01 privacy policy terms &amp; conditions search results">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-beach-house-lifestyle.jpg" alt="Beach House Lifestyle home page" loading="lazy">
+<div class="body"><div class="name">Beach House Lifestyle</div>
+<div class="meta">8 pages · Desktop Websites</div><div class="meta">Beach House Lifestyle 01</div>
+<div class="swatches"><i style="background:#b1ccd5"></i><i style="background:#27353b"></i><i style="background:#463d33"></i><i style="background:#d2d3d6"></i><i style="background:#374b3b"></i><i style="background:#3c4041"></i><i style="background:#ffffff"></i></div>
+<details><summary>8 pages</summary><ol><li>Home</li><li>About Us</li><li>Services</li><li>Contact Us</li><li>Article 01</li><li>Privacy Policy</li><li>Terms &amp; Conditions</li><li>Search Results</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="olivia lenton studio 9 pages · desktop websites olivia lenton studio 01 home about us services contact us article 01 privacy policy services lightbox search results terms &amp; conditions">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-olivia-lenton-studio.jpg" alt="Olivia Lenton Studio home page" loading="lazy">
+<div class="body"><div class="name">Olivia Lenton Studio</div>
+<div class="meta">9 pages · Desktop Websites</div><div class="meta">Olivia Lenton Studio 01</div>
+<div class="swatches"><i style="background:#ebedea"></i><i style="background:#7f7878"></i><i style="background:#66a7ba"></i><i style="background:#b5d059"></i><i style="background:#3b3631"></i><i style="background:#ffffff"></i></div>
+<details><summary>9 pages</summary><ol><li>Home</li><li>About Us</li><li>Services</li><li>Contact Us</li><li>Article 01</li><li>Privacy Policy</li><li>Services Lightbox</li><li>Search Results</li><li>Terms &amp; Conditions</li></ol></details>
+</div></div><div class="tile" data-section="pro-desktop" data-find="villereccio pizzeria 8 pages · desktop websites villereccio pizzeria 01 home about us services contact us article 01 privacy policy terms &amp; conditions search results">
+<img src="previews/webplus-x8-pro-templates-desktop-websites-villereccio-pizzeria.jpg" alt="Villereccio Pizzeria home page" loading="lazy">
+<div class="body"><div class="name">Villereccio Pizzeria</div>
+<div class="meta">8 pages · Desktop Websites</div><div class="meta">Villereccio Pizzeria 01</div>
+<div class="swatches"><i style="background:#43412d"></i><i style="background:#696838"></i><i style="background:#883b28"></i><i style="background:#705628"></i><i style="background:#d1a726"></i><i style="background:#995728"></i><i style="background:#585f6e"></i><i style="background:#284849"></i></div>
+<details><summary>8 pages</summary><ol><li>Home</li><li>About Us</li><li>Services</li><li>Contact Us</li><li>Article 01</li><li>Privacy Policy</li><li>Terms &amp; Conditions</li><li>Search Results</li></ol></details>
+</div></div></div><h2 data-section="pro-mobile">Pro Templates &mdash; Mobile <span class="mute small">(7)</span></h2><p class="mute small" data-section="pro-mobile">The same seven, narrow.</p><div class="grid" id="g-pro-mobile"><div class="tile" data-section="pro-mobile" data-find="ready digital marketing 1 pages · mobile websites ready digital marketing 01 home">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-ready-digital-marketing.jpg" alt="Ready Digital Marketing home page" loading="lazy">
+<div class="body"><div class="name">Ready Digital Marketing</div>
+<div class="meta">1 pages · Mobile Websites</div><div class="meta">Ready Digital Marketing 01</div>
+<div class="swatches"><i style="background:#38b3a2"></i><i style="background:#4ebfd5"></i><i style="background:#efba51"></i><i style="background:#e65372"></i><i style="background:#ef927a"></i><i style="background:#b9d688"></i><i style="background:#50484b"></i><i style="background:#ffffff"></i></div>
+<details><summary>1 pages</summary><ol><li>Home</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="stack &amp; stone 2 pages · mobile websites stack and stone scenic tours 01 home contact">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-stack-stone.jpg" alt="Stack &amp; Stone home page" loading="lazy">
+<div class="body"><div class="name">Stack &amp; Stone</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Stack and Stone Scenic Tours 01</div>
+<div class="swatches"><i style="background:#494848"></i><i style="background:#f9f2f4"></i><i style="background:#d2d0c0"></i><i style="background:#6d332d"></i><i style="background:#79674f"></i><i style="background:#eb6e61"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="ski resort &amp; leisure 2 pages · mobile websites ski resort 01 home contact">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-ski-resort-leisure.jpg" alt="Ski Resort &amp; Leisure home page" loading="lazy">
+<div class="body"><div class="name">Ski Resort &amp; Leisure</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Ski Resort 01</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ea6887"></i><i style="background:#e8f6fd"></i><i style="background:#929392"></i><i style="background:#4a4a47"></i><i style="background:#6cb0f4"></i><i style="background:#f09aae"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="alleberry bed &amp; breakfast 2 pages · mobile websites alleberry bed and breakfast 01 home contact us">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-alleberry-bed-breakfast.jpg" alt="Alleberry Bed &amp; Breakfast home page" loading="lazy">
+<div class="body"><div class="name">Alleberry Bed &amp; Breakfast</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Alleberry Bed and Breakfast 01</div>
+<div class="swatches"><i style="background:#b7b7ad"></i><i style="background:#ede9e0"></i><i style="background:#575752"></i><i style="background:#e29250"></i><i style="background:#ff6551"></i><i style="background:#eb721d"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="beach house lifestyle 2 pages · mobile websites beach house lifestyle 01 home contact us">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-beach-house-lifestyle.jpg" alt="Beach House Lifestyle home page" loading="lazy">
+<div class="body"><div class="name">Beach House Lifestyle</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Beach House Lifestyle 01</div>
+<div class="swatches"><i style="background:#b1ccd5"></i><i style="background:#27353b"></i><i style="background:#463d33"></i><i style="background:#d2d3d6"></i><i style="background:#374b3b"></i><i style="background:#3c4041"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="olivia lenton studio 2 pages · mobile websites olivia lenton studio 01 home contact us">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-olivia-lenton-studio.jpg" alt="Olivia Lenton Studio home page" loading="lazy">
+<div class="body"><div class="name">Olivia Lenton Studio</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Olivia Lenton Studio 01</div>
+<div class="swatches"><i style="background:#ebedea"></i><i style="background:#7f7878"></i><i style="background:#66a7ba"></i><i style="background:#b5d059"></i><i style="background:#3b3631"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div><div class="tile" data-section="pro-mobile" data-find="villereccio pizzeria 2 pages · mobile websites villereccio pizzeria 01 home contact us">
+<img src="previews/webplus-x8-pro-templates-mobile-websites-villereccio-pizzeria.jpg" alt="Villereccio Pizzeria home page" loading="lazy">
+<div class="body"><div class="name">Villereccio Pizzeria</div>
+<div class="meta">2 pages · Mobile Websites</div><div class="meta">Villereccio Pizzeria 01</div>
+<div class="swatches"><i style="background:#43412d"></i><i style="background:#696838"></i><i style="background:#883b28"></i><i style="background:#705628"></i><i style="background:#d1a726"></i><i style="background:#995728"></i><i style="background:#585f6e"></i><i style="background:#284849"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Contact Us</li></ol></details>
+</div></div></div><h2 data-section="samples">Sample Sites <span class="mute small">(11)</span></h2><p class="mute small" data-section="samples">Eleven more page trees from the same catalogue. They were sample documents rather than things to start a site from, and they are here because a page tree is a page tree.</p><div class="grid" id="g-samples"><div class="tile" data-section="samples" data-find="assets - sample2 2 pages · sample sites kitsch 01 asset packs finished layout">
+<img src="previews/sample-sites-assets-sample2.jpg" alt="Assets - Sample2 home page" loading="lazy">
+<div class="body"><div class="name">Assets - Sample2</div>
+<div class="meta">2 pages · Sample Sites</div><div class="meta">Kitsch 01</div>
+<div class="swatches"><i style="background:#89afb1"></i><i style="background:#d16981"></i><i style="background:#a59f8b"></i><i style="background:#ffffff"></i></div>
+<details><summary>2 pages</summary><ol><li>Asset Packs</li><li>Finished Layout</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="slider - sample 1 pages · sample sites ague slider - sample">
+<img src="previews/sample-sites-slider-sample.jpg" alt="Slider - Sample home page" loading="lazy">
+<div class="body"><div class="name">Slider - Sample</div>
+<div class="meta">1 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>1 pages</summary><ol><li>Slider - Sample</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="flowplayer - sample 1 pages · sample sites ague flowplayer - sample">
+<img src="previews/sample-sites-flowplayer-sample.jpg" alt="FlowPlayer - Sample home page" loading="lazy">
+<div class="body"><div class="name">FlowPlayer - Sample</div>
+<div class="meta">1 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>1 pages</summary><ol><li>FlowPlayer - Sample</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 01 2 pages · sample sites ague home support">
+<img src="previews/sample-sites-wpx8-tutorial-01.jpg" alt="WPX8 Tutorial 01 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 01</div>
+<div class="meta">2 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Support</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 02 2 pages · sample sites ague home support">
+<img src="previews/sample-sites-wpx8-tutorial-02.jpg" alt="WPX8 Tutorial 02 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 02</div>
+<div class="meta">2 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>2 pages</summary><ol><li>Home</li><li>Support</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 03 3 pages · sample sites ague home support sitemap">
+<img src="previews/sample-sites-wpx8-tutorial-03.jpg" alt="WPX8 Tutorial 03 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 03</div>
+<div class="meta">3 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>3 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 04 embed 3 pages · sample sites ague home support sitemap">
+<img src="previews/sample-sites-wpx8-tutorial-04-embed.jpg" alt="WPX8 Tutorial 04 embed home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 04 embed</div>
+<div class="meta">3 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>3 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 05 3 pages · sample sites ague home support sitemap">
+<img src="previews/sample-sites-wpx8-tutorial-05.jpg" alt="WPX8 Tutorial 05 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 05</div>
+<div class="meta">3 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>3 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 06 3 pages · sample sites ague home support sitemap">
+<img src="previews/sample-sites-wpx8-tutorial-06.jpg" alt="WPX8 Tutorial 06 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 06</div>
+<div class="meta">3 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>3 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 07 3 pages · sample sites ague home support sitemap">
+<img src="previews/sample-sites-wpx8-tutorial-07.jpg" alt="WPX8 Tutorial 07 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 07</div>
+<div class="meta">3 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>3 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li></ol></details>
+</div></div><div class="tile" data-section="samples" data-find="wpx8 tutorial 08 4 pages · sample sites ague home support sitemap search">
+<img src="previews/sample-sites-wpx8-tutorial-08.jpg" alt="WPX8 Tutorial 08 home page" loading="lazy">
+<div class="body"><div class="name">WPX8 Tutorial 08</div>
+<div class="meta">4 pages · Sample Sites</div><div class="meta">Ague</div>
+<div class="swatches"><i style="background:#ffffff"></i><i style="background:#ebf1f1"></i><i style="background:#00bfe8"></i><i style="background:#385a5f"></i><i style="background:#282626"></i><i style="background:#41dff7"></i><i style="background:#d5d2d2"></i><i style="background:#c4e6f5"></i></div>
+<details><summary>4 pages</summary><ol><li>Home</li><li>Support</li><li>Sitemap</li><li>Search</li></ol></details>
+</div></div></div>
+<script>
+(function () {
+  var box = document.getElementById('q'), none = document.getElementById('none');
+  if (!box) return;
+  var tiles = [].slice.call(document.querySelectorAll('.tile'));
+  var heads = [].slice.call(document.querySelectorAll('[data-section]'));
+  function run() {
+    var q = box.value.trim().toLowerCase(), hits = 0;
+    tiles.forEach(function (t) {
+      var on = !q || t.dataset.find.indexOf(q) !== -1;
+      t.style.display = on ? '' : 'none';
+      if (on) hits++;
+    });
+    heads.forEach(function (h) {
+      var live = [].slice.call(document.querySelectorAll(
+        '.tile[data-section="' + h.dataset.section + '"]'))
+        .some(function (t) { return t.style.display !== 'none'; });
+      h.style.display = live ? '' : 'none';
+      var g = document.getElementById('g-' + h.dataset.section);
+      if (g) g.style.display = live ? '' : 'none';
+    });
+    none.style.display = hits ? 'none' : 'block';
+  }
+  box.addEventListener('input', run);
+  run();
+})();
+</script>
+
+<footer>Built from the source in
+<a href="https://github.com/janszafranski/just-a-collection-of-apps">janszafranski/just-a-collection-of-apps</a>
+on 2026-11-10. Every template picture on this site is rendered
+by the app itself.</footer>
+</div>
+</html>
