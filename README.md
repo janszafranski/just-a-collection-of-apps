@@ -2,6 +2,10 @@
 
 **[The site →](https://janszafranski.github.io/just-a-collection-of-apps/)**
 
+<p align="center"><a href="https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html"><img src="apps/webcreator/assets/screenshot.png" alt="just a... WEBcreator — menu bar, toolbar, tool palette, canvas and the Site tree" width="820"></a></p>
+
+<p align="center"><em><a href="apps/webcreator">just a&hellip; WEBcreator</a>, the first of them &mdash; a site open on its home page.</em></p>
+
 Simple applications for people who want to work using old familiar workflows
 but don't want learn a new workflow from a more powerful, but complex app like
 the **ARTcraft** ones. Use familiar menus, toolbars, a page in front of
@@ -27,6 +31,11 @@ ARTcraft can do, use ARTcraft.
 | App | What it is |
 | --- | --- |
 | **[just a... WEBcreator](apps/webcreator)** | Design a website by laying pages out — drag text, pictures, buttons and menus where you want them, share the header on a master page, preview in your browser, publish plain HTML to a folder you can upload anywhere. Starts from any of **92 templates**. Saves `.webc`. Also opens a Serif **WebPlus** `.wpp` site, read-only on your original. Needs `pyside6`. |
+
+<p align="center"><a href="https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html#templates"><img src="apps/webcreator/assets/chooser.png" alt="The Startup Assistant: the template tree, a preview, the colour scheme picker and the page tick boxes" width="820"></a></p>
+
+<p align="center"><em>Every new site starts here: pick one of the <strong>92 templates</strong>,
+pick a colour scheme, untick any pages you don't want.</em></p>
 
 More will join it. It is a collection, not a suite: each app stands on its own,
 installs on its own, and updates itself from this repository.
