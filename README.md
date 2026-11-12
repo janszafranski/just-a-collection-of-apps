@@ -2,25 +2,24 @@
 
 **[The site →](https://janszafranski.github.io/just-a-collection-of-apps/)**
 
-Simple applications for people who don't want to learn a great but complex app
-— the **ARTcraft** ones, say — and would rather use something that works the
-way everything else already does. Familiar menus, a toolbar, a page in front of
+Simple applications for people who want to work using old familiar workflows
+but don't want learn a new workflow from a more powerful, but complex app like
+the **ARTcraft** ones. Use familiar menus, toolbars, a page in front of
 you: open it and get on with the job. No subscription, no account, no cloud, no
-tutorial. They save ordinary files to ordinary folders on your own disk.
+tutorial, just save ordinary files to ordinary folders on your own disk.
 
 Each one is a **ground-up recreation** of an easy-to-use app, written for
-Linux. Not a port, not a wrapper, not a fork: new code that borrows the shape
-of the thing rather than the thing itself. If you already know how to do
-something in one of the ARTcraft apps, you should be able to do it here without
-learning anything new — the same menus in the same places, the same words for
-the same jobs, the same order of operations.
+Linux. Not a port, nor wrapper, nor fork: new code that borrows the shape of a
+retired old app, rather than the thing itself. If you already know how to do
+something in one of these  popular british apps, you should be able to do it
+here without learning anything new — the same menus in the same places, the same 
+words for the same jobs, the same order of operations.
 
-What you won't find is the powerful half. The big suites can do a great deal,
-and all of it has to live somewhere in the interface. These do the common jobs
-that any of those could do and none of them makes quick, and they leave the
-rest out on purpose.
-
-Not a replacement for the big suites and not trying to be. If you need what
+The excellent ARTcraft suites do a great deal,and are perfect for familiar users
+but for those of us are used to yet no longer with us, This isn't a replacement 
+for tools like those of ARTcraft... they are a re-creation of british alternatives 
+many of us used and brings them back and makes them quick. These are not a 
+replacement for the big suites and not trying to be. If you need what
 ARTcraft can do, use ARTcraft.
 
 ## The apps
