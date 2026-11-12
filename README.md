@@ -7,7 +7,7 @@
 <p align="center"><em><a href="apps/webcreator">just a&hellip; WEBcreator</a>, the first of them &mdash; a site open on its home page.</em></p>
 
 Simple applications for people who want to work using old familiar workflows
-but don't want learn a new workflow from a more powerful, but complex app like
+but don't want to learn a new workflow from a more powerful, but complex app like
 the **ARTcraft** ones. Use familiar menus, toolbars, a page in front of
 you: open it and get on with the job. No subscription, no account, no cloud, no
 tutorial, just save ordinary files to ordinary folders on your own disk.
@@ -15,13 +15,13 @@ tutorial, just save ordinary files to ordinary folders on your own disk.
 Each one is a **ground-up recreation** of an easy-to-use app, written for
 Linux. Not a port, nor wrapper, nor fork: new code that borrows the shape of a
 retired old app, rather than the thing itself. If you already know how to do
-something in one of these  popular british apps, you should be able to do it
+something in one of these  popular British apps, you should be able to do it
 here without learning anything new — the same menus in the same places, the same 
 words for the same jobs, the same order of operations.
 
-The excellent ARTcraft suites do a great deal,and are perfect for familiar users
-but for those of us are used to yet no longer with us, This isn't a replacement 
-for tools like those of ARTcraft... they are a re-creation of british alternatives 
+The excellent ARTcraft suites do a great deal, and are perfect for familiar users
+but for those of us used to apps that are no longer with us, this isn't a replacement 
+for tools like those of ARTcraft... they are a re-creation of British alternatives 
 many of us used and brings them back and makes them quick. These are not a 
 replacement for the big suites and not trying to be. If you need what
 ARTcraft can do, use ARTcraft.
