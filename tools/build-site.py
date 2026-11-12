@@ -210,7 +210,7 @@ has an <code>uninstall.sh</code> beside its installer.</p>
 
 
 SECTIONS = (
-    ("ours", "Design templates", "Three originals that ship with the app &mdash; "
+    ("ours", "Basic Templates", "Three originals that ship with the app &mdash; "
      "a small business, a community group and a portfolio."),
     ("theme-desktop", "Theme Layouts &mdash; Desktop", "Thirty-two starting points: "
      "a full page tree, three colour schemes of their own, and room to work."),
