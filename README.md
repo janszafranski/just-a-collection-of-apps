@@ -30,7 +30,7 @@ ARTcraft can do, use ARTcraft.
 
 | App | What it is |
 | --- | --- |
-| **[just a... WEBcreator](apps/webcreator)** | Design a website by laying pages out — drag text, pictures, buttons and menus where you want them, share the header on a master page, preview in your browser, publish plain HTML to a folder you can upload anywhere. Starts from any of **92 templates**. Saves `.webc`. Also opens a Serif **WebPlus** `.wpp` site, read-only on your original. Needs `pyside6`. |
+| **[just a... WEBcreator](apps/webcreator)** | A **WYSIWYG** website builder — design pages by laying them out visually: drag text, pictures, buttons and menus where you want them, share the header on a master page, preview in your browser, publish plain HTML to a folder you can upload anywhere. Starts from any of **92 templates**. Saves `.webc`. Also opens a Serif **WebPlus** `.wpp` site, read-only on your original. Needs `pyside6`. |
 
 <p align="center"><a href="https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html#templates"><img src="apps/webcreator/assets/chooser.png" alt="The Startup Assistant: the template tree, a preview, the colour scheme picker and the page tick boxes" width="820"></a></p>
 
