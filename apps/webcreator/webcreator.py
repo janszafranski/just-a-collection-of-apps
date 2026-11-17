@@ -37,7 +37,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.10-10"
+VERSION = "1.10-11"
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -6410,10 +6410,11 @@ class MainWindow(QMainWindow):
         return ('not logged in' in blob or 'not authenticated' in blob or 'no auth' in blob
                 or 'netlify_auth_token' in blob or 'login' in blob and 'netlify' in blob)
 
-    def publish_netlify(self, folder):
+    def publish_netlify(self, folder, files=None):
         """Deploy the published folder to the SAME Netlify site every time (so
         re-publishing updates the live site instead of creating a duplicate).
-        Links to a site first if we haven't got one stored."""
+        Links to a site first if we haven't got one stored. On success shows a
+        short popup with how many pages/files changed, not the full guide."""
         import os as _os
         net = self.site.setdefault('netlify', {})
         if not self.netlify_token():
@@ -6448,19 +6449,49 @@ class MainWindow(QMainWindow):
         m = re.search(r'https?://[^\s]+', out)
         live = m.group(0) if m else (net.get('url') or '')
         tail = '\n'.join((out + '\n' + err).strip().splitlines()[-12:])
-        dlg = QDialog(self); dlg.setWindowTitle('Netlify deploy'); dlg.setMinimumWidth(600)
-        dv = QVBoxLayout(dlg)
         if ok:
-            dv.addWidget(QLabel(f'<b>Your live site was updated.</b><br>{esc(live)}' if live
-                                else '<b>Your live site was updated.</b>'))
+            # Short, friendly confirmation: how much changed this publish.
+            stats = getattr(publish_site, 'last_stats', None) or {}
+            nch = stats.get('pages_changed'); tot = stats.get('pages_total')
+            nfiles = len(stats.get('changed_files', []) or [])
+            if tot is None:
+                changed_line = ''
+            elif nch == 0:
+                changed_line = 'No pages had changed since last time — the live site is already up to date.'
+            else:
+                changed_line = (f'{nch} of {tot} page(s) changed'
+                                + (f' ({nfiles} file(s) uploaded)' if nfiles else '')
+                                + ' — only the changes were sent.')
+            dlg = QDialog(self); dlg.setWindowTitle('Live site updated'); dlg.setMinimumWidth(460)
+            dv = QVBoxLayout(dlg)
+            head = QLabel('<b>Your live site was updated.</b>'
+                          + (f'<br>{esc(live)}' if live else ''))
+            head.setWordWrap(True); head.setTextFormat(Qt.RichText); dv.addWidget(head)
+            if changed_line:
+                cl = QLabel(changed_line); cl.setWordWrap(True); cl.setStyleSheet('color:gray'); dv.addWidget(cl)
+            row = QHBoxLayout()
             if live:
-                b = QPushButton('Open the live site'); b.clicked.connect(lambda: open_external(live)); dv.addWidget(b)
+                b = QPushButton('Open the live site'); b.clicked.connect(lambda: open_external(live)); row.addWidget(b)
+            opt = QPushButton('Publishing options…')
+            opt.setToolTip('Change which Netlify site to update, or see other ways to host (drag-drop, GitHub Pages…)')
+            opt.clicked.connect(lambda: (dlg.accept(), self.go_online(folder, files if files is not None
+                                                                      else publish_site(self.site, folder))))
+            row.addWidget(opt); row.addStretch(); dv.addLayout(row)
+            bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
+            dv.addWidget(bb); dlg.exec()
         else:
+            dlg = QDialog(self); dlg.setWindowTitle('Netlify deploy'); dlg.setMinimumWidth(600)
+            dv = QVBoxLayout(dlg)
             dv.addWidget(QLabel('<b>The deploy did not finish.</b> Details below; the drag-and-drop '
                                 'option still works as a fallback.'))
-        log = QPlainTextEdit(tail); log.setReadOnly(True); log.setFixedHeight(180); dv.addWidget(log)
-        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
-        dv.addWidget(bb); dlg.exec()
+            log = QPlainTextEdit(tail); log.setReadOnly(True); log.setFixedHeight(180); dv.addWidget(log)
+            row = QHBoxLayout()
+            gb = QPushButton('Other ways to publish…')
+            gb.clicked.connect(lambda: (dlg.accept(), self.go_online(folder, files if files is not None
+                                                                     else publish_site(self.site, folder))))
+            row.addWidget(gb); row.addStretch(); dv.addLayout(row)
+            bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
+            dv.addWidget(bb); dlg.exec()
 
     def link_netlify(self):
         """Pick an existing Netlify site to publish to (or create one), and store
@@ -6537,8 +6568,16 @@ class MainWindow(QMainWindow):
         except OSError as ex:
             QMessageBox.warning(self, APP, f"Could not save the site files.\n{ex}"); return
         self.settings.setValue('publishDir', folder)
-        # Step 3: straight to the guide.
-        self.go_online(folder, files)
+        # Step 3: where to go next.
+        # If this site is ALREADY linked to a Netlify site, don't re-present the
+        # whole "how to put it online" guide — the user has published before and
+        # just wants the live site updated. Deploy straight away and show a short
+        # "done" popup with how many pages/files changed. Only an unpublished
+        # site (no stored Netlify link) gets the full first-time hosting guide.
+        if (self.site.get('netlify') or {}).get('site_id') and self.netlify_token():
+            self.publish_netlify(folder, files)
+        else:
+            self.go_online(folder, files)
 
     def go_online(self, folder, files):
         """Guide a non-technical user from a published folder to a live website.
@@ -6594,7 +6633,7 @@ class MainWindow(QMainWindow):
         h0 = QHBoxLayout()
         pb = QPushButton('Update my live site' if net.get('site_id') else 'Link & publish to Netlify')
         pb.setDefault(True)
-        pb.clicked.connect(lambda: self.publish_netlify(folder))
+        pb.clicked.connect(lambda: self.publish_netlify(folder, files))
         lk = QPushButton('Change which site…')
         lk.clicked.connect(lambda: self.link_netlify())
         h0.addWidget(pb); h0.addWidget(lk); h0.addStretch(); v0.addLayout(h0)
