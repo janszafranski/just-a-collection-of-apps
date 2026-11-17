@@ -6386,6 +6386,23 @@ class MainWindow(QMainWindow):
         except OSError:
             return ''
 
+    def netlify_ready(self):
+        """True if we can deploy without asking the user to sign in: either a
+        stored token, or an existing `netlify-cli login` (its config.json holds a
+        logged-in user with an auth token). Lets a CLI-logged-in user publish
+        straight to their live site without a token file."""
+        if self.netlify_token():
+            return True
+        try:
+            with open(os.path.expanduser('~/.config/netlify/config.json')) as fh:
+                cfg = json.load(fh)
+            for info in (cfg.get('users') or {}).values():
+                if ((info or {}).get('auth') or {}).get('token'):
+                    return True
+        except (OSError, ValueError):
+            pass
+        return False
+
     def _netlify_env(self):
         env = dict(os.environ)
         tok = self.netlify_token()
@@ -6417,7 +6434,7 @@ class MainWindow(QMainWindow):
         short popup with how many pages/files changed, not the full guide."""
         import os as _os
         net = self.site.setdefault('netlify', {})
-        if not self.netlify_token():
+        if not self.netlify_ready():
             if QMessageBox.question(self, APP,
                     'To update your live Netlify site from here you need to connect your Netlify '
                     'account once.\n\nEither run “npx netlify-cli login” in a terminal, or paste a '
@@ -6574,7 +6591,7 @@ class MainWindow(QMainWindow):
         # just wants the live site updated. Deploy straight away and show a short
         # "done" popup with how many pages/files changed. Only an unpublished
         # site (no stored Netlify link) gets the full first-time hosting guide.
-        if (self.site.get('netlify') or {}).get('site_id') and self.netlify_token():
+        if (self.site.get('netlify') or {}).get('site_id') and self.netlify_ready():
             self.publish_netlify(folder, files)
         else:
             self.go_online(folder, files)
