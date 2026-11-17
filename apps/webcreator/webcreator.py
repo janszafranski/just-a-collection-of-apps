@@ -37,7 +37,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.10-11"
+VERSION = "1.10-12"
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -6375,33 +6375,46 @@ class MainWindow(QMainWindow):
         self.hint('Preview opened in your web browser.')
 
     # ------------------------------------------------------------ Netlify CLI
+    def _netlify_cli_token(self):
+        """The auth token from an existing `netlify-cli login`
+        (~/.config/netlify/config.json). Returns '' if not logged in.
+
+        We read it ourselves and pass it on to the CLI as NETLIFY_AUTH_TOKEN so
+        a deploy works no matter what minimal environment the app was launched
+        in (a desktop/GUI launcher often has a different HOME/XDG_CONFIG_HOME, so
+        the CLI can fail to find its own login and report 'Unauthorized: could
+        not retrieve project' even though the user is signed in)."""
+        try:
+            with open(os.path.expanduser('~/.config/netlify/config.json')) as fh:
+                cfg = json.load(fh)
+        except (OSError, ValueError):
+            return ''
+        users = cfg.get('users') or {}
+        # Prefer the active user id if the config names one, else any with a token.
+        uid = cfg.get('userId')
+        order = ([users[uid]] if uid in users else []) + [u for k, u in users.items() if k != uid]
+        for info in order:
+            tok = ((info or {}).get('auth') or {}).get('token')
+            if tok: return tok.strip()
+        return ''
+
     def netlify_token(self):
-        """A Netlify personal access token, if the user has stored one: env
-        NETLIFY_AUTH_TOKEN wins, else ~/.config/webcreator/netlify_token."""
+        """A Netlify access token: env NETLIFY_AUTH_TOKEN wins, then a stored
+        ~/.config/webcreator/netlify_token, then an existing netlify-cli login."""
         tok = (os.environ.get('NETLIFY_AUTH_TOKEN') or '').strip()
         if tok: return tok
         try:
             with open(os.path.expanduser('~/.config/webcreator/netlify_token')) as fh:
-                return fh.read().strip()
+                tok = fh.read().strip()
+                if tok: return tok
         except OSError:
-            return ''
+            pass
+        return self._netlify_cli_token()
 
     def netlify_ready(self):
-        """True if we can deploy without asking the user to sign in: either a
-        stored token, or an existing `netlify-cli login` (its config.json holds a
-        logged-in user with an auth token). Lets a CLI-logged-in user publish
-        straight to their live site without a token file."""
-        if self.netlify_token():
-            return True
-        try:
-            with open(os.path.expanduser('~/.config/netlify/config.json')) as fh:
-                cfg = json.load(fh)
-            for info in (cfg.get('users') or {}).values():
-                if ((info or {}).get('auth') or {}).get('token'):
-                    return True
-        except (OSError, ValueError):
-            pass
-        return False
+        """True if we can deploy without asking the user to sign in — a token
+        from the env, a stored file, or an existing netlify-cli login."""
+        return bool(self.netlify_token())
 
     def _netlify_env(self):
         env = dict(os.environ)
