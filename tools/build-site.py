@@ -328,13 +328,34 @@ purpose.</p>
 </table>
 
 <h2>Install</h2>
-<pre><code>sudo pacman -S --needed pyside6 python-beautifulsoup4 qt6-webengine
-git clone https://github.com/janszafranski/just-a-collection-of-apps.git
+<p class="small mute">Install the dependencies for your distribution, then clone and run the
+installer. Nothing here needs root &mdash; only the dependency line uses <code>sudo</code>.</p>
+
+<h3>Arch / CachyOS / Manjaro</h3>
+<pre><code>sudo pacman -S --needed pyside6 python-beautifulsoup4 qt6-webengine</code></pre>
+
+<h3>Debian / Ubuntu / Mint / Pop!_OS</h3>
+<pre><code>sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtwebenginewidgets python3-bs4</code></pre>
+
+<details><summary>Other distributions</summary>
+<p class="small mute" style="margin-top:.6em">Fedora:</p>
+<pre><code>sudo dnf install python3-pyside6 python3-beautifulsoup4</code></pre>
+<p class="small mute">openSUSE:</p>
+<pre><code>sudo zypper install python3-PySide6 python3-beautifulsoup4</code></pre>
+<p class="small mute">Any distro (last resort &mdash; see the note below about pip):</p>
+<pre><code>pip install --user pyside6 beautifulsoup4</code></pre>
+</details>
+
+<p class="small mute" style="margin-top:1em">Then, on any distro:</p>
+<pre><code>git clone https://github.com/janszafranski/just-a-collection-of-apps.git
 just-a-collection-of-apps/apps/webcreator/install.sh</code></pre>
-<p class="small mute">Only <code>pyside6</code> is required, and use the distro
-package rather than pip or the app will not pick up your desktop theme.
-<code>python-beautifulsoup4</code> is for importing a website folder;
-<code>qt6-webengine</code> makes an import match the original layout.</p>
+
+<p class="small mute">Only PySide6 is required. <strong>Use your distribution's package, not
+pip</strong> &mdash; the pip wheel ships its own Qt, so the app will not pick up your
+desktop theme (fonts, colours, dark mode). <code>beautifulsoup4</code> is for
+importing a website folder, and the Qt WebEngine package makes such an import match
+the original layout. The installer checks for each and tells you what, if anything,
+is missing &mdash; it never needs root itself.</p>
 
 <h2 id="templates">{total} templates</h2>
 <img class="shot" src="assets/chooser.png" alt="The Startup Assistant: the template tree, a preview, the colour scheme picker and the page tick boxes">

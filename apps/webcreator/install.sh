@@ -17,9 +17,15 @@ MIME="$DATA/mime"
 command -v python3 >/dev/null 2>&1 || die "python3 not found."
 python3 -c 'import PySide6' 2>/dev/null \
   || die "Needs PySide6 — the distro package, not pip, so the app follows your desktop theme:
-     sudo pacman -S --needed pyside6"
+     Arch/CachyOS:  sudo pacman -S --needed pyside6
+     Debian/Ubuntu/Mint:  sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtwebenginewidgets
+     Fedora:  sudo dnf install python3-pyside6
+     openSUSE:  sudo zypper install python3-PySide6"
 python3 -c 'import bs4' 2>/dev/null \
-  || warn "File ▸ Import Website Folder… needs BeautifulSoup: sudo pacman -S --needed python-beautifulsoup4"
+  || warn "File ▸ Import Website Folder… needs BeautifulSoup:
+     Arch/CachyOS:  sudo pacman -S --needed python-beautifulsoup4
+     Debian/Ubuntu/Mint:  sudo apt install python3-bs4
+     Fedora/openSUSE:  sudo dnf install python3-beautifulsoup4  (zypper on openSUSE)"
 python3 -c 'import PySide6.QtWebEngineWidgets' 2>/dev/null \
   || warn "Imported pages match the original layout only with qt6-webengine installed; without it they reflow."
 

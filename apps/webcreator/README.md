@@ -14,8 +14,31 @@ half. Every one of them is a ground-up recreation rather than a port or a fork.
 
 ## Install
 
+Install the dependencies for your distribution, then run `./install.sh`
+(nothing but the dependency line needs root):
+
+**Arch / CachyOS / Manjaro**
 ```
 sudo pacman -S --needed pyside6 python-beautifulsoup4 qt6-webengine
+```
+
+**Debian / Ubuntu / Mint / Pop!_OS**
+```
+sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtwebenginewidgets python3-bs4
+```
+
+**Fedora**
+```
+sudo dnf install python3-pyside6 python3-beautifulsoup4
+```
+
+**openSUSE**
+```
+sudo zypper install python3-PySide6 python3-beautifulsoup4
+```
+
+Then, on any distro:
+```
 ./install.sh
 ```
 
