@@ -37,7 +37,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.10-12"
+VERSION = "1.10-13"
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -4185,6 +4185,34 @@ class MainWindow(QMainWindow):
         except Exception: pass
         QScroller.grabGesture(lst.viewport(), QScroller.LeftMouseButtonGesture)
 
+    def _hscroll_wrap(self, lst, step=120):
+        """Wrap a horizontally-scrolling list between a ◀ and a ▶ triangle button so the
+        user can click to scroll it (the thin native scrollbar was never discoverable).
+        Returns a container widget to add in the list's place. The triangles auto-enable
+        only when there is something to scroll, and auto-repeat while held down."""
+        from PySide6.QtWidgets import QToolButton
+        self._enable_hdrag(lst)
+        box = QWidget(); row = QHBoxLayout(box); row.setContentsMargins(0, 0, 0, 0); row.setSpacing(2)
+        sb = lst.horizontalScrollBar()
+        def mk(arrow, delta):
+            b = QToolButton(); b.setArrowType(arrow); b.setAutoRaise(True)
+            b.setAutoRepeat(True); b.setAutoRepeatInterval(60); b.setAutoRepeatDelay(300)
+            b.setFixedWidth(16); b.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            b.setToolTip('Scroll ' + ('left' if delta < 0 else 'right'))
+            b.clicked.connect(lambda: sb.setValue(sb.value() + delta))
+            return b
+        left = mk(Qt.LeftArrow, -step); right = mk(Qt.RightArrow, step)
+        row.addWidget(left); row.addWidget(lst, 1); row.addWidget(right)
+        def refresh():
+            scrollable = sb.maximum() > sb.minimum()
+            for b in (left, right): b.setVisible(scrollable)
+            left.setEnabled(sb.value() > sb.minimum())
+            right.setEnabled(sb.value() < sb.maximum())
+        sb.rangeChanged.connect(lambda *_: refresh())
+        sb.valueChanged.connect(lambda *_: refresh())
+        refresh()
+        return box
+
     def flatten_dock_tabs(self):
         """Flatten the docked-panel tab bars (Site / Swatches / Line / Transform / Layers …) so the
         tabs read as flat text with a highlight on the current one, not raised buttons on a bar.
@@ -4212,8 +4240,8 @@ class MainWindow(QMainWindow):
         self.tree = QTreeWidget(); self.tree.setHeaderHidden(True); self.tree.setColumnCount(1); self.tree.setIndentation(16)
         self.tree.itemClicked.connect(lambda it, _: self.goto_page(it.data(0, Qt.UserRole)))
         self.tree.itemDoubleClicked.connect(lambda it, _: self.page_props(self.page_by_id(it.data(0, Qt.UserRole))))
-        self._plainify(self.tree); self._enable_hdrag(self.tree)
-        sl.addWidget(self.tree, 3)
+        self._plainify(self.tree)
+        sl.addWidget(self._hscroll_wrap(self.tree), 3)
         ptb = QToolBar(); ptb.setIconSize(QSize(16, 16))
         for text, icon, slot in (('New page', 'document-new', self.insert_page_dialog), ('Delete page', 'edit-delete', self.delete_page),
                                  ('Move up', 'go-up', lambda: self.move_page(-1)), ('Move down', 'go-down', lambda: self.move_page(1)),
@@ -4225,7 +4253,7 @@ class MainWindow(QMainWindow):
         sl.addWidget(QLabel('<b>Master pages</b>'))
         self.mlist = QListWidget(); self.mlist.itemDoubleClicked.connect(lambda it: self.goto_master(it.data(Qt.UserRole)))
         self._plainify(self.mlist)
-        sl.addWidget(self.mlist, 1)
+        sl.addWidget(self._hscroll_wrap(self.mlist), 1)
         mtb = QToolBar(); mtb.setIconSize(QSize(16, 16))
         mtb.addAction(self.act('New master page', self.new_master, None, 'document-new'))
         mtb.addAction(self.act('Edit master page', lambda: self.mlist.currentItem() and self.goto_master(self.mlist.currentItem().data(Qt.UserRole)), None, 'document-edit'))
@@ -4326,9 +4354,8 @@ class MainWindow(QMainWindow):
         self.layers = QListWidget(); self.layers.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.layers.itemSelectionChanged.connect(self.layers_selected)
         self.layers.itemDoubleClicked.connect(lambda it: self.edit_object(self.find(it.data(Qt.UserRole))) if self.find(it.data(Qt.UserRole)) else None)
-        self._enable_hdrag(self.layers)
         self._plainify(self.layers)
-        yl.addWidget(self.layers)
+        yl.addWidget(self._hscroll_wrap(self.layers))
         ytb = QToolBar(); ytb.setIconSize(QSize(16, 16))
         ytb.addAction(self.act('Show / hide', self.toggle_hidden, None, ['view-visible', 'visibility']))
         ytb.addAction(self.a['lock'])
@@ -4341,7 +4368,7 @@ class MainWindow(QMainWindow):
         # a single thin edge on this panel's right side (same Mid colour as the rulers draw), so the
         # resize edge is visible on the left without putting a line beside the right-hand docks
         aw.setStyleSheet('#assetpanel{border-right:1px solid palette(mid);}')
-        head = QHBoxLayout(); head.addWidget(QLabel('<b>Assets</b>')); head.addStretch()
+        head = QHBoxLayout(); head.addStretch()
         self.assets_pin = QToolButton(); self.assets_pin.setCheckable(True); self.assets_pin.setAutoRaise(True)
         self.assets_pin.setIcon(ticon(['window-pin', 'view-pin', 'emblem-locked', 'object-locked'], '📌'))
         self.assets_pin.setToolTip('Pin the panel open — lock it in place so it can’t be moved, floated or closed')
@@ -4369,8 +4396,7 @@ class MainWindow(QMainWindow):
             'QListWidget::item{margin:3px;}'
             'QListWidget::item:selected{border:1px solid palette(highlight);}')
         self.asset_list.itemDoubleClicked.connect(self.asset_insert)
-        self._enable_hdrag(self.asset_list)
-        al.addWidget(self.asset_list, 1)
+        al.addWidget(self._hscroll_wrap(self.asset_list), 1)
         al.addWidget(QLabel('<span style="color:gray">Double-click to place · hover for the name.</span>'))
         self.d_assets = self.dock('Assets', aw, 'assets')
 
