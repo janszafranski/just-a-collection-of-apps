@@ -9,8 +9,9 @@ import subprocess, shutil
 
 try:
     from PySide6.QtCore import (Qt, QRectF, QPointF, QSizeF, QTimer, QSettings, QUrl,
-                                QByteArray, QBuffer, QIODevice, QSize, QLineF, QEvent)
-    from PySide6.QtGui import (QAction, QActionGroup, QIcon, QPixmap, QImage, QPainter, QColor,
+                                QByteArray, QBuffer, QIODevice, QSize, QLineF, QEvent,
+                                Signal, QMimeData, QPoint)
+    from PySide6.QtGui import (QAction, QActionGroup, QIcon, QPixmap, QImage, QPainter, QColor, QDrag,
                                QPen, QBrush, QFont, QFontMetrics, QPainterPath, QPalette, QTransform,
                                QTextDocument, QTextOption, QTextCursor, QTextCharFormat, QTextFormat,
                                QTextBlockFormat, QAbstractTextDocumentLayout, QKeySequence,
@@ -37,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.10-23"
+VERSION = "1.10-24"
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -281,6 +282,12 @@ def add_asset(site, data_uri):
     key = hashlib.sha1(data_uri.encode()).hexdigest()[:12]
     site.setdefault('assets', {})[key] = data_uri
     return key
+
+# Dragging a thumbnail OUT of the Assets panel onto the page carries just the asset key
+# under this private MIME type; dragging a picture file IN from another app carries file
+# URLs (handled via picture_uri). These extensions are what we accept from outside drops.
+ASSET_MIME = 'application/x-webcreator-asset'
+IMG_DROP_EXTS = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff')
 
 # ----------------------------------------------------------------------------
 # Procedural artwork for the design templates (original, generated here)
@@ -2977,7 +2984,11 @@ class SpectrumBar(QWidget):
 
 class ThumbGrid(QListWidget):
     """Icon grid whose thumbnails grow with the panel and reflow between columns:
-    two columns at the default width, one when narrowed, more (and larger) when widened."""
+    two columns at the default width, one when narrowed, more (and larger) when widened.
+    Thumbnails can be dragged OUT onto the page to place them, and picture files dragged
+    IN from another app are imported (emitted via `filesDropped`)."""
+    filesDropped = Signal(list)   # list of local picture file paths dropped onto the panel
+
     def __init__(self, min_cell=86, max_cell=170, parent=None):
         super().__init__(parent)
         self._min, self._max = min_cell, max_cell
@@ -2989,6 +3000,70 @@ class ThumbGrid(QListWidget):
         # column count oscillate between 3 and 4 (and the thumbnails jitter in size).
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # Drag a thumbnail out to place it; accept picture files dropped in from elsewhere.
+        # (Scrolling is by the wheel and the always-on scrollbar, not by dragging the body.)
+        self.setDragEnabled(True)
+        self.setDragDropMode(QAbstractItemView.DragDrop)
+        self.setDefaultDropAction(Qt.CopyAction)
+        self.setAcceptDrops(True)
+
+    def startDrag(self, actions):
+        it = self.currentItem()
+        key = it.data(Qt.UserRole) if it else None
+        if not key: return
+        md = QMimeData(); md.setData(ASSET_MIME, QByteArray(str(key).encode()))
+        drag = QDrag(self); drag.setMimeData(md)
+        pm = it.icon().pixmap(self.iconSize())
+        if not pm.isNull():
+            drag.setPixmap(pm); drag.setHotSpot(QPoint(pm.width() // 2, pm.height() // 2))
+        drag.exec(Qt.CopyAction)
+
+    @staticmethod
+    def _can_drop(md):
+        """Cheap test (safe to call on every drag-move) for a droppable picture:
+        a local image file, a remote image URL (dragged from a browser), or an
+        embedded bitmap. Our own thumbnail drags (ASSET_MIME) are not 'drops in'."""
+        if md.hasFormat(ASSET_MIME): return False
+        if md.hasImage(): return True
+        if md.hasUrls():
+            for u in md.urls():
+                if u.isLocalFile() and os.path.splitext(u.toLocalFile())[1].lower() in IMG_DROP_EXTS: return True
+                if u.scheme() in ('http', 'https') and os.path.splitext(u.path())[1].lower() in IMG_DROP_EXTS: return True
+        return False
+
+    @staticmethod
+    def _image_sources(md):
+        """Resolve a drop into picture sources, called once at drop time. Each is a
+        tuple ('file', path) | ('url', http-url) | ('img', QImage). Local files win
+        over remote URLs, which win over an embedded bitmap, so a single browser image
+        isn't imported twice."""
+        if md.hasFormat(ASSET_MIME): return []
+        files, remote = [], []
+        if md.hasUrls():
+            for u in md.urls():
+                if u.isLocalFile():
+                    p = u.toLocalFile()
+                    if os.path.splitext(p)[1].lower() in IMG_DROP_EXTS: files.append(('file', p))
+                elif u.scheme() in ('http', 'https') and os.path.splitext(u.path())[1].lower() in IMG_DROP_EXTS:
+                    remote.append(('url', u.toString()))
+        if files: return files
+        if remote: return remote
+        img = md.imageData()
+        if isinstance(img, QImage) and not img.isNull(): return [('img', img)]
+        return []
+
+    def dragEnterEvent(self, e):
+        (e.acceptProposedAction() if self._can_drop(e.mimeData()) else e.ignore())
+
+    def dragMoveEvent(self, e):
+        (e.acceptProposedAction() if self._can_drop(e.mimeData()) else e.ignore())
+
+    def dropEvent(self, e):
+        srcs = self._image_sources(e.mimeData())
+        if srcs:
+            e.acceptProposedAction(); self.filesDropped.emit(srcs)
+        else:
+            e.ignore()
 
     def resizeEvent(self, e):
         super().resizeEvent(e); self.relayout()
@@ -3110,6 +3185,28 @@ class Canvas(QGraphicsView):
         self.ghost = None
         self.horizontalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.verticalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
+        self.setAcceptDrops(True); self.viewport().setAcceptDrops(True)   # drop assets or picture files onto the page
+
+    # -- drag & drop onto the page
+    def _accepts(self, md):
+        return md.hasFormat(ASSET_MIME) or ThumbGrid._can_drop(md)
+
+    def dragEnterEvent(self, e):
+        (e.acceptProposedAction() if self._accepts(e.mimeData()) else e.ignore())
+
+    def dragMoveEvent(self, e):
+        (e.acceptProposedAction() if self._accepts(e.mimeData()) else e.ignore())
+
+    def dropEvent(self, e):
+        md = e.mimeData()
+        pt = self.mapToScene(e.position().toPoint())
+        if md.hasFormat(ASSET_MIME):
+            self.win.place_asset_at(bytes(md.data(ASSET_MIME)).decode(), pt)
+            e.acceptProposedAction(); return
+        srcs = ThumbGrid._image_sources(md)
+        if srcs:
+            self.win.import_asset_files(srcs, place_at=pt); e.acceptProposedAction(); return
+        e.ignore()
 
     # -- geometry
     def page_rect(self):
@@ -4606,9 +4703,9 @@ class MainWindow(QMainWindow):
         self.asset_list.itemDoubleClicked.connect(self.asset_insert)
         self.asset_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.asset_list.customContextMenuRequested.connect(self.asset_context_menu)
-        self._enable_hdrag(self.asset_list)
+        self.asset_list.filesDropped.connect(self.import_asset_files)
         al.addWidget(self.asset_list, 1)
-        al.addWidget(QLabel('<span style="color:gray">Double-click to place · hover for the name.</span>'))
+        al.addWidget(QLabel('<span style="color:gray">Double-click or drag onto the page · drop pictures here to add · hover for the name.</span>'))
         self.d_assets = self.dock('Assets', aw, 'assets')
         self.d_assets.setWindowTitle('')   # keep windowTitle blank
         # Hide the empty dock title strip entirely: the in-panel 'Assets' heading is the title now, so
@@ -5426,13 +5523,95 @@ class MainWindow(QMainWindow):
         key = it.data(Qt.UserRole) if it else None
         if not key: return
         cc = self.view.mapToScene(self.view.viewport().rect().center())
+        self.place_asset_at(key, cc)
+
+    def _picture_at(self, key, scene_pt, off=0):
+        """Build (but don't add) a picture object for `key`, sized to the asset's aspect
+        ratio and centred on `scene_pt` (snapped to the grid). `off` cascades multiples."""
         o = mk('picture', 0, 0)
         pm = pixmap_for(self.site, key)
         if pm and not pm.isNull():
             o['h'] = round(o['w'] * pm.height() / pm.width())
         o['src'] = key
-        o['x'] = self.view.snap(max(0, cc.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, cc.y() - o['h'] / 2))
-        self.add_object(o)
+        o['x'] = self.view.snap(max(0, scene_pt.x() - o['w'] / 2 + off))
+        o['y'] = self.view.snap(max(0, scene_pt.y() - o['h'] / 2 + off))
+        return o
+
+    def place_asset_at(self, key, scene_pt):
+        """Place an existing asset as a picture on the current page at `scene_pt`.
+        Used by double-click (page centre) and by dragging a thumbnail onto the page."""
+        if not key or key not in self.site.get('assets', {}): return
+        self.add_object(self._picture_at(key, scene_pt))
+
+    def _download(self, url):
+        """Fetch bytes from an http(s) URL for a picture dragged in from a web browser.
+        Deliberately uses urllib (not QNetworkAccessManager + a nested QEventLoop): a
+        nested event loop is unsafe while QtWebEngine — which the preview uses — is live,
+        and could freeze the app. This blocks the GUI thread briefly under a wait cursor
+        instead. Returns the raw bytes (capped at 25 MB), or None on any error/timeout."""
+        import urllib.request
+        try:
+            req = urllib.request.Request(url, headers={'User-Agent': 'WEBcreator'})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                return resp.read(25 * 1024 * 1024) or None
+        except Exception:
+            return None
+
+    def _source_uri(self, src):
+        """Turn a dropped picture source into (data_uri, display_name), or (None, None).
+        `src` is ('file', path) | ('url', http-url) | ('img', QImage)."""
+        kind, val = src
+        if kind == 'file':
+            return self.picture_uri(val), os.path.basename(val)
+        if kind == 'img':
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); val.save(buf, 'PNG')
+            return 'data:image/png;base64,' + bytes(ba.toBase64()).decode(), 'image'
+        if kind == 'url':
+            data = self._download(val)
+            if not data: return None, None
+            from urllib.parse import urlparse, unquote
+            path = urlparse(val).path
+            name = os.path.basename(unquote(path)) or 'image'
+            ext = os.path.splitext(path)[1].lower().lstrip('.')
+            mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp', 'svg': 'svg+xml'}.get(ext)
+            if mime:
+                return f'data:image/{mime};base64,' + base64.b64encode(data).decode(), name
+            img = QImage()
+            if img.loadFromData(data):
+                ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, 'PNG')
+                return 'data:image/png;base64,' + bytes(ba.toBase64()).decode(), name
+            return None, None
+        return None, None
+
+    def import_asset_files(self, sources, place_at=None):
+        """Register dropped pictures as assets. `sources` is a list of ('file', path) /
+        ('url', http-url) / ('img', QImage) — a bare string is treated as a local file
+        path (so the file picker can reuse this). If `place_at` (a scene point) is given,
+        also drop each onto the current page; the whole import+placement is one undo step."""
+        norm = [('file', s) if isinstance(s, str) else tuple(s) for s in sources]
+        remote = any(k == 'url' for k, _ in norm)
+        if remote: QApplication.setOverrideCursor(Qt.WaitCursor)
+        added = []
+        try:
+            for src in norm:
+                uri, name = self._source_uri(src)
+                if not uri: continue
+                if not added: self.commit()   # one undo snapshot before the first change
+                k = add_asset(self.site, uri)
+                self.site.setdefault('assetnames', {})[k] = name or 'image'
+                added.append(k)
+        finally:
+            if remote: QApplication.restoreOverrideCursor()
+        if not added:
+            QMessageBox.warning(self, APP, "No pictures could be read from that drop."); return
+        self.refresh_assets()
+        if place_at is None:
+            self.hint(f'Added {len(added)} picture(s) to Assets — double-click one to place it.'); return
+        off, ids = 0, []
+        for k in added:
+            o = self._picture_at(k, place_at, off); self.layer().append(o); ids.append(o['id']); off += 24
+        self.sel = ids; self.refresh()
+        self.hint(f'Added {len(added)} picture(s) and placed them on the page.')
 
     def asset_context_menu(self, pos):
         """Right-click a thumbnail in the Assets panel: insert it, or delete the asset
