@@ -36,8 +36,10 @@ UPDATE_BRANCH = "main"
 # UPDATE_PATH constant says), so the check is correct even before an app's
 # self-update path is fixed.
 APPS = [
-    dict(key='webcreator',  update_path='apps/webcreator/webcreator.py'),
-    dict(key='pagecreator', update_path='apps/pagecreator/pagecreator.py'),
+    dict(key='webcreator',  update_path='apps/webcreator/webcreator.py',
+         desc='Design a website by laying pages out, then publish it as plain HTML.'),
+    dict(key='pagecreator', update_path='apps/pagecreator/pagecreator.py',
+         desc='Design print documents page by page, then export them as PDF.'),
     # add more apps here
 ]
 
@@ -67,8 +69,9 @@ def ver_tuple(v):
 
 
 class AppRow(QFrame):
-    """One app in the list: its banner (click to launch) + an update slot."""
-    def __init__(self, info, launcher, py_path, banner_path, display_name):
+    """One app in the list: its banner (click to launch), a short description of
+    what it does, and an update slot."""
+    def __init__(self, info, launcher, py_path, banner_path, display_name, desc=''):
         super().__init__()
         self.info = info
         self.launcher = launcher
@@ -94,6 +97,16 @@ class AppRow(QFrame):
         self.logo.setCursor(QCursor(Qt.PointingHandCursor))
         self.logo.mousePressEvent = lambda e: self.launch()
         lay.addWidget(self.logo)
+
+        # A short description of what the app does — the gap under the banner.
+        if desc:
+            self.caption = QLabel(desc)
+            self.caption.setObjectName('appdesc')
+            self.caption.setWordWrap(True)
+            self.caption.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            self.caption.setCursor(QCursor(Qt.PointingHandCursor))
+            self.caption.mousePressEvent = lambda e: self.launch()
+            lay.addWidget(self.caption)
 
         # update button is a child of the row, positioned manually over the banner
         self.update_btn = QPushButton('Update', self)
@@ -213,6 +226,10 @@ class Launcher(QMainWindow):
         self.setStyleSheet('''
             QMainWindow { background: #1c1f24; }
             #approw { background: transparent; }
+            #appdesc {
+                color: #c7ccd2; font-size: 12px;
+                padding: 9px 14px 13px 14px; background: #22262c;
+            }
             #updatebtn {
                 padding: 7px 14px; border-radius: 8px; font-weight: 600; font-size: 12px;
                 background: #c0392b; color: #ffffff; border: 1px solid rgba(255,255,255,.25);
@@ -259,7 +276,7 @@ class Launcher(QMainWindow):
             if not os.path.isfile(py_path):
                 continue  # app not installed
             name = read_local_app_name(py_path) or key
-            row = AppRow(info, launcher, py_path, banner_path, name)
+            row = AppRow(info, launcher, py_path, banner_path, name, info.get('desc', ''))
             self.outer.addWidget(row)
             self.rows.append(row)
 
