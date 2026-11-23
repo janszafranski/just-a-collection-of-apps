@@ -77,35 +77,44 @@ class AppRow(QFrame):
         self.setObjectName('approw')
         self.setCursor(QCursor(Qt.PointingHandCursor))
 
-        lay = QHBoxLayout(self)
+        # The banner fills the whole row edge-to-edge (no margins). The Update
+        # button floats on top of it (top-right) so there's never a white gutter.
+        lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(12)
+        lay.setSpacing(0)
 
         self.logo = QLabel()
-        self.logo.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+        self.logo.setAlignment(Qt.AlignCenter)
         if banner_path and os.path.isfile(banner_path):
-            pm = QPixmap(banner_path)
-            if not pm.isNull():
-                self.logo.setPixmap(pm.scaledToWidth(260, Qt.SmoothTransformation))
+            self._pm = QPixmap(banner_path)
         else:
+            self._pm = None
             self.logo.setText(display_name)
             self.logo.setStyleSheet('font-size:22px;font-weight:bold;padding:18px;')
         self.logo.setCursor(QCursor(Qt.PointingHandCursor))
         self.logo.mousePressEvent = lambda e: self.launch()
-        lay.addWidget(self.logo, 0, Qt.AlignVCenter)
+        lay.addWidget(self.logo)
 
-        lay.addStretch(1)
-
-        # update button lives at the end of the row, hidden until an update is found
-        self.update_btn = QPushButton('Update')
+        # update button is a child of the row, positioned manually over the banner
+        self.update_btn = QPushButton('Update', self)
         self.update_btn.setObjectName('updatebtn')
         self.update_btn.setCursor(QCursor(Qt.PointingHandCursor))
         self.update_btn.setVisible(False)
         self.update_btn.clicked.connect(self.do_update)
-        lay.addWidget(self.update_btn, 0, Qt.AlignVCenter)
 
         self.update_data = None
         self.update_version = None
+
+    def set_banner_width(self, w):
+        if self._pm is not None and not self._pm.isNull():
+            self.logo.setPixmap(self._pm.scaledToWidth(w, Qt.SmoothTransformation))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        # keep the Update button pinned to the top-right corner of the banner
+        if self.update_btn.isVisible():
+            self.update_btn.adjustSize()
+            self.update_btn.move(self.width() - self.update_btn.width() - 12, 12)
 
     def launch(self):
         try:
@@ -122,6 +131,9 @@ class AppRow(QFrame):
         self.update_btn.setText(f'Update to {version}')
         self.update_btn.setToolTip(f'Version {version} is available. Click to install.')
         self.update_btn.setVisible(True)
+        self.update_btn.raise_()
+        self.update_btn.adjustSize()
+        self.update_btn.move(self.width() - self.update_btn.width() - 12, 12)
 
     def do_update(self):
         if not self.update_data:
@@ -166,57 +178,47 @@ class Launcher(QMainWindow):
         outer = QVBoxLayout(central)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
+        self.outer = outer
 
-        # banner header — its width sets the window width (nothing is wider)
-        self.BANNER_W = 360
-        banner = QLabel()
-        banner.setAlignment(Qt.AlignCenter)
-        if os.path.isfile(BANNER_IMG):
-            pm = QPixmap(BANNER_IMG)
-            if not pm.isNull():
-                banner.setPixmap(pm.scaledToWidth(self.BANNER_W, Qt.SmoothTransformation))
-        else:
-            banner.setText(APP)
-            banner.setStyleSheet('font-size:28px;font-weight:bold;padding:40px;'
-                                 'background:#2b2f36;color:#f4f4f4;')
-        outer.addWidget(banner)
+        # Every banner is the same width and fills the window edge-to-edge:
+        # no margins, no spacing, no white borders anywhere.
+        self.BANNER_W = 420
 
-        # scrollable list of apps
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        body = QWidget()
-        self.rows_lay = QVBoxLayout(body)
-        self.rows_lay.setContentsMargins(20, 14, 20, 16)
-        self.rows_lay.setSpacing(10)
-        scroll.setWidget(body)
-        outer.addWidget(scroll, 1)
+        # banner header
+        self.header = QLabel()
+        self.header.setAlignment(Qt.AlignCenter)
+        self._header_pm = QPixmap(BANNER_IMG) if os.path.isfile(BANNER_IMG) else None
+        if self._header_pm is None or self._header_pm.isNull():
+            self.header.setText(APP)
+            self.header.setStyleSheet('font-size:28px;font-weight:bold;padding:40px;'
+                                      'background:#2b2f36;color:#f4f4f4;')
+        outer.addWidget(self.header)
 
+        # app rows, stacked directly under the header — no scroll frame, no margins
         self.rows = []
         self.build_rows()
-        self.rows_lay.addStretch(1)
 
         self.setStyleSheet('''
-            QScrollArea { background: palette(base); }
-            #approw { border-radius: 10px; }
-            #approw:hover { background: rgba(127,127,127,0.12); }
+            QMainWindow { background: #1c1f24; }
+            #approw { background: transparent; }
             #updatebtn {
-                padding: 8px 16px; border-radius: 8px; font-weight: 600;
-                background: #c0392b; color: #ffffff; border: none;
+                padding: 7px 14px; border-radius: 8px; font-weight: 600; font-size: 12px;
+                background: #c0392b; color: #ffffff; border: 1px solid rgba(255,255,255,.25);
             }
             #updatebtn:hover { background: #d9483b; }
             #updatebtn:disabled { background: #8a8f96; color: #e8e8e8; }
         ''')
 
-        # Size: the header banner is BANNER_W wide (same as the app-row banners);
-        # the window is a little wider so each row has room for an Update button.
-        win_w = self.BANNER_W + 120
+        # Width = banner width; all banners scaled to fill it. Nothing wider, no gutter.
+        win_w = self.BANNER_W
         self.setFixedWidth(win_w)
-        body.adjustSize()
-        content_h = 320 * self.BANNER_W // 1200   # header banner image height
-        content_h += body.sizeHint().height() + 8
+        if self._header_pm is not None and not self._header_pm.isNull():
+            self.header.setPixmap(self._header_pm.scaledToWidth(win_w, Qt.SmoothTransformation))
+        for row in self.rows:
+            row.set_banner_width(win_w)
+        central.adjustSize()
         screen = QApplication.primaryScreen().availableGeometry()
-        win_h = min(content_h, int(screen.height() * 0.9))
+        win_h = min(central.sizeHint().height(), int(screen.height() * 0.9))
         self.resize(win_w, win_h)
         self._center_on_screen()
 
@@ -246,7 +248,7 @@ class Launcher(QMainWindow):
                 continue  # app not installed
             name = read_local_app_name(py_path) or key
             row = AppRow(info, launcher, py_path, banner_path, name)
-            self.rows_lay.addWidget(row)
+            self.outer.addWidget(row)
             self.rows.append(row)
 
     def check_update(self, row):
