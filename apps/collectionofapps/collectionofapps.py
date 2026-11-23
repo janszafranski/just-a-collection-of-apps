@@ -182,7 +182,7 @@ class Launcher(QMainWindow):
 
         # Every banner is the same width and fills the window edge-to-edge:
         # no margins, no spacing, no white borders anywhere.
-        self.BANNER_W = 420
+        self.BANNER_W = 320
 
         # banner header
         self.header = QLabel()
