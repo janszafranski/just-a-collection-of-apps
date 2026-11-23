@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=just a... COLLECTION of apps
+Comment=Launcher for the "just a..." app family
+Exec=collectionofapps
+Icon=applications-other
+Terminal=false
+Categories=Utility;
