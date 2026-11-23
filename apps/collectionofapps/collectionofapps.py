@@ -12,7 +12,7 @@ try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QPushButton,
                                    QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSizePolicy)
     from PySide6.QtGui import QPixmap, QIcon, QCursor
-    from PySide6.QtCore import Qt, QUrl, QProcess
+    from PySide6.QtCore import Qt, QUrl, QProcess, QTimer
     from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 except ImportError:
     sys.stderr.write("just a... COLLECTION of apps needs PySide6 (use your distro package):\n"
@@ -117,13 +117,25 @@ class AppRow(QFrame):
             self.update_btn.move(self.width() - self.update_btn.width() - 12, 12)
 
     def launch(self):
+        # Fully detach the chosen app from this launcher's process group with setsid,
+        # so quitting the launcher can never take the app down with it.
+        started = False
         try:
-            QProcess.startDetached(self.launcher, [])
+            subprocess.Popen(['setsid', self.launcher],
+                             start_new_session=True,
+                             stdin=subprocess.DEVNULL,
+                             stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            started = True
         except Exception:
             try:
-                subprocess.Popen([self.launcher])
+                started = QProcess.startDetached(self.launcher, [])
             except Exception:
-                pass
+                started = False
+        # Close the launcher once the chosen app is on its way — a short delay lets
+        # the child finish spawning so a fast quit can't race its startup.
+        if started:
+            QTimer.singleShot(400, QApplication.quit)
 
     def offer_update(self, version, data):
         self.update_version = version
