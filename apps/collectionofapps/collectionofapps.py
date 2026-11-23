@@ -40,6 +40,8 @@ APPS = [
          desc='Design a website by laying pages out, then publish it as plain HTML.'),
     dict(key='pagecreator', dir='apps/pagecreator', name='just a... PAGEcreator',
          desc='Design print documents page by page, then export them as PDF.'),
+    dict(key='paint', dir='apps/paint', name='just a... PAINT',
+         desc='Edit and paint images — brush, shapes, fill and text — then save a PNG or JPG.'),
     # add more apps here
 ]
 

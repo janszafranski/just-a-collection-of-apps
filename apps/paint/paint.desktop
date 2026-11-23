@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=just a... PAINT
+Comment=A tiny image editor — paint, shapes, fill and text
+Exec=paint %f
+Icon=paint
+Terminal=false
+Categories=Graphics;2DGraphics;RasterGraphics;
