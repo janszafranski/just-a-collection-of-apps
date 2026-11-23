@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=just a... PAGEcreator
+Comment=Design print documents, then export them as PDF
+Exec=pagecreator %f
+Icon=pagecreator
+Terminal=false
+Categories=Office;Publishing;Graphics;
+MimeType=application/x-pagecreator-site;
