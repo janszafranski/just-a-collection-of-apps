@@ -15,7 +15,7 @@ try:
                                QPen, QBrush, QFont, QFontMetrics, QPainterPath, QPalette, QTransform,
                                QTextDocument, QTextOption, QTextCursor, QTextCharFormat, QTextFormat,
                                QTextBlockFormat, QAbstractTextDocumentLayout, QKeySequence,
-                               QDesktopServices, QPolygonF, QCursor, QLinearGradient)
+                               QDesktopServices, QPolygonF, QCursor, QLinearGradient, QRadialGradient)
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QGraphicsView, QGraphicsScene,
                                    QGraphicsItem, QGraphicsTextItem, QToolBar, QDockWidget,
                                    QLabel, QComboBox, QFontComboBox, QSpinBox, QDoubleSpinBox,
@@ -1096,7 +1096,12 @@ def obj_pen(o):
 def obj_brush(o):
     g = o.get('grad')
     if g:
-        ang = math.radians(g.get('angle', 90)); w, h = o['w'], o['h']
+        w, h = o['w'], o['h']
+        if g.get('type') == 'radial':
+            rg = QRadialGradient(w / 2, h / 2, max(w, h) / 2)
+            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            return QBrush(rg)
+        ang = math.radians(g.get('angle', 90))
         cx, cy, dx, dy = w / 2, h / 2, math.cos(ang), math.sin(ang)
         lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
         lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
@@ -5245,7 +5250,7 @@ class MainWindow(QMainWindow):
         self.a['tomaster'] = self.act('Move Repeated Objects to &Master Page…', self.move_common_to_master, None, ['document-multiple', 'edit-copy'])
         menu('&Arrange', [a['front'], a['fwd'], a['back1'], a['back'], None, ('Align', al), None, self.a['lock'], None, self.a['tomaster']])
         # Export to PDF sits on the menu bar as a clickable item (text, no icon).
-        mb.addAction(self.act('Export PDF…', self.export_pdf, 'Ctrl+E', ['document-export', 'application-pdf']))
+        mb.addAction(self.act('Export PDF…', self.export_pdf, 'Ctrl+E', None))
         self.a['seo_page'] = self.act('&This Page’s SEO…', self.seo_dialog, None, ['text-html', 'find', 'edit-find'])
         self.a['seo_page'].setToolTip('Search-engine title, description, focus keyword and social preview for this page')
         self.a['seo_site'] = self.act('&Site-wide SEO…', self.site_seo_dialog, None, ['configure', 'preferences-system'])
@@ -5323,16 +5328,14 @@ class MainWindow(QMainWindow):
                 tt.addAction(self.a['css'])
         self.tool_actions['pointer'].setChecked(True)
         self.addToolBar(Qt.LeftToolBarArea, tt)
-        # Serif-suite toolbar — separate Serif programs (PhotoPlus / PhotoLab /
-        # Cutout Studio) with no Linux equivalent, so the buttons explain they're unavailable.
-        photo = QToolBar('Photo tools'); photo.setObjectName('phototools'); photo.setIconSize(QSize(20, 20))
-        for name, icons, glyph in (
-            ('Edit Properties', ['document-properties', 'document-edit'], '≡'),
-            ('PhotoLab', ['darktable', 'applications-graphics'], '◉'),
-            ('Cutout Studio', ['edit-cut', 'gimp-tool-scissors'], '✂'),
-            ('Position Image', ['transform-move', 'object-align-horizontal-center'], '✥')):
-            pa = QAction(ticon(icons, glyph), name, self); pa.setToolTip(f'{name} — part of the Serif suite, not available in this clone')
-            pa.triggered.connect(lambda _=False, n=name: self.serif_stub(n)); photo.addAction(pa)
+        # Companion "just a…" apps — the family's image editor (PAINT) and website maker.
+        photo = QToolBar('Apps'); photo.setObjectName('apps'); photo.setIconSize(QSize(20, 20))
+        for label, cmd, icons, glyph in (
+                ('Edit in PAINT', 'paint', ['draw-brush', 'krita', 'applications-graphics'], '🖌'),
+                ('WEBcreator', 'webcreator', ['applications-internet', 'internet-web-browser'], '🌐')):
+            nm = 'PAINT' if cmd == 'paint' else 'WEBcreator'
+            pa = QAction(ticon(icons, glyph), label, self); pa.setToolTip(f'Open just a… {nm}')
+            pa.triggered.connect(lambda _=False, c=cmd, n=nm: self.launch_app(c, n)); photo.addAction(pa)
             w = photo.widgetForAction(pa)
             if w: w.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(Qt.TopToolBarArea, photo)
@@ -6006,6 +6009,15 @@ class MainWindow(QMainWindow):
             tb.addSeparator()
         if types & {'shape', 'text', 'artistic', 'button', 'picture'}:
             label('Fill'); add(ColorButton(o.get('fill'), lambda c: self.set_prop('fill', c), 'Fill colour', allow_none=True))
+            from PySide6.QtWidgets import QToolButton as _FTB, QMenu as _FM
+            fb = _FTB(); fb.setIcon(ticon(['fill-color', 'color-fill', 'format-fill-color'], '▣'))
+            fb.setToolTip('Fill type — solid, gradient or none'); fb.setPopupMode(_FTB.InstantPopup)
+            fm = _FM(fb)
+            fm.addAction('Solid colour…', self.fill_solid)
+            fm.addAction('Linear gradient…', lambda: self.gradient_dialog('linear'))
+            fm.addAction('Radial (circular) gradient…', lambda: self.gradient_dialog('radial'))
+            fm.addSeparator(); fm.addAction('No fill', self.fill_none)
+            fb.setMenu(fm); add(fb)
         if types & {'shape', 'text', 'button', 'picture', 'line'}:
             label('Line'); add(ColorButton(o.get('stroke'), lambda c: self.set_prop('stroke', c), 'Line colour'))
             lw = QSpinBox(); lw.setRange(0, 60); lw.setValue(int(o.get('strokeW', 0))); lw.setSuffix(' px'); lw.setToolTip('Line width')
@@ -6239,6 +6251,20 @@ class MainWindow(QMainWindow):
         elif kind == 'search': self.search_dialog(o)
         elif kind == 'youtube': self.youtube_dialog(o)
         elif kind == 'map': self.map_dialog(o)
+
+    def launch_app(self, cmd, label):
+        """Launch a sibling 'just a...' app, or explain how to install it."""
+        import shutil
+        exe = shutil.which(cmd) or os.path.expanduser('~/.local/bin/' + cmd)
+        if os.path.exists(exe):
+            try:
+                subprocess.Popen([exe], start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+        QMessageBox.information(self, APP, f'“just a… {label}” isn’t installed yet.\n\n'
+                               'Install it from the “just a… COLLECTION of apps” launcher.')
 
     def open_manual(self):
         """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
@@ -7808,20 +7834,41 @@ class MainWindow(QMainWindow):
                  height=hh.value() or None, bg=bgc[0])
         self.refresh()
 
-    def gradient_dialog(self):
+    FILL_OBJ = ('shape', 'text', 'picture', 'button')
+
+    def gradient_dialog(self, kind='linear'):
         from PySide6.QtWidgets import QSpinBox
-        objs = [o for o in self.sel_objs() if o['type'] in ('shape', 'text', 'picture', 'button')]
+        if not isinstance(kind, str): kind = 'linear'          # guard against QAction's checked bool
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
         if not objs: return
         g0 = objs[0].get('grad') or {}
         c1 = [g0.get('c1', '#ffffff')]; c2 = [g0.get('c2', '#2a7d6b')]
         b1 = ColorButton(c1[0], lambda c: c1.__setitem__(0, c or '#ffffff'), 'Start colour')
         b2 = ColorButton(c2[0], lambda c: c2.__setitem__(0, c or '#000000'), 'End colour')
         ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
-        dlg = form_dialog(self, 'Gradient Fill', [('Start colour:', b1), ('End colour:', b2), ('Angle:', ang)],
-                          QLabel('A linear gradient between two colours. Right-click ▸ Remove Gradient to clear.'))
+        rows = [('Start colour:', b1), ('End colour:', b2)] + ([('Angle:', ang)] if kind == 'linear' else [])
+        dlg = form_dialog(self, ('Radial' if kind == 'radial' else 'Linear') + ' Gradient',
+                          rows, QLabel(f'A {kind} gradient between two colours.'))
         if not dlg.exec(): return
         self.commit()
-        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': 'linear'}
+        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind}
+        self.refresh()
+
+    def fill_solid(self):
+        from PySide6.QtWidgets import QColorDialog
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
+        if not objs: return
+        c = QColorDialog.getColor(QColor(objs[0].get('fill') or '#2a7d6b'), self, 'Fill colour')
+        if not c.isValid(): return
+        self.commit()
+        for o in objs: o['fill'] = c.name(); o.pop('grad', None)
+        self.refresh()
+
+    def fill_none(self):
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
+        if not objs: return
+        self.commit()
+        for o in objs: o['fill'] = ''; o.pop('grad', None)
         self.refresh()
 
     def remove_gradient(self):
@@ -8385,7 +8432,8 @@ class MainWindow(QMainWindow):
                 if n_text >= 2: m.addAction(ticon(['insert-link', 'link'], ''), 'Link Text Frames', self.link_text_frames)
                 if o.get('flow_head'): m.addAction('Unlink Text Frames', self.unlink_text_frames)
             if o['type'] in ('shape', 'text', 'picture', 'button'):
-                m.addAction('Gradient Fill…', self.gradient_dialog)
+                m.addAction('Linear Gradient Fill…', lambda: self.gradient_dialog('linear'))
+                m.addAction('Radial Gradient Fill…', lambda: self.gradient_dialog('radial'))
                 if o.get('grad'): m.addAction('Remove Gradient', self.remove_gradient)
             if o['type'] in ('picture', 'shape'):
                 m.addAction('Stop Wrapping Text' if o.get('wrap') else 'Wrap Text Around This', self.toggle_wrap)

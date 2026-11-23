@@ -15,7 +15,7 @@ try:
                                QPen, QBrush, QFont, QFontMetrics, QPainterPath, QPalette, QTransform,
                                QTextDocument, QTextOption, QTextCursor, QTextCharFormat, QTextFormat,
                                QTextBlockFormat, QAbstractTextDocumentLayout, QKeySequence,
-                               QDesktopServices, QPolygonF, QCursor, QLinearGradient)
+                               QDesktopServices, QPolygonF, QCursor, QLinearGradient, QRadialGradient)
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QGraphicsView, QGraphicsScene,
                                    QGraphicsItem, QGraphicsTextItem, QToolBar, QDockWidget,
                                    QLabel, QComboBox, QFontComboBox, QSpinBox, QDoubleSpinBox,
@@ -1030,6 +1030,18 @@ def obj_pen(o):
     return QPen(Qt.NoPen)
 
 def obj_brush(o):
+    g = o.get('grad')
+    if g:
+        w, h = o['w'], o['h']
+        if g.get('type') == 'radial':
+            rg = QRadialGradient(w / 2, h / 2, max(w, h) / 2)
+            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            return QBrush(rg)
+        ang = math.radians(g.get('angle', 90))
+        cx, cy, dx, dy = w / 2, h / 2, math.cos(ang), math.sin(ang)
+        lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
+        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
 def nav_items(site, o=None):
@@ -1472,7 +1484,12 @@ def text_css(o):
 
 def box_css(o):
     s = ''
-    if o.get('fill'): s += f"background:{o['fill']};"
+    g = o.get('grad')
+    if g and g.get('type') == 'radial':
+        s += f"background:radial-gradient(circle, {g.get('c1', '#fff')}, {g.get('c2', '#000')});"
+    elif g:
+        s += f"background:linear-gradient({90 - g.get('angle', 90)}deg, {g.get('c1', '#fff')}, {g.get('c2', '#000')});"
+    elif o.get('fill'): s += f"background:{o['fill']};"
     if o.get('strokeW', 0) > 0 and o.get('stroke'): s += f"border:{o['strokeW']}px {o.get('dash', 'solid')} {o['stroke']};"
     if o.get('radius'): s += f"border-radius:{o['radius']}px;"
     return s
@@ -5356,6 +5373,20 @@ class MainWindow(QMainWindow):
         cw = ins.widgetForAction(coffee)
         if cw: cw.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(Qt.TopToolBarArea, ins)
+        # Companion "just a…" apps: edit images in PAINT, make documents/PDFs in PAGEcreator.
+        from PySide6.QtWidgets import QToolButton as _QTB, QMenu as _QM
+        apps = QToolBar('Apps'); apps.setObjectName('apps'); apps.setIconSize(QSize(20, 20))
+        paint_a = QAction(ticon(['draw-brush', 'krita', 'applications-graphics'], '🖌'), 'Edit in PAINT', self)
+        paint_a.setToolTip('Open just a… PAINT to edit images')
+        paint_a.triggered.connect(lambda: self.launch_app('paint', 'PAINT'))
+        apps.addAction(paint_a); apps.widgetForAction(paint_a).setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        docs_btn = _QTB(); docs_btn.setText('Documents'); docs_btn.setIcon(ticon(['x-office-document', 'application-pdf'], '📄'))
+        docs_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); docs_btn.setPopupMode(_QTB.InstantPopup)
+        docs_btn.setToolTip('just a… PAGEcreator — make print documents and PDFs')
+        _dm = _QM(docs_btn)
+        _dm.addAction('Open PAGEcreator (documents / PDF)', lambda: self.launch_app('pagecreator', 'PAGEcreator'))
+        docs_btn.setMenu(_dm); apps.addWidget(docs_btn)
+        self.addToolBar(Qt.TopToolBarArea, apps)
         # Context toolbar — same row; all top toolbars wrap onto more rows only when
         # the window is too narrow to hold them.
         self.ctx = QToolBar('Context'); self.ctx.setObjectName('context'); self.ctx.setIconSize(QSize(18, 18))
@@ -6003,6 +6034,15 @@ class MainWindow(QMainWindow):
             tb.addSeparator()
         if types & {'shape', 'text', 'artistic', 'button', 'picture'}:
             label('Fill'); add(ColorButton(o.get('fill'), lambda c: self.set_prop('fill', c), 'Fill colour', allow_none=True))
+            from PySide6.QtWidgets import QToolButton as _FTB, QMenu as _FM
+            fb = _FTB(); fb.setIcon(ticon(['fill-color', 'color-fill', 'format-fill-color'], '▣'))
+            fb.setToolTip('Fill type — solid, gradient or none'); fb.setPopupMode(_FTB.InstantPopup)
+            fm = _FM(fb)
+            fm.addAction('Solid colour…', self.fill_solid)
+            fm.addAction('Linear gradient…', lambda: self.gradient_dialog('linear'))
+            fm.addAction('Radial (circular) gradient…', lambda: self.gradient_dialog('radial'))
+            fm.addSeparator(); fm.addAction('No fill', self.fill_none)
+            fb.setMenu(fm); add(fb)
         if types & {'shape', 'text', 'button', 'picture', 'line'}:
             label('Line'); add(ColorButton(o.get('stroke'), lambda c: self.set_prop('stroke', c), 'Line colour'))
             lw = QSpinBox(); lw.setRange(0, 60); lw.setValue(int(o.get('strokeW', 0))); lw.setSuffix(' px'); lw.setToolTip('Line width')
@@ -6239,6 +6279,20 @@ class MainWindow(QMainWindow):
         elif kind == 'youtube': self.youtube_dialog(o)
         elif kind == 'audio': self.audio_dialog(o)
         elif kind == 'map': self.map_dialog(o)
+
+    def launch_app(self, cmd, label):
+        """Launch a sibling 'just a...' app, or explain how to install it."""
+        import shutil
+        exe = shutil.which(cmd) or os.path.expanduser('~/.local/bin/' + cmd)
+        if os.path.exists(exe):
+            try:
+                subprocess.Popen([exe], start_new_session=True,
+                                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
+        QMessageBox.information(self, APP, f'“just a… {label}” isn’t installed yet.\n\n'
+                               'Install it from the “just a… COLLECTION of apps” launcher.')
 
     def open_manual(self):
         """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
@@ -7310,6 +7364,43 @@ class MainWindow(QMainWindow):
         o = mk('html', 60, 60, 480, 320, code=html)
         self.add_object(o); self.refresh()
         self.hint('Embed inserted — preview or publish to see it live.')
+
+    FILL_OBJ = ('shape', 'text', 'picture', 'button')
+
+    def gradient_dialog(self, kind='linear'):
+        from PySide6.QtWidgets import QSpinBox
+        if not isinstance(kind, str): kind = 'linear'
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
+        if not objs: return
+        g0 = objs[0].get('grad') or {}
+        c1 = [g0.get('c1', '#ffffff')]; c2 = [g0.get('c2', '#2a7d6b')]
+        b1 = ColorButton(c1[0], lambda c: c1.__setitem__(0, c or '#ffffff'), 'Start colour')
+        b2 = ColorButton(c2[0], lambda c: c2.__setitem__(0, c or '#000000'), 'End colour')
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
+        rows = [('Start colour:', b1), ('End colour:', b2)] + ([('Angle:', ang)] if kind == 'linear' else [])
+        dlg = form_dialog(self, ('Radial' if kind == 'radial' else 'Linear') + ' Gradient',
+                          rows, QLabel(f'A {kind} gradient between two colours.'))
+        if not dlg.exec(): return
+        self.commit()
+        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind}
+        self.refresh()
+
+    def fill_solid(self):
+        from PySide6.QtWidgets import QColorDialog
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
+        if not objs: return
+        c = QColorDialog.getColor(QColor(objs[0].get('fill') or '#2a7d6b'), self, 'Fill colour')
+        if not c.isValid(): return
+        self.commit()
+        for o in objs: o['fill'] = c.name(); o.pop('grad', None)
+        self.refresh()
+
+    def fill_none(self):
+        objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
+        if not objs: return
+        self.commit()
+        for o in objs: o['fill'] = ''; o.pop('grad', None)
+        self.refresh()
 
     def map_dialog(self, o):
         from PySide6.QtWidgets import QSpinBox
