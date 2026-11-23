@@ -206,6 +206,7 @@ DEF = {
     'form':     dict(w=360, h=300, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', fields=['Name', 'Email', 'Message'], submit='Send'),
     'search':   dict(w=360, h=46, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', placeholder='Search this site…', submit='Search', provider='google', scope='site'),
     'youtube':  dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
+    'audio':    dict(w=320, h=54, font='Noto Sans', size=13, src='', url='', title='', fill='#eef1f4', color='#2b2b2b', accent='#2a7d6b', radius=8),
     'map':      dict(w=480, h=320, font='Noto Sans', size=13, place='', zoom=14, marker='', radius=0),
     'vimeo':    dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
     'newsfeed': dict(w=480, h=560, source=None, accent='#2a7d6b', cardbg='#ffffff', ink='#1f2a30',
@@ -224,7 +225,7 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
 NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
-                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map')
+                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -522,6 +523,7 @@ TEMPLATES = [('Harbour', 'Small business', tpl_harbour), ('Meadow', 'Community g
 
 SERIF_CATALOGUE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'serif-templates.json')
 QUICKSTART_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'quickstart.html')
+MANUAL_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'manual.html')
 BANNER_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'banner.png')
 _SERIF = None
 
@@ -1250,6 +1252,19 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('accent', '#2a7d6b')))
         br = QRectF(w - bw, 0, bw, h); p.drawRoundedRect(br, 6, 6)
         p.setFont(fb); p.setPen(QColor('#ffffff')); p.drawText(br, Qt.AlignCenter, lbl)
+    elif t == 'audio':
+        p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('fill', '#eef1f4')))
+        rr = o.get('radius', 8); p.drawRoundedRect(QRectF(0, 0, w, h), rr, rr)
+        cr = min(h * 0.34, 15); cx, cy = cr + 12, h / 2
+        p.setBrush(QColor(o.get('accent', '#2a7d6b'))); p.drawEllipse(QPointF(cx, cy), cr, cr)
+        p.setBrush(QColor('#ffffff'))
+        p.drawPolygon(QPolygonF([QPointF(cx - cr * 0.3, cy - cr * 0.45), QPointF(cx - cr * 0.3, cy + cr * 0.45), QPointF(cx + cr * 0.5, cy)]))
+        lx = cx + cr + 12
+        p.save(); p.setPen(QPen(QColor(o.get('color', '#2b2b2b')), 2)); p.setOpacity(0.2)
+        p.drawLine(QPointF(lx, cy), QPointF(w - 12, cy)); p.restore()
+        p.setPen(QColor(o.get('color', '#2b2b2b'))); p.setFont(qfont(o))
+        cap = o.get('title') or ('Audio' if (o.get('src') or o.get('url')) else 'Audio — double-click to add a file or link')
+        p.drawText(QRectF(lx, 2, w - lx - 10, h - 4), Qt.AlignLeft | Qt.AlignVCenter, cap)
     elif t == 'youtube':
         vid = re.sub(r'[^A-Za-z0-9_-]', '', o.get('video', ''))[:11]
         pm = _YT_THUMBS.get(vid) if vid else None
@@ -1769,6 +1784,17 @@ def obj_html(o, site, page, img):
         return (f'<form class="obj obj-search" style="{st}" method="get" action="{action}" target="_blank" rel="noopener"{onsub}>'
                 f'<input type="text" name="q" placeholder="{esc(o.get("placeholder", "Search…"))}" aria-label="Search">'
                 f'<button type="submit">{esc(o.get("submit", "Search"))}</button></form>')
+    elif t == 'audio':
+        src = img(o['src']) if (o.get('src') and o['src'] in site.get('assets', {})) else (o.get('url') or '')
+        st += (f"border-radius:{o.get('radius', 8):g}px;background:{o.get('fill', '#eef1f4')};"
+               "display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 12px;box-sizing:border-box;")
+        ttl = ''
+        if o.get('title'):
+            cf = css_font(o.get('font', 'Noto Sans')); col = o.get('color', '#2b2b2b')
+            ttl = f'<div style="font:600 13px {cf};color:{col}">{esc(o["title"])}</div>'
+        body = (f'<audio controls preload="none" style="width:100%" src="{esc(src)}"></audio>' if src
+                else '<span style="color:#888;font:13px sans-serif">No audio set</span>')
+        return f'<div class="obj obj-audio" style="{st}">{ttl}{body}</div>'
     elif t == 'youtube':
         vid = re.sub(r'[^A-Za-z0-9_-]', '', o.get('video', ''))[:11]
         st += f"border-radius:{o.get('radius', 0):g}px;overflow:hidden;background:#000;"
@@ -3894,6 +3920,7 @@ TOOLS = [
     ('share', 'Share Buttons', ['document-share', 'emblem-shared-symbolic', 'mail-forward'], '⇪', 'Drag to place a row of buttons that let visitors share the page on social media.'),
     ('html', 'HTML Code', ['text-html', 'code-context'], '</>', 'Drag to place an HTML fragment.'),
     ('youtube', 'YouTube Video', ['youtube', 'applications-multimedia', 'media-playback-start'], '▶', 'Drag to place a YouTube video that plays embedded in the page. Paste its link.'),
+    ('audio', 'Audio', ['audio-x-generic', 'media-playback-start', 'audio-volume-high'], '♪', 'Drag to place an audio player. Choose a sound file or paste a link; it plays with the browser audio controls.'),
     ('map', 'Google Map', ['map', 'applications-geography', 'mark-location', 'find-location'], '📍', 'Drag to place an interactive Google Map, then type an address — no API key needed. Shows a pin where you are based.'),
     ('newsfeed', 'News Feed', ['application-rss+xml', 'view-list-details', 'rss'], '📰', 'Drag to place a scrolling News feed. It lists the sub-pages of the page it sits on automatically — every news story, newest first, each a card linking to its page.'),
 ]
@@ -4011,6 +4038,7 @@ class Canvas(QGraphicsView):
         self.drag = None
         self.marq = None
         self.ghost = None
+        self._cross = None
         self.horizontalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.verticalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.setAcceptDrops(True); self.viewport().setAcceptDrops(True)   # drop assets or picture files onto the page
@@ -4090,6 +4118,11 @@ class Canvas(QGraphicsView):
 
     def drawForeground(self, p, rect):
         win = self.win
+        if win.crosshair and self._cross is not None:
+            cp = QPen(QColor(110, 110, 120, 150), 0); cp.setCosmetic(True); p.setPen(cp)
+            x, y = self._cross.x(), self._cross.y()
+            p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
         hi = self.palette().color(QPalette.Highlight)
         cos = QPen(hi, 0); cos.setCosmetic(True)
         sel = win.sel_items()
@@ -4233,6 +4266,8 @@ class Canvas(QGraphicsView):
     def mouseMoveEvent(self, e):
         win = self.win; vpos = e.position().toPoint(); sp = self.mapToScene(vpos)
         win.set_pos_label(sp)
+        if win.crosshair:
+            self._cross = sp; self.viewport().update()
         d = self.drag
         if not d:
             if win.editor: super().mouseMoveEvent(e); return
@@ -4984,6 +5019,7 @@ class MainWindow(QMainWindow):
         self.tool = 'pointer'
         self.show_grid = self.settings.value('grid', False, type=bool)
         self.snap_grid = self.settings.value('snap', True, type=bool)
+        self.crosshair = False
         self.editor = None; self.edit_id = None; self.edit_snap = None
         self._eyedrop = False
         self.clip = []
@@ -5167,12 +5203,14 @@ class MainWindow(QMainWindow):
             rulers=A('&Rulers', self.toggle_rulers, None, None, True),
             grid=A('&Grid', self.toggle_grid, None, 'view-grid', True),
             snap=A('&Snap to Grid', self.toggle_snap, None, 'snap-to-grid', True),
+            crosshair=A('Cross&hair', self.toggle_crosshair, None, ['crosshairs', 'tool-pointer', 'cursor-crosshair'], True),
             zin=A('Zoom &In', lambda: self.view.set_zoom(self.view.zoom * 1.25), QKeySequence.ZoomIn, 'zoom-in'),
             zout=A('Zoom &Out', lambda: self.view.set_zoom(self.view.zoom / 1.25), QKeySequence.ZoomOut, 'zoom-out'),
             z100=A('&Actual Size', lambda: self.view.set_zoom(1.0), 'Ctrl+1', 'zoom-original'),
             zfit=A('&Fit Page Width', self.view.fit_width, 'Ctrl+0', 'zoom-fit-width'),
             newpage=A('&Page…', self.insert_page_dialog, 'Ctrl+Shift+N', 'document-new'),
             index_page=A('&Index Page', self.insert_index_page, None, ['view-list-tree', 'view-list-text', 'format-list-unordered']),
+            embed=A('&Embed (comments, forms…)…', self.embed_dialog, None, ['insert-object', 'text-html', 'applications-internet']),
             newsfromlink=A('News from a &Link…', self.news_from_link_dialog, None, ['application-rss+xml', 'download', 'insert-link']),
             link=A('&Hyperlink…', self.link_action, 'Ctrl+K', ['insert-link', 'link']),
             pageprops=A('Page P&roperties…', lambda: self.page_props(self.page()), None, 'document-properties'),
@@ -5227,7 +5265,7 @@ class MainWindow(QMainWindow):
         menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openwpp'], a['import'], None, a['save'], a['saveas'], None, a['checklinks'], None,
                        a['prevwin'], a['prevpage'], a['prevsite'], a['publish'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall']])
-        self.view_menu = menu('&View', [a['rulers'], a['grid'], a['snap'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
+        self.view_menu = menu('&View', [a['rulers'], a['grid'], a['snap'], a['crosshair'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
         for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom')]:
             ins.append(self.act(label, lambda _=False, t=tid: self.insert_default(t), None, None))
@@ -5236,7 +5274,7 @@ class MainWindow(QMainWindow):
         contact_acts = [self.act(lbl, lambda _=False, fk=fld: self.insert_contact(fk), None, None)
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
-        menu('&Insert', [a['newpage'], a['index_page'], a['newsfromlink'], None] + ins + [None, ('Contact details', contact_acts), None, a['importtext'], a['link']])
+        menu('&Insert', [a['newpage'], a['index_page'], a['newsfromlink'], None] + ins + [a['embed'], None, ('Contact details', contact_acts), None, a['importtext'], a['link']])
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
@@ -5272,11 +5310,12 @@ class MainWindow(QMainWindow):
         self.a['update'].setVisible(False)
         self.a['checkupdate'] = self.act('Check for &Updates…', lambda: self.check_updates(quiet=False), None, ['system-software-update', 'view-refresh'])
         self.a['quickstart'] = self.act('&Quick Start Guide', self.open_quickstart, None, ['help-contents', 'system-help', 'help-browser'])
+        self.a['userguide'] = self.act('&User Guide', self.open_manual, None, ['help-contents', 'help-browser', 'x-office-document'])
         self.a['updatesettings'] = self.act('&Settings…', self.update_settings, None, ['configure', 'preferences-system'])
         self.a['donate'] = self.act('&Buy Me a Coffee  ☕', lambda: open_external('https://buymeacoffee.com/janszafranski'),
                                     None, ['help-donate', 'emblem-favorite', 'face-smile-big'])
         self.a['donate'].setToolTip('Enjoying WEBcreator? Buy its maker a coffee — opens buymeacoffee.com in your browser')
-        menu('&Help', [self.a['quickstart'], None, self.a['update'], self.a['checkupdate'], self.a['updatesettings'], None, a['about'], None, self.a['donate']])
+        menu('&Help', [self.a['userguide'], self.a['quickstart'], None, self.a['update'], self.a['checkupdate'], self.a['updatesettings'], None, a['about'], None, self.a['donate']])
 
     def recent_menu_action(self):
         self.recent_menu = QMenu('Open &Recent', self)
@@ -6198,7 +6237,15 @@ class MainWindow(QMainWindow):
         elif kind == 'gallery': self.gallery_dialog(o)
         elif kind == 'search': self.search_dialog(o)
         elif kind == 'youtube': self.youtube_dialog(o)
+        elif kind == 'audio': self.audio_dialog(o)
         elif kind == 'map': self.map_dialog(o)
+
+    def open_manual(self):
+        """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
+        if os.path.isfile(MANUAL_GUIDE):
+            open_external(MANUAL_GUIDE, is_file=True)
+        else:
+            open_external('https://janszafranski.github.io/just-a-collection-of-apps/')
 
     def open_quickstart(self):
         """Open the Quick Start Guide — the bundled HTML in the browser, or the
@@ -6323,6 +6370,7 @@ class MainWindow(QMainWindow):
         elif t == 'form': self.form_dialog(o)
         elif t == 'search': self.search_dialog(o)
         elif t == 'youtube': self.youtube_dialog(o)
+        elif t == 'audio': self.audio_dialog(o)
         elif t == 'map': self.map_dialog(o)
         elif t == 'gallery': self.gallery_dialog(o)
         elif t == 'share': self.share_dialog(o)
@@ -7193,6 +7241,75 @@ class MainWindow(QMainWindow):
             if not vid:
                 QMessageBox.warning(self, APP, "That doesn't look like a YouTube link, so nothing was changed."); return
             self.commit(); o['video'] = vid; o['title'] = title.text().strip(); self.refresh()
+
+    def audio_dialog(self, o):
+        url = QLineEdit(o.get('url', '')); url.setPlaceholderText('https://example.com/clip.mp3')
+        title = QLineEdit(o.get('title', ''))
+        chosen = [o.get('src', '')]
+        pick = QPushButton(ticon(['document-open', 'folder-open'], ''),
+                           self.site.get('assetnames', {}).get(chosen[0], 'Choose audio file…') if chosen[0] else 'Choose audio file…')
+        def choose():
+            path, _ = QFileDialog.getOpenFileName(self, 'Choose audio', os.path.expanduser('~'),
+                                                  'Audio (*.mp3 *.ogg *.wav *.m4a *.aac *.flac);;All files (*)')
+            if not path: return
+            with open(path, 'rb') as fh: data = fh.read()
+            ext = os.path.splitext(path)[1].lower().lstrip('.')
+            mime = {'mp3': 'mpeg', 'm4a': 'mp4', 'aac': 'aac', 'ogg': 'ogg', 'wav': 'wav', 'flac': 'flac'}.get(ext, ext)
+            key = add_asset(self.site, f'data:audio/{mime};base64,' + base64.b64encode(data).decode())
+            self.site.setdefault('assetnames', {})[key] = os.path.basename(path)
+            chosen[0] = key; pick.setText(os.path.basename(path)); url.clear()
+        pick.clicked.connect(choose)
+        dlg = form_dialog(self, 'Audio', [('Audio file:', pick), ('…or link (URL):', url), ('Title (optional):', title)],
+                          QLabel('Place an audio player. Choose a file to embed it in the site, or paste a link.\n'
+                                 'It plays with the browser’s built-in audio controls when published.'))
+        if dlg.exec():
+            self.commit()
+            o['src'] = chosen[0] if chosen[0] in self.site.get('assets', {}) else ''
+            o['url'] = url.text().strip(); o['title'] = title.text().strip()
+            self.refresh()
+
+    def embed_dialog(self):
+        """Insert a third-party embed — the static-site alternative to WebPlus 'smart
+        objects': comments (Disqus), a mailing-list signup (Mailchimp), a Google Form,
+        or any custom HTML/iframe. Drops an HTML-fragment object."""
+        from PySide6.QtWidgets import QComboBox, QPlainTextEdit
+        PRESETS = [('Comments (Disqus)', 'disqus', 'Your Disqus shortname', 'yoursite'),
+                   ('Mailing list (Mailchimp)', 'mailchimp', 'Mailchimp form action URL', ''),
+                   ('Form (Google Forms)', 'gform', 'Google Form URL (…/viewform)', ''),
+                   ('Custom embed / iframe', 'custom', '', '')]
+        kind = QComboBox(); [kind.addItem(p[0]) for p in PRESETS]
+        field = QLineEdit()
+        code = QPlainTextEdit(); code.setPlaceholderText('Paste full embed HTML / <iframe> here'); code.setFixedHeight(90)
+        def on_kind():
+            _, k, ph, ex = PRESETS[kind.currentIndex()]
+            field.setPlaceholderText(ph)
+            if not field.text(): field.setText(ex)
+            field.setVisible(k != 'custom'); code.setVisible(k == 'custom')
+        kind.currentIndexChanged.connect(lambda *_: on_kind()); on_kind()
+        dlg = form_dialog(self, 'Insert Embed', [('Service:', kind), ('Value:', field), ('Custom HTML:', code)],
+                          QLabel('Embed a third-party service — comments, a signup form, a Google Form — or paste any\n'
+                                 'HTML. These are the static-site alternatives to WebPlus “smart objects”.'))
+        if not dlg.exec(): return
+        _, k, _, _ = PRESETS[kind.currentIndex()]; val = field.text().strip()
+        if k == 'disqus' and val:
+            html = (f'<div id="disqus_thread"></div><script>(function(){{var d=document,s=d.createElement("script");'
+                    f's.src="https://{esc(val)}.disqus.com/embed.js";s.setAttribute("data-timestamp",+new Date());'
+                    f'(d.head||d.body).appendChild(s);}})();</script>')
+        elif k == 'mailchimp' and val:
+            html = (f'<form action="{esc(val)}" method="post" target="_blank" style="font:inherit;display:flex;gap:8px">'
+                    f'<input type="email" name="EMAIL" placeholder="Your email" required style="flex:1;padding:9px">'
+                    f'<button type="submit" style="padding:9px 16px">Subscribe</button></form>')
+        elif k == 'gform' and val:
+            src = val if 'embedded=true' in val else (val + ('&' if '?' in val else '?') + 'embedded=true')
+            html = f'<iframe src="{esc(src)}" width="100%" height="560" frameborder="0" style="border:0">Loading…</iframe>'
+        else:
+            html = code.toPlainText().strip()
+        if not html:
+            QMessageBox.information(self, APP, 'Nothing to embed — fill in the value or paste HTML.'); return
+        self.commit()
+        o = mk('html', 60, 60, 480, 320, code=html)
+        self.add_object(o); self.refresh()
+        self.hint('Embed inserted — preview or publish to see it live.')
 
     def map_dialog(self, o):
         from PySide6.QtWidgets import QSpinBox
@@ -8208,6 +8325,11 @@ class MainWindow(QMainWindow):
         on = self.a['rulers'].isChecked()
         for w in self.ruler_widgets: w.setVisible(on)
         self.settings.setValue('rulers', on)
+
+    def toggle_crosshair(self):
+        self.crosshair = self.a['crosshair'].isChecked()
+        self.view.viewport().setCursor(Qt.CrossCursor if self.crosshair else Qt.ArrowCursor)
+        self.view.viewport().update()
 
     def toggle_grid(self):
         self.show_grid = self.a['grid'].isChecked(); self.settings.setValue('grid', self.show_grid); self.view.viewport().update()

@@ -496,7 +496,7 @@ def tpl_folio():
     ]
     return s
 
-def tpl_blank(name='My Site', width=794, height=1123):
+def tpl_blank(name='Untitled', width=794, height=1123):
     s = base_site(name, width=width, height=height,
                   palette=['#1f2a30', '#2a7d6b', '#f4f1ea', '#e0a43a', '#ffffff', '#5d6a71'])
     s['masters'][0]['objects'] = []          # print docs start with a clean master (no web nav)
@@ -521,6 +521,7 @@ TEMPLATES = [('Harbour', 'Small business', tpl_harbour), ('Meadow', 'Community g
 
 SERIF_CATALOGUE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'serif-templates.json')
 QUICKSTART_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'quickstart.html')
+MANUAL_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'manual.html')
 BANNER_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'banner.png')
 _SERIF = None
 
@@ -948,6 +949,72 @@ def make_doc(o):
     doc.setTextWidth(max(10, o['w'] - 2 * pad))
     return doc
 
+def _free_segments(inner_w, top, bot, excl):
+    """Horizontal segments of [0, inner_w] free of any exclusion rect over the band
+    [top, bot]. Used to flow text around wrap objects."""
+    segs = [(0.0, inner_w)]
+    for (x1, y1, x2, y2) in excl:
+        if y2 <= top or y1 >= bot or x2 <= x1:
+            continue
+        bx1, bx2 = max(0.0, x1), min(inner_w, x2)
+        out = []
+        for sx1, sx2 in segs:
+            if bx2 <= sx1 or bx1 >= sx2: out.append((sx1, sx2)); continue
+            if sx1 < bx1: out.append((sx1, bx1))
+            if bx2 < sx2: out.append((bx2, sx2))
+        segs = out
+    return [(a, b) for a, b in segs if b - a > 4]
+
+def draw_wrapped_text(p, doc, inner_w, pad, excl, color):
+    """Lay out doc's blocks line-by-line, flowing each line into the widest free
+    horizontal segment (so text wraps around overlapping wrap objects)."""
+    p.save(); p.setPen(QColor(color)); y = 0.0
+    blk = doc.begin()
+    while blk.isValid():
+        lay = blk.layout(); lay.beginLayout()
+        while True:
+            line = lay.createLine()
+            if not line.isValid(): break
+            line.setLineWidth(inner_w); lh = line.height(); tries = 0
+            while True:
+                segs = _free_segments(inner_w, y, y + lh, excl)
+                if segs: break
+                below = [y2 for (x1, y1, x2, y2) in excl if y2 > y and y1 < y + lh]
+                if not below or tries > 400: segs = [(0.0, inner_w)]; break
+                y = max(below); tries += 1
+            seg = max(segs, key=lambda s: s[1] - s[0])
+            line.setLineWidth(seg[1] - seg[0]); line.setPosition(QPointF(seg[0], y))
+            y += lh
+        lay.endLayout(); lay.draw(p, QPointF(pad, pad))
+        y += blk.blockFormat().bottomMargin()
+        blk = blk.next()
+    p.restore()
+
+def wrap_exclusions(o, site, page, pad):
+    """Exclusion rects (in o's inner text coords) for sibling objects marked wrap
+    that overlap this text frame."""
+    ox, oy, ow, oh, GAP = o['x'], o['y'], o['w'], o['h'], 7
+    excl = []
+    for q in page_objects(site, page):
+        if q.get('id') == o.get('id') or not q.get('wrap') or q.get('hidden'): continue
+        qx1, qy1 = q['x'] - GAP, q['y'] - GAP
+        qx2, qy2 = q['x'] + q['w'] + GAP, q['y'] + q['h'] + GAP
+        if qx2 <= ox or qx1 >= ox + ow or qy2 <= oy or qy1 >= oy + oh: continue
+        excl.append(((qx1 - ox) - pad, (qy1 - oy) - pad, (qx2 - ox) - pad, (qy2 - oy) - pad))
+    return excl
+
+def flow_chain(page, o):
+    """The ordered list of text frames in o's linked-text story (within one page).
+    The story's text lives on the head frame; followers render slices of it."""
+    if page is None:
+        return [o]
+    byid = {x['id']: x for x in page.get('objects', [])}
+    head = byid.get(o.get('flow_head')) or o
+    chain, seen, cur = [head], {head['id']}, head
+    while cur.get('flow_next') in byid and cur['flow_next'] not in seen:
+        cur = byid[cur['flow_next']]; chain.append(cur); seen.add(cur['id'])
+    return chain
+
 TEXT_PROPS = {
     'font': ('FontFamilies', 'FontFamily'), 'size': ('FontPixelSize', 'FontPointSize'), 'color': ('ForegroundBrush',),
     'bold': ('FontWeight',), 'italic': ('FontItalic',), 'underline': ('FontUnderline', 'TextUnderlineStyle'),
@@ -1027,6 +1094,13 @@ def obj_pen(o):
     return QPen(Qt.NoPen)
 
 def obj_brush(o):
+    g = o.get('grad')
+    if g:
+        ang = math.radians(g.get('angle', 90)); w, h = o['w'], o['h']
+        cx, cy, dx, dy = w / 2, h / 2, math.cos(ang), math.sin(ang)
+        lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
+        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
 def nav_items(site, o=None):
@@ -1115,14 +1189,42 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
     elif t in ('text', 'artistic', 'button'):
         box()
         if not hide_text:
-            doc = make_doc(o)
+            if o.get('pagenum') and page is not None and site is not None:
+                num = (site['pages'].index(page) + 1) if page in site['pages'] else 1
+                o = dict(o, html=(o.get('html') or '<p>#</p>').replace('#', str(num)))
             pad = o.get('pad', 8) if t == 'text' else 0
-            y = pad
-            if t == 'button': y = (h - doc.size().height()) / 2
+            chained = t == 'text' and (o.get('flow_head') or o.get('flow_next'))
+            chain = flow_chain(page, o) if chained else [o]
+            head = chain[0]
+            doc = make_doc(head)
             ctx = QAbstractTextDocumentLayout.PaintContext()
-            ctx.palette.setColor(QPalette.Text, QColor(o.get('color', '#000')))
-            p.save(); p.setClipRect(r); p.translate(pad, y)
-            doc.documentLayout().draw(p, ctx); p.restore()
+            ctx.palette.setColor(QPalette.Text, QColor(head.get('color', '#000')))
+            if len(chain) > 1:
+                idx = next((i for i, cf in enumerate(chain) if cf['id'] == o['id']), 0)
+                offset = sum(max(1, cf['h'] - 2 * pad) for cf in chain[:idx])
+                p.save(); p.setClipRect(r); p.translate(pad, pad - offset)
+                doc.documentLayout().draw(p, ctx); p.restore()
+                last = idx == len(chain) - 1
+                overflow = doc.size().height() > offset + (h - 2 * pad) + 1
+            else:
+                excl = wrap_exclusions(o, site, page, pad) if (t == 'text' and page is not None) else []
+                if excl:
+                    p.save(); p.setClipRect(r)
+                    draw_wrapped_text(p, doc, w - 2 * pad, pad, excl, head.get('color', '#000'))
+                    p.restore()
+                    last, overflow = True, False
+                else:
+                    y = pad
+                    if t == 'button': y = (h - doc.size().height()) / 2
+                    p.save(); p.setClipRect(r); p.translate(pad, y)
+                    doc.documentLayout().draw(p, ctx); p.restore()
+                    last, overflow = True, (t == 'text' and doc.size().height() > (h - 2 * pad) + 1)
+            # Overflow marker (editor only — never printed): a small red box with ▾.
+            if edit and t == 'text' and overflow and last:
+                s = 11.0; mr = QRectF(w - s - 1, h - s - 1, s, s)
+                p.setPen(Qt.NoPen); p.setBrush(QColor('#d0352b')); p.drawRect(mr)
+                p.setPen(QColor('#ffffff')); fnt = QFont('Noto Sans'); fnt.setPixelSize(9); fnt.setBold(True); p.setFont(fnt)
+                p.drawText(mr, Qt.AlignCenter, '▾')
     elif t == 'nav':
         if o.get('fill'): p.fillRect(r, QColor(o['fill']))
         f = qfont(o); p.setFont(f); fm = QFontMetrics(f)
@@ -3906,6 +4008,22 @@ TOOLS = [
     ('newsfeed', 'News Feed', ['application-rss+xml', 'view-list-details', 'rss'], '📰', 'Drag to place a scrolling News feed. It lists the sub-pages of the page it sits on automatically — every news story, newest first, each a card linking to its page.'),
 ]
 
+# Web-only object tools, hidden in this print build (kept in the engine so files
+# that already contain them still open — just not offered as something to add).
+WEB_TOOLS = frozenset({'nav', 'button', 'form', 'search', 'share', 'html',
+                       'youtube', 'map', 'newsfeed', 'gallery'})
+
+# Preset paragraph/character text styles (Format ▸ Text Styles) — applied to a text frame.
+TEXT_STYLE_PRESETS = {
+    'Title':     dict(font='Noto Sans', size=36, bold=True,  italic=False, color='#1f2a30'),
+    'Heading 1': dict(size=26, bold=True,  italic=False),
+    'Heading 2': dict(size=20, bold=True,  italic=False),
+    'Heading 3': dict(size=16, bold=True,  italic=False),
+    'Body':      dict(size=14, bold=False, italic=False, color='#2b2b2b'),
+    'Caption':   dict(size=11, bold=False, italic=True,  color='#5d6a71'),
+}
+
+
 class LinelessTree(QTreeWidget):
     """A tree that draws ONLY a ▸/▾ expand arrow for parent rows and NO connector lines
     (no vertical line through the arrows, no branch stubs). The arrow stays clickable."""
@@ -4019,6 +4137,7 @@ class Canvas(QGraphicsView):
         self.drag = None
         self.marq = None
         self.ghost = None
+        self._cross = None
         self.horizontalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.verticalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.setAcceptDrops(True); self.viewport().setAcceptDrops(True)   # drop assets or picture files onto the page
@@ -4100,6 +4219,11 @@ class Canvas(QGraphicsView):
 
     def drawForeground(self, p, rect):
         win = self.win
+        if win.crosshair and self._cross is not None:
+            cp = QPen(QColor(110, 110, 120, 150), 0); cp.setCosmetic(True); p.setPen(cp)
+            x, y = self._cross.x(), self._cross.y()
+            p.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            p.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
         hi = self.palette().color(QPalette.Highlight)
         cos = QPen(hi, 0); cos.setCosmetic(True)
         sel = win.sel_items()
@@ -4121,6 +4245,21 @@ class Canvas(QGraphicsView):
             if r_:
                 c = QColor(hi); c.setAlpha(40); p.setBrush(c); pn = QPen(hi, 1, Qt.DashLine); pn.setCosmetic(True); p.setPen(pn)
                 p.drawRect(r_)
+        # Non-printing margin guide (DTP): a faint dashed rectangle inset from the page
+        # edge. On-screen only — the PDF export uses a separate paint path, so it never prints.
+        if not win.booklet and not win.cur_master():
+            inset = win.site.get('margin_mm', 12.7) / 25.4 * 96
+            pr = self.page_rect()
+            if 0 < inset * 2 < pr.width() and inset * 2 < pr.height():
+                gp = QPen(QColor(90, 130, 200, 130), 0, Qt.DashLine); gp.setCosmetic(True)
+                p.setPen(gp); p.setBrush(Qt.NoBrush)
+                p.drawRect(QRectF(inset, inset, pr.width() - 2 * inset, pr.height() - 2 * inset))
+        # Column/row guides (non-printing): drawn across the page.
+        g = win.site.get('guides')
+        if g and getattr(win, 'show_guides', True) and not win.booklet and not win.cur_master():
+            pr = self.page_rect(); gp = QPen(QColor(0, 150, 190, 150), 0); gp.setCosmetic(True); p.setPen(gp)
+            for gx in g.get('v', []): p.drawLine(QPointF(gx, 0), QPointF(gx, pr.height()))
+            for gy in g.get('h', []): p.drawLine(QPointF(0, gy), QPointF(pr.width(), gy))
         # Grab grip at the page bottom edge: a short centred bar the user can drag to make
         # the page taller or shorter. Only on a normal page (not while editing a master).
         if not win.editor and not win.cur_master():
@@ -4256,6 +4395,8 @@ class Canvas(QGraphicsView):
     def mouseMoveEvent(self, e):
         win = self.win; vpos = e.position().toPoint(); sp = self.mapToScene(vpos)
         win.set_pos_label(sp)
+        if win.crosshair:
+            self._cross = sp; self.viewport().update()
         d = self.drag
         if not d:
             if win.editor: super().mouseMoveEvent(e); return
@@ -4553,21 +4694,39 @@ def form_dialog(parent, title, rows, extra=None):
 
 
 class StartupAssistant(QDialog):
+    # Print document presets (name, width mm, height mm, pages) — this is a DTP app,
+    # so you start from a paper size, not a website template.
+    PRESETS = [
+        ('Documents', [
+            ('A4', 210, 297, 1), ('A4 Landscape', 297, 210, 1), ('A5', 148, 210, 1),
+            ('A3', 297, 420, 1), ('US Letter', 216, 279, 1), ('US Legal', 216, 356, 1)]),
+        ('Business', [
+            ('Business Card', 85, 55, 1), ('Letterhead', 210, 297, 1), ('DL Flyer', 99, 210, 1),
+            ('Postcard', 148, 105, 1), ('Comp. Slip', 210, 99, 1)]),
+        ('Booklet & Folded', [
+            ('A5 Booklet', 148, 210, 4), ('A4 Booklet', 210, 297, 4),
+            ('Greeting Card', 105, 148, 4), ('Tri-fold', 297, 210, 1)]),
+        ('Large Format', [
+            ('A3 Poster', 297, 420, 1), ('A2 Poster', 420, 594, 1), ('A1 Poster', 594, 841, 1)]),
+    ]
+
     def __init__(self, win):
         super().__init__(win)
-        self.win = win; self.result_site = None; self.result_path = None; self.result_import = False; self.result_update = False
-        self.result_webplus = None
-        self.setWindowTitle(f'{APP} — Startup Assistant'); self.resize(1040, 660)
+        from PySide6.QtWidgets import (QGridLayout, QToolButton, QScrollArea, QDoubleSpinBox)
+        self.win = win
+        self.result_site = None; self.result_path = None; self.result_pageplus = False
+        self.result_update = False; self.result_import = False; self.result_webplus = None
+        self.setWindowTitle(f'{APP} — Startup Assistant'); self.resize(900, 640)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
-        # App banner across the very top of the welcome screen.
         if os.path.isfile(BANNER_IMG):
-            _pm = QPixmap(BANNER_IMG)
-            if not _pm.isNull():
+            pm = QPixmap(BANNER_IMG)
+            if not pm.isNull():
                 self.banner = QLabel(); self.banner.setAlignment(Qt.AlignCenter)
-                self.banner.setPixmap(_pm.scaledToWidth(1040, Qt.SmoothTransformation))
-                self.banner.setScaledContents(False); root.addWidget(self.banner)
-        _body = QWidget(); root.addWidget(_body, 1)
-        root = QVBoxLayout(_body); root.setContentsMargins(9, 9, 9, 9)
+                self.banner.setPixmap(pm.scaledToWidth(900, Qt.SmoothTransformation))
+                root.addWidget(self.banner)
+        body = QWidget(); root.addWidget(body, 1)
+        root = QVBoxLayout(body); root.setContentsMargins(12, 10, 12, 10)
+        # new-version banner (kept from the shared updater)
         self.upd = QFrame(); self.upd.setAutoFillBackground(True)
         pal = self.upd.palette(); pal.setColor(QPalette.Window, pal.color(QPalette.Highlight))
         pal.setColor(QPalette.WindowText, pal.color(QPalette.HighlightedText)); self.upd.setPalette(pal)
@@ -4576,110 +4735,106 @@ class StartupAssistant(QDialog):
         self.upd_label = QLabel(); self.upd_label.setWordWrap(True); ul.addWidget(self.upd_label, 1)
         self.upd_btn = QPushButton(); self.upd_btn.clicked.connect(self.do_update); ul.addWidget(self.upd_btn)
         self.upd.hide(); root.addWidget(self.upd)
+
         top = QHBoxLayout(); root.addLayout(top, 1)
-        self.nav = QListWidget(); self.nav.setFixedWidth(210); self.nav.setIconSize(QSize(32, 32)); self.nav.setSpacing(4)
-        for icon, text in ((ticon(['template', 'folder-templates', 'document-new-from-template'], 'T'), 'Use Design Template'),
-                           (ticon(['document-new'], '+'), 'Start New Site'),
-                           (ticon(['document-open'], '↥'), 'Open Saved Site')):
+        self.nav = QListWidget(); self.nav.setFixedWidth(170); self.nav.setIconSize(QSize(28, 28)); self.nav.setSpacing(4)
+        for icon, text in ((ticon(['document-new'], '+'), 'New Publication'),
+                           (ticon(['document-open'], '↥'), 'Open')):
             self.nav.addItem(QListWidgetItem(icon, text))
         top.addWidget(self.nav)
         self.stack = QStackedWidget(); top.addWidget(self.stack, 1)
         self.nav.currentRowChanged.connect(self.stack.setCurrentIndex)
 
-        # Templates — Serif's five steps: pick a branch, pick a template,
-        # pick a colour scheme, untick the pages you don't want, open it.
-        tp = QWidget(); tl = QVBoxLayout(tp)
-        h = QLabel('<b>Choose a design template</b><br>Pick a design, choose a colour scheme, '
-                   'untick any pages you don’t want, then open it.')
-        h.setWordWrap(True); tl.addWidget(h)
-        row = QHBoxLayout(); tl.addLayout(row, 1)
+        # --- New Publication: a grid of paper-size presets --------------------
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame)
+        inner = QWidget(); area.setWidget(inner); nl = QVBoxLayout(inner)
+        nl.addWidget(QLabel('<b>Start a new publication</b> — choose a paper size, or set your own.'))
+        for cat, items in self.PRESETS:
+            lab = QLabel(cat); lab.setStyleSheet('font-weight:600;margin-top:10px'); nl.addWidget(lab)
+            grid = QGridLayout(); grid.setSpacing(8); nl.addLayout(grid)
+            for i, (name, wmm, hmm, pages) in enumerate(items):
+                b = QToolButton(); b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                b.setIcon(self._preset_icon(wmm, hmm)); b.setIconSize(QSize(58, 58))
+                sub = f'{wmm:g}×{hmm:g}mm' + (f' · {pages}pp' if pages > 1 else '')
+                b.setText(f'{name}\n{sub}'); b.setFixedSize(128, 112)
+                b.setAutoRaise(True); b.setCursor(Qt.PointingHandCursor)
+                b.clicked.connect(lambda _=0, n=name, w=wmm, h=hmm, p=pages: self.make_doc(n, w, h, p))
+                grid.addWidget(b, i // 4, i % 4)
+        cl = QLabel('Custom size'); cl.setStyleSheet('font-weight:600;margin-top:10px'); nl.addWidget(cl)
+        cr = QHBoxLayout(); nl.addLayout(cr)
+        self.cw = QDoubleSpinBox(); self.cw.setRange(10, 3000); self.cw.setValue(210); self.cw.setSuffix(' mm'); self.cw.setDecimals(0)
+        self.ch = QDoubleSpinBox(); self.ch.setRange(10, 3000); self.ch.setValue(297); self.ch.setSuffix(' mm'); self.ch.setDecimals(0)
+        self.cp = QSpinBox(); self.cp.setRange(1, 500); self.cp.setValue(1); self.cp.setPrefix('pages: ')
+        cbtn = QPushButton(ticon(['document-new'], ''), 'Create')
+        cbtn.clicked.connect(lambda: self.make_doc('Untitled', self.cw.value(), self.ch.value(), self.cp.value()))
+        cr.addWidget(QLabel('W')); cr.addWidget(self.cw); cr.addWidget(QLabel('H')); cr.addWidget(self.ch)
+        cr.addWidget(self.cp); cr.addWidget(cbtn); cr.addStretch()
+        nl.addStretch()
+        self.stack.addWidget(area)
 
-        left = QVBoxLayout(); row.addLayout(left)
-        self.tfind = QLineEdit(); self.tfind.setPlaceholderText('Find a template…')
-        self.tfind.setClearButtonEnabled(True); self.tfind.setFixedWidth(240)
-        self.tfind.textChanged.connect(self.filter_templates); left.addWidget(self.tfind)
-        self.ttree = QTreeWidget(); self.ttree.setHeaderHidden(True); self.ttree.setFixedWidth(240)
-        left.addWidget(self.ttree, 1)
-        self.tsites = {}            # (what, which, scheme) -> built site, built once
-        self.build_template_tree()
-
-        mid = QVBoxLayout(); row.addLayout(mid, 1)
-        self.tprev = QLabel(); self.tprev.setAlignment(Qt.AlignHCenter | Qt.AlignTop)
-        self.tprev.setMinimumSize(QSize(300, 280)); self.tprev.setFrameShape(QFrame.StyledPanel)
-        # Ignored, so the preview fits the pane rather than the pane growing to
-        # fit the preview: these are 480 and 960px pages in the same dialog.
-        self.tprev.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        self._tprev_img = None
-        mid.addWidget(self.tprev, 1)
-        self.tcap = QLabel(); self.tcap.setWordWrap(True); self.tcap.setTextFormat(Qt.RichText)
-        mid.addWidget(self.tcap)
-
-        pc = QVBoxLayout(); row.addLayout(pc)
-        pc.addWidget(QLabel('Colour scheme:'))
-        self.tscheme = QComboBox(); self.tscheme.setFixedWidth(210)
-        self.tscheme.currentIndexChanged.connect(self.scheme_changed); pc.addWidget(self.tscheme)
-        pc.addWidget(QLabel('Pages to include:'))
-        self.plist = QListWidget(); self.plist.setFixedWidth(210); pc.addWidget(self.plist, 1)
-        ob = QPushButton(ticon(['document-open'], ''), 'Open Template')
-        ob.setDefault(True); ob.clicked.connect(self.open_template); pc.addWidget(ob)
-        self.ttree.currentItemChanged.connect(lambda *_: self.show_template())
-        self.ttree.itemDoubleClicked.connect(lambda *_: self.open_template())
-        self.stack.addWidget(tp)
-
-        # New
-        npg = QWidget(); nl = QFormLayout(npg)
-        nl.addRow(QLabel('<b>Start a new, blank site</b>'))
-        self.nname = QLineEdit('My Site'); nl.addRow('Site name:', self.nname)
-        # Defaults come from the last site made (stored in settings), falling back to 960x1100.
-        def_w = str(win.settings.value('defaultWidth', '960'))
-        def_h = int(win.settings.value('defaultHeight', 1100))
-        self.nwidth = QComboBox(); self.nwidth.addItems(['960', '1000', '1200']); self.nwidth.setEditable(True)
-        if self.nwidth.findText(def_w) < 0: self.nwidth.addItem(def_w)
-        self.nwidth.setCurrentText(def_w); nl.addRow('Page width (px):', self.nwidth)
-        self.nheight = QSpinBox(); self.nheight.setRange(200, 20000); self.nheight.setValue(def_h); nl.addRow('Page height (px):', self.nheight)
-        self.nlayout = QComboBox()
-        self.nlayout.addItem('Full width (one column)', 'full')
-        self.nlayout.addItem('Two columns', '2col')
-        self.nlayout.addItem('Three columns', '3col')
-        self.nlayout.setToolTip('Lays guide text frames on the first page so you can drop content into columns.')
-        nl.addRow('Column layout:', self.nlayout)
-        self.nresp = QCheckBox('Responsive — scales to fit any screen (phones, tablets, desktop)')
-        self.nresp.setToolTip('Off = classic fixed-width static site. On = the whole design shrinks to fit narrow screens.\nYou can also change this at Publish time.')
-        nl.addRow('Screen:', self.nresp)
-        cb = QPushButton(ticon(['document-new'], ''), 'Create Site'); cb.clicked.connect(self.create_new); nl.addRow('', cb)
-        self.stack.addWidget(npg)
-
-        # Open
+        # --- Open --------------------------------------------------------------
         op = QWidget(); ol = QVBoxLayout(op)
-        ol.addWidget(QLabel('<b>Open a saved site</b>'))
+        ol.addWidget(QLabel('<b>Open a publication</b>'))
         self.rlist = QListWidget(); ol.addWidget(self.rlist, 1)
         for path in win.recent_files():
-            it = QListWidgetItem(ticon(['application-x-webc', 'text-html', 'document-open'], ''), f'{os.path.basename(path)}\n{os.path.dirname(path)}')
+            it = QListWidgetItem(ticon(['document', 'x-office-document'], ''), f'{os.path.basename(path)}\n{os.path.dirname(path)}')
             it.setData(Qt.UserRole, path); self.rlist.addItem(it)
-        if not self.rlist.count(): self.rlist.addItem('No recent sites yet.')
+        if not self.rlist.count():
+            self.rlist.addItem('No recent publications yet.')
         self.rlist.itemDoubleClicked.connect(self.open_recent)
         bh = QHBoxLayout(); ol.addLayout(bh)
         b2 = QPushButton(ticon(['document-open-folder', 'folder-open'], ''), 'Browse…'); b2.clicked.connect(self.browse); bh.addWidget(b2)
-        b3 = QPushButton(ticon(['document-import'], ''), 'Import Website Folder…'); b3.clicked.connect(self.import_site); bh.addWidget(b3)
-        b4 = QPushButton(ticon(['document-open', 'document-import'], ''), 'Open WebPlus Site…')
-        b4.setToolTip('Open a WebPlus .wpp publication as an editable site'); b4.clicked.connect(self.open_wpp)
-        bh.addWidget(b4); bh.addStretch()
+        b3 = QPushButton(ticon(['document-import'], ''), 'Open PagePlus…')
+        b3.setToolTip('Open a PagePlus .ppp publication as an editable document'); b3.clicked.connect(self.open_ppp); bh.addWidget(b3)
+        bh.addStretch()
         self.stack.addWidget(op)
 
         bottom = QHBoxLayout(); root.addLayout(bottom)
-        guide = QPushButton(ticon(['help-contents', 'system-help', 'help-browser'], '📖'), 'Quick Start Guide')
-        guide.setToolTip('New here? A short guide to building and publishing a site with WEBcreator')
-        guide.clicked.connect(win.open_quickstart); bottom.addWidget(guide)
-        self.show_cb = QCheckBox('Show the Startup Assistant when the app opens')
-        self.show_cb.setChecked(win.settings.value('showStartup', True, type=bool)); bottom.addWidget(self.show_cb); bottom.addStretch()
-        openb = QPushButton(ticon(['document-open'], ''), 'Open')
-        openb.setToolTip('Open the highlighted recent site (or Browse if none is selected)')
-        openb.clicked.connect(self.open_highlighted)
-        bottom.addWidget(openb)
+        qs = QPushButton(ticon(['help-contents', 'system-help', 'help-browser'], ''), 'Quick Start')
+        qs.clicked.connect(win.open_quickstart); bottom.addWidget(qs)
+        self.show_cb = QCheckBox('Show this when PAGEcreator opens')
+        self.show_cb.setChecked(win.settings.value('showStartup', True, type=bool)); bottom.addWidget(self.show_cb)
+        bottom.addStretch()
         close = QPushButton('Close'); close.clicked.connect(self.reject); bottom.addWidget(close)
-        self.nav.setCurrentRow(0); self.show_template()
-
+        self.nav.setCurrentRow(0)
         if getattr(win, 'update_source', None): self.show_update(win.update_version)
+
+    def _preset_icon(self, wmm, hmm):
+        from PySide6.QtGui import QIcon
+        S = 58; pm = QPixmap(S, S); pm.fill(Qt.transparent)
+        p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+        scale = (S - 12) / max(wmm, hmm)
+        w, h = wmm * scale, hmm * scale
+        x, y = (S - w) / 2, (S - h) / 2
+        p.fillRect(QRectF(x + 2, y + 3, w, h), QColor(0, 0, 0, 40))
+        p.fillRect(QRectF(x, y, w, h), QColor('#ffffff'))
+        p.setPen(QPen(QColor('#9aa4ab'))); p.drawRect(QRectF(x, y, w, h))
+        p.setPen(QPen(QColor('#cdd4d9')))
+        yy = y + 6
+        while yy < y + h - 4:
+            p.drawLine(QPointF(x + 5, yy), QPointF(x + w - 5, yy)); yy += 5
+        p.end()
+        return QIcon(pm)
+
+    def make_doc(self, name, wmm, hmm, pages):
+        to_px = lambda m: int(round(m / 25.4 * 96))
+        s = tpl_blank(name, to_px(wmm), to_px(hmm))
+        if s['pages']:
+            s['pages'][0]['title'] = 'Page 1'
+        for i in range(1, int(pages)):
+            add_page(s, f'Page {i + 1}')
+        self.result_site = s; self.accept()
+
+    def open_recent(self, it):
+        if it and it.data(Qt.UserRole): self.result_path = it.data(Qt.UserRole); self.accept()
+
+    def browse(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', os.path.expanduser('~'),
+                                              f'PAGEcreator publications (*{EXT});;All files (*)')
+        if path: self.result_path = path; self.accept()
+
+    def open_ppp(self):
+        self.result_pageplus = True; self.accept()
 
     def show_update(self, version):
         self.upd_label.setText(f'<b>A new version is available.</b> You have {VERSION}; version {version} is ready to install.')
@@ -4692,203 +4847,6 @@ class StartupAssistant(QDialog):
         self.win.settings.setValue('showStartup', self.show_cb.isChecked())
         if self.win.startup_dlg is self: self.win.startup_dlg = None
         super().done(r)
-
-    # --- the template chooser ----------------------------------------------
-
-    def build_template_tree(self):
-        """The left-hand pane: our own designs, then Serif's own tree."""
-        self.ttree.clear()
-        ours = QTreeWidgetItem(self.ttree, ['Basic Templates'])
-        for i, (name, kind, _fn) in enumerate(TEMPLATES):
-            leaf = QTreeWidgetItem(ours, [f'{name} — {kind}'])
-            leaf.setData(0, Qt.UserRole, ('ours', i))
-        ours.setExpanded(True)
-        for category, surfaces in serif_tree(chooser_only=False):
-            node = QTreeWidgetItem(self.ttree, [category_label(category)])
-            if not any(r.get('in_chooser') for _s, rows in surfaces for r in rows):
-                node.setToolTip(0, 'Sample documents. Serif catalogued these but '
-                                   'never offered them as something to start from.')
-            for surface, rows in surfaces:
-                under = QTreeWidgetItem(node, [surface or 'All']) if surface else node
-                for r in rows:
-                    leaf = QTreeWidgetItem(under, [r['name']])
-                    leaf.setData(0, Qt.UserRole, ('serif', r['key']))
-                    leaf.setToolTip(0, f"{len(r['pages'])} pages · {category_label(r['category'])}"
-                                       + (f" · {r['surface']}" if r['surface'] else ''))
-            node.setExpanded(category == 'Theme Layouts')
-        first = ours.child(0)
-        if first: self.ttree.setCurrentItem(first)
-
-    def filter_templates(self, text):
-        want = (text or '').strip().lower()
-        it = QTreeWidgetItemIterator(self.ttree)
-        while it.value():
-            node = it.value()
-            if node.data(0, Qt.UserRole):
-                node.setHidden(bool(want) and want not in node.text(0).lower())
-            it += 1
-        for i in range(self.ttree.topLevelItemCount()):
-            self.prune_branch(self.ttree.topLevelItem(i), bool(want))
-
-    def prune_branch(self, node, searching):
-        """Hide a branch with nothing left under it; open the ones with hits."""
-        kids = [node.child(i) for i in range(node.childCount())]
-        if not kids:
-            return not node.isHidden()
-        alive = [self.prune_branch(k, searching) for k in kids]
-        node.setHidden(searching and not any(alive))
-        if searching and any(alive): node.setExpanded(True)
-        return any(alive)
-
-    def chosen_template(self):
-        it = self.ttree.currentItem()
-        return it.data(0, Qt.UserRole) if it else None
-
-    def template_site(self, what, which, scheme=None):
-        """Build it once and keep it: 89 of these is too many to build eagerly."""
-        key = (what, which, scheme)
-        if key not in self.tsites:
-            QApplication.setOverrideCursor(Qt.WaitCursor)
-            try:
-                self.tsites[key] = (TEMPLATES[which][2]() if what == 'ours'
-                                    else serif_site(serif_row(which), scheme))
-            finally:
-                QApplication.restoreOverrideCursor()
-        return self.tsites[key]
-
-    def show_template(self, keep_scheme=False):
-        chosen = self.chosen_template()
-        self.plist.clear()
-        if not chosen:
-            self.tprev.clear(); self.tcap.clear(); self.tscheme.clear(); return
-        what, which = chosen
-        if not keep_scheme:
-            self.tscheme.blockSignals(True); self.tscheme.clear()
-            if what == 'serif':
-                self.tscheme.addItems(serif_schemes(serif_row(which)))
-            self.tscheme.setEnabled(what == 'serif')
-            self.tscheme.blockSignals(False)
-        scheme = self.tscheme.currentText() if what == 'serif' else None
-        s = self.template_site(what, which, scheme or None)
-        self._tprev_img = render_page_image(s, s['pages'][0], 560,
-                                            crop=int(s['width'] * 1.45))
-        self.fit_preview()
-        if what == 'serif':
-            r = serif_row(which)
-            self.tcap.setText(
-                f"<b>{H.escape(r['name'])}</b> — {H.escape(category_label(r['category']))}, "
-                f"{H.escape(r['surface'])}<br>{len(r['pages'])} pages, "
-                f"{s['width']}px wide, in {H.escape(scheme or '')}.")
-        else:
-            name, kind, _ = TEMPLATES[which]
-            self.tcap.setText(f"<b>{H.escape(name)}</b> — {H.escape(kind)}<br>"
-                              f"{len(s['pages'])} pages, {s['width']}px wide.")
-        for i, p in enumerate(s['pages']):
-            it = QListWidgetItem('    ' * min(3, p.get('level') or 0) + p['title'])
-            it.setData(Qt.UserRole, p['id']); it.setCheckState(Qt.Checked)
-            if i == 0:          # a site with no home page is not a site
-                it.setFlags(Qt.ItemIsEnabled)
-                it.setToolTip('Every site has a home page.')
-            else:
-                it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
-            self.plist.addItem(it)
-
-    def fit_preview(self):
-        # resize() is called in __init__, before this pane exists.
-        if getattr(self, '_tprev_img', None) is None:
-            if hasattr(self, 'tprev'): self.tprev.clear()
-            return
-        pm = QPixmap.fromImage(self._tprev_img)
-        box = self.tprev.contentsRect().size() - QSize(12, 12)
-        if box.width() > 40 and box.height() > 40:
-            pm = pm.scaled(box, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-        self.tprev.setPixmap(pm)
-
-    def resizeEvent(self, ev):
-        super().resizeEvent(ev); self.fit_preview()
-
-    def scheme_changed(self, *_):
-        if self.tscheme.isEnabled(): self.show_template(keep_scheme=True)
-
-    def open_template(self):
-        chosen = self.chosen_template()
-        if not chosen: return
-        what, which = chosen
-        scheme = self.tscheme.currentText() if what == 'serif' else None
-        s = copy.deepcopy(self.template_site(what, which, scheme or None))
-        ticked = {self.plist.item(j).data(Qt.UserRole) for j in range(self.plist.count())
-                  if self.plist.item(j).checkState() == Qt.Checked}
-        ticked.add(s['pages'][0]['id'])
-        # Unticking a page takes its sub-pages with it. The alternative is a
-        # sub-page with no parent — in the Site tree, in the breadcrumb and in
-        # every navigation bar on the site, which is where it would be seen.
-        keep, dropped_at = set(), None
-        for p in s['pages']:
-            level = p.get('level') or 0
-            if dropped_at is not None and level > dropped_at:
-                continue
-            dropped_at = None
-            if p['id'] in ticked: keep.add(p['id'])
-            else: dropped_at = level
-        if not keep:
-            QMessageBox.information(self, APP, 'Tick at least one page to include.'); return
-        s['pages'] = [p for p in s['pages'] if p['id'] in keep]
-        for o in [o for p in s['pages'] for o in p['objects']] + [o for m in s['masters'] for o in m['objects']]:
-            if o.get('link') and o['link']['type'] == 'page' and o['link']['target'] not in keep: o['link'] = None
-        if s['pages'] and not any(p['file'] == 'index.html' for p in s['pages']): s['pages'][0]['file'] = 'index.html'
-        if s['pages'][0].get('level'): s['pages'][0]['level'] = 0
-        self.result_site = s; self.accept()
-
-    def create_new(self):
-        try: w = max(320, min(4000, int(self.nwidth.currentText())))
-        except ValueError: w = 960
-        h = self.nheight.value()
-        s = tpl_blank(self.nname.text().strip() or 'My Site', w, h)
-        s['responsive'] = self.nresp.isChecked()
-        # remember the size as the default for next time
-        self.win.settings.setValue('defaultWidth', str(w)); self.win.settings.setValue('defaultHeight', h)
-        # column layout: drop guide text frames on the first page
-        layout = self.nlayout.currentData()
-        ncol = {'2col': 2, '3col': 3}.get(layout, 1)
-        if ncol > 1:
-            margin, gap, top = 40, 24, 120
-            colw = (w - 2 * margin - gap * (ncol - 1)) // ncol
-            page = s['pages'][0]
-            page.setdefault('objects', [])
-            for i in range(ncol):
-                x = margin + i * (colw + gap)
-                page['objects'].append(mk('text', x, top, colw, max(300, h - top - 60),
-                                          html=f'<p>Column {i + 1} — click to edit, or drag other items into place.</p>'))
-        self.result_site = s
-        self.accept()
-
-    def open_recent(self, it):
-        if it and it.data(Qt.UserRole): self.result_path = it.data(Qt.UserRole); self.accept()
-
-    def open_highlighted(self):
-        """Open the highlighted recent site. If none is selected, fall back to Browse."""
-        it = self.rlist.currentItem()
-        if it and it.data(Qt.UserRole):
-            self.open_recent(it)
-        else:
-            self.browse()
-
-    def import_site(self):
-        self.result_import = True; self.accept()
-
-    def open_wpp(self):
-        root = self.win.webplus_root()
-        if not root: return
-        last = self.win.settings.value('wppDir', os.path.expanduser('~'))
-        path, _ = QFileDialog.getOpenFileName(self, 'Open WebPlus Site', last,
-                                              f'WebPlus publications (*{WPP_EXT});;All files (*)')
-        if not path: return
-        self.win.settings.setValue('wppDir', os.path.dirname(path))
-        self.result_webplus = (path, root); self.accept()
-
-    def browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Open Site', os.path.expanduser('~'), f'WEBcreator sites (*{EXT});;All files (*)')
-        if path: self.result_path = path; self.accept()
 
 
 # A single in-app preview window that shows the built site in a real web engine
@@ -4997,7 +4955,7 @@ STANDARD = ['#000000', '#3a3a3a', '#757575', '#b0b0b0', '#e0e0e0', '#ffffff', '#
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = QSettings(ORG, 'WEBcreator')
+        self.settings = QSettings(ORG, 'PAGEcreator')
         self.site = tpl_blank()
         self.path = None; self.dirty = False
         self.undo, self.redo = [], []
@@ -5007,6 +4965,8 @@ class MainWindow(QMainWindow):
         self.tool = 'pointer'
         self.show_grid = self.settings.value('grid', False, type=bool)
         self.snap_grid = self.settings.value('snap', True, type=bool)
+        self.crosshair = False
+        self.show_guides = True
         self.booklet = False                 # Booklet view: all pages as facing spreads (print)
         self._booklet_rects = []
         self.editor = None; self.edit_id = None; self.edit_snap = None
@@ -5169,17 +5129,19 @@ class MainWindow(QMainWindow):
     def build_actions(self):
         A = self.act
         self.a = dict(
-            new=A('&New Site…', self.startup, QKeySequence.New, 'document-new'),
+            new=A('&New…', self.startup, QKeySequence.New, 'document-new'),
             open=A('&Open…', self.open_dialog, QKeySequence.Open, 'document-open'),
             save=A('&Save', self.save, QKeySequence.Save, 'document-save'),
             saveas=A('Save &As…', self.save_as, QKeySequence.SaveAs, 'document-save-as'),
             import_=None,
             siteprops=A('Settings…', self.site_props, None, ['configure', 'preferences-system', 'document-properties']),
             docsetup=A('Document Set&up…', self.document_setup, None, ['document-page-setup', 'document-properties', 'configure']),
+            printdoc=A('&Print…', self.print_document, QKeySequence.Print, ['document-print', 'printer']),
+            preflight=A('Pre&flight Check…', self.preflight, None, ['tools-check-spelling', 'dialog-ok-apply']),
             checklinks=A('Check &Links…', self.check_links, None, ['tools-check-spelling', 'insert-link', 'link']),
-            prevpage=A('Preview &Page in Browser', self.preview_page, 'F12', ['document-preview', 'view-preview']),
-            prevsite=A('Preview &Site in Browser', self.preview_site, 'Shift+F12', ['internet-web-browser', 'applications-internet']),
-            prevwin=A('Preview in &Window (Website / Phone / Tablet)…', lambda: self.preview_device('current'), 'F11', ['document-preview', 'video-display', 'computer']),
+            prevpage=A('Preview Page in Browser', self.preview_page, None, ['document-preview', 'view-preview']),
+            prevsite=A('Preview Site in Browser', self.preview_site, None, ['internet-web-browser', 'applications-internet']),
+            prevwin=A('Preview in Window', lambda: self.preview_device('current'), None, ['document-preview', 'video-display', 'computer']),
             publish=A('&Publish…', self.publish_disk, None, ['document-export', 'folder-publicshare']),
             quit=A('&Quit', self.close, QKeySequence.Quit, 'application-exit'),
             undo=A('&Undo', self.do_undo, QKeySequence.Undo, 'edit-undo'),
@@ -5193,12 +5155,16 @@ class MainWindow(QMainWindow):
             rulers=A('&Rulers', self.toggle_rulers, None, None, True),
             grid=A('&Grid', self.toggle_grid, None, 'view-grid', True),
             snap=A('&Snap to Grid', self.toggle_snap, None, 'snap-to-grid', True),
+            crosshair=A('Cross&hair', self.toggle_crosshair, None, ['crosshairs', 'tool-pointer', 'cursor-crosshair'], True),
+            guides=A('&Guides && Columns…', self.guides_dialog, None, ['view-guides', 'view-grid', 'configure']),
             booklet=A('&Booklet View', self.toggle_booklet, None, ['view-pages-facing', 'view-book', 'x-office-document'], True),
             zin=A('Zoom &In', lambda: self.view.set_zoom(self.view.zoom * 1.25), QKeySequence.ZoomIn, 'zoom-in'),
             zout=A('Zoom &Out', lambda: self.view.set_zoom(self.view.zoom / 1.25), QKeySequence.ZoomOut, 'zoom-out'),
             z100=A('&Actual Size', lambda: self.view.set_zoom(1.0), 'Ctrl+1', 'zoom-original'),
             zfit=A('&Fit Page Width', self.view.fit_width, 'Ctrl+0', 'zoom-fit-width'),
             newpage=A('&Page…', self.insert_page_dialog, 'Ctrl+Shift+N', 'document-new'),
+            pagenum=A('Page &Number Field', self.insert_page_number, None, ['insert-page-number', 'text-field', 'insert-text']),
+            placepdf=A('Place P&DF…', self.place_pdf, None, ['application-pdf', 'insert-image']),
             index_page=A('&Index Page', self.insert_index_page, None, ['view-list-tree', 'view-list-text', 'format-list-unordered']),
             newsfromlink=A('News from a &Link…', self.news_from_link_dialog, None, ['application-rss+xml', 'download', 'insert-link']),
             link=A('&Hyperlink…', self.link_action, 'Ctrl+K', ['insert-link', 'link']),
@@ -5252,24 +5218,24 @@ class MainWindow(QMainWindow):
                 elif isinstance(it, tuple): sub = m.addMenu(it[0]); [sub.addAction(x) if x else sub.addSeparator() for x in it[1]]
                 else: m.addAction(it)
             return m
-        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], a['openwpp'], a['import'], None, a['save'], a['saveas'], None, a['docsetup'], a['checklinks'], None,
-                       a['prevwin'], a['prevpage'], a['prevsite'], a['publish'], None, a['quit']])
+        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], None, a['save'], a['saveas'], None, a['docsetup'], a['preflight'], a['printdoc'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall']])
-        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
+        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
-        for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom')]:
+        for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom') and t[0] not in WEB_TOOLS]:
             ins.append(self.act(label, lambda _=False, t=tid: self.insert_default(t), None, None))
             if tid == 'html': ins.append(a['css'])   # Custom CSS sits right after Insert ▸ HTML Code
         # Contact-details submenu: drops a text frame showing a field from Site Properties
         contact_acts = [self.act(lbl, lambda _=False, fk=fld: self.insert_contact(fk), None, None)
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
-        menu('&Insert', [a['newpage'], a['index_page'], a['newsfromlink'], None] + ins + [None, ('Contact details', contact_acts), None, a['link']])
+        menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'], None] + ins)
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
+        style_acts = [self.act(n, lambda _=False, n=n: self.apply_text_style(n), None, None) for n in TEXT_STYLE_PRESETS]
         menu('F&ormat', [a['bold'], a['italic'], a['underline'], None, a['aleft'], a['acenter'], a['aright'], a['ajust'],
-                         None, ('Lists / Bullets', list_sub), None, a['pageprops']])
+                         None, ('Text Styles', style_acts), ('Lists / Bullets', list_sub), None, a['pageprops']])
         al = [self.act(n, lambda _=False, k=k: self.align(k), None, ic) for k, n, ic in (
             ('left', 'Align Left Edges', 'align-horizontal-left'), ('hcenter', 'Align Centres Horizontally', 'align-horizontal-center'),
             ('right', 'Align Right Edges', 'align-horizontal-right'), ('top', 'Align Top Edges', 'align-vertical-top'),
@@ -5278,34 +5244,26 @@ class MainWindow(QMainWindow):
         self.a['lock'] = self.act('&Lock / Unlock', self.toggle_lock, 'Ctrl+L', ['object-locked', 'lock'])
         self.a['tomaster'] = self.act('Move Repeated Objects to &Master Page…', self.move_common_to_master, None, ['document-multiple', 'edit-copy'])
         menu('&Arrange', [a['front'], a['fwd'], a['back1'], a['back'], None, ('Align', al), None, self.a['lock'], None, self.a['tomaster']])
-        # Preview and Publish sit on the menu bar as clickable items (text only, no icon,
-        # so the words show), with SEO and Help after them. Preview is a small drop-down:
-        # the in-app Website/Phone/Tablet window, plus the classic open-in-browser options.
-        prev_menu = mb.addMenu('Preview')
-        pw = self.act('Preview as Website / Phone / Tablet…', lambda: self.preview_device('current'))
-        pw.setToolTip('Open an in-app preview window and switch between desktop, tablet and phone widths')
-        prev_menu.addAction(pw); prev_menu.addSeparator()
-        prev_menu.addAction(a['prevpage']); prev_menu.addAction(a['prevsite'])
+        # Export to PDF sits on the menu bar as a clickable item (text, no icon).
         mb.addAction(self.act('Export PDF…', self.export_pdf, 'Ctrl+E', ['document-export', 'application-pdf']))
-        mb.addAction(self.act('Publish', self.publish_disk))
         self.a['seo_page'] = self.act('&This Page’s SEO…', self.seo_dialog, None, ['text-html', 'find', 'edit-find'])
         self.a['seo_page'].setToolTip('Search-engine title, description, focus keyword and social preview for this page')
         self.a['seo_site'] = self.act('&Site-wide SEO…', self.site_seo_dialog, None, ['configure', 'preferences-system'])
         self.a['seo_site'].setToolTip('Base web address, default social image, Twitter handle and organisation details')
         self.a['seo_auto'] = self.act('&Auto-generate SEO for all pages…', self.auto_seo, None, ['tools-wizard', 'system-run', 'text-html'])
         self.a['seo_auto'].setToolTip('Fill in titles, descriptions and keywords for every page automatically, then publish')
-        menu('&SEO', [self.a['seo_auto'], None, self.a['seo_page'], None, self.a['seo_site']])
         self.a['htmlview'] = self.act('View &HTML', self.toggle_html_view, None, ['text-html', 'code-context', 'view-source'], checkable=True)
         self.a['htmlview'].setToolTip('Show the HTML source of this page (toggle)')
         self.a['update'] = self.act('Update Available', self.install_update, None, ['system-software-update', 'update-none', 'download'])
         self.a['update'].setVisible(False)
         self.a['checkupdate'] = self.act('Check for &Updates…', lambda: self.check_updates(quiet=False), None, ['system-software-update', 'view-refresh'])
         self.a['quickstart'] = self.act('&Quick Start Guide', self.open_quickstart, None, ['help-contents', 'system-help', 'help-browser'])
+        self.a['userguide'] = self.act('&User Guide', self.open_manual, None, ['help-contents', 'help-browser', 'x-office-document'])
         self.a['updatesettings'] = self.act('&Settings…', self.update_settings, None, ['configure', 'preferences-system'])
         self.a['donate'] = self.act('&Buy Me a Coffee  ☕', lambda: open_external('https://buymeacoffee.com/janszafranski'),
                                     None, ['help-donate', 'emblem-favorite', 'face-smile-big'])
-        self.a['donate'].setToolTip('Enjoying WEBcreator? Buy its maker a coffee — opens buymeacoffee.com in your browser')
-        menu('&Help', [self.a['quickstart'], None, self.a['update'], self.a['checkupdate'], self.a['updatesettings'], None, a['about'], None, self.a['donate']])
+        self.a['donate'].setToolTip('Enjoying PAGEcreator? Buy its maker a coffee — opens buymeacoffee.com in your browser')
+        menu('&Help', [self.a['userguide'], self.a['quickstart'], None, self.a['update'], self.a['checkupdate'], self.a['updatesettings'], None, a['about'], None, self.a['donate']])
 
     def recent_menu_action(self):
         self.recent_menu = QMenu('Open &Recent', self)
@@ -5321,7 +5279,7 @@ class MainWindow(QMainWindow):
     def build_toolbars(self):
         # Standard toolbar
         tb = QToolBar('Standard'); tb.setObjectName('standard'); tb.setIconSize(QSize(20, 20)); self._std_toolbar = tb
-        for k in ('new', 'open', 'save', None, 'undo', 'redo', None, 'cut', 'copy', 'paste', None, 'htmlview', None, 'update'):
+        for k in ('new', 'open', 'save', None, 'undo', 'redo', None, 'cut', 'copy', 'paste', None, 'update'):
             tb.addAction(self.a[k]) if k else tb.addSeparator()
         hw = tb.widgetForAction(self.a['htmlview'])
         if hw: hw.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
@@ -5334,17 +5292,14 @@ class MainWindow(QMainWindow):
         # Insert toolbar sits alongside Standard on row 1. Only non-duplicate actions —
         # the object-insert icons already live on the left tool rail.
         ins = QToolBar('Insert'); ins.setObjectName('insert'); ins.setIconSize(QSize(20, 20))
-        ss = QAction(ticon(['view-list-tree', 'gnumeric-object-matrix', 'view-sort-ascending'], '⊞'), 'Site Structure', self)
-        ss.setToolTip('Site Structure — show the Site / Pages panel'); ss.triggered.connect(self.show_site_structure)
+        ss = QAction(ticon(['view-list-tree', 'gnumeric-object-matrix', 'view-sort-ascending'], '⊞'), 'Pages', self)
+        ss.setToolTip('Pages — show the Pages panel'); ss.triggered.connect(self.show_site_structure)
         ins.addAction(ss); ins.widgetForAction(ss).setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         ins.addSeparator()
         for k in ('aleft', 'acenter', 'aright'): ins.addAction(self.a[k])
         coffee = QAction(ticon(['help-donate', 'emblem-favorite', 'face-smile-big'], '☕'), 'Buy Me a Coffee', self)
         coffee.setToolTip('Insert a “Buy me a coffee” button, matched to the site palette (asks for your page link the first time)')
         coffee.triggered.connect(self.insert_coffee_button); self.a['coffee'] = coffee
-        ins.addSeparator(); ins.addAction(coffee)
-        cw = ins.widgetForAction(coffee)
-        if cw: cw.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(Qt.TopToolBarArea, ins)
         # Context toolbar — same row; all top toolbars wrap onto more rows only when
         # the window is too narrow to hold them.
@@ -5356,6 +5311,7 @@ class MainWindow(QMainWindow):
         for t in TOOLS:
             if t[0] is None: tt.addSeparator(); continue
             tid, label, names, glyph, tip = t
+            if tid in WEB_TOOLS: continue
             if tid == 'artistic':  icon = letter_icon('A', italic=True, serif=True, size=26)   # fancy A
             elif tid == 'text':    icon = letter_icon('T', italic=False, serif=True, size=23)   # serif T
             else:                  icon = ticon(names, glyph)
@@ -5391,7 +5347,7 @@ class MainWindow(QMainWindow):
             a = QAction(ticon(names, glyph), label, self); a.setCheckable(True); a.setToolTip(f'{label}\n{tip}')
             a.triggered.connect(lambda _=False, tid=tid: self.set_tool(tid))
             self.tool_group.addAction(a); tt.addAction(a); self.tool_actions[tid] = a
-        for name, glyph in (('Node Edit', '✎'), ('Pen / Curve', '✐'), ('Hotspot', '⬚'), ('Rollover', '◳')):
+        for name, glyph in (('Node Edit', '✎'), ('Pen / Curve', '✐')):
             pt = QAction(ticon([], glyph), name, self); pt.setToolTip(f'{name} — not available in this clone yet')
             pt.triggered.connect(lambda _=False, n=name: self.hint(f'The {n} tool isn’t available in this clone yet.')); tt.addAction(pt)
         # The Insert-menu entries that aren't drawing tools, as icons at the foot of the rail.
@@ -5401,9 +5357,9 @@ class MainWindow(QMainWindow):
         tt.addAction(blist); self.a['blist'] = blist
         addbtn = QAction(add_button_icon(), 'Add Button', self)
         addbtn.setToolTip('Add Button\nDrop a ready-made button at the centre of the page'); addbtn.triggered.connect(self.insert_blank_button)
-        tt.addAction(addbtn); self.a['addbtn'] = addbtn
+        self.a['addbtn'] = addbtn
         tt.addSeparator()
-        tt.addAction(self.a['newpage']); tt.addAction(self.a['index_page']); tt.addAction(self.a['newsfromlink'])
+        tt.addAction(self.a['newpage'])
         from PySide6.QtWidgets import QToolButton, QMenu
         cmenu = QMenu(self)
         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
@@ -5575,7 +5531,7 @@ class MainWindow(QMainWindow):
         for i in range(tb.count()):
             if not tb.tabText(i).strip():
                 tip = tb.tabToolTip(i).strip()
-                tb.setTabText(i, tip or 'Site')
+                tb.setTabText(i, tip or 'Pages')
 
     def _add_tabbar_arrows(self, tb):
         """Flank a dock tab bar with a ◀ before the first tab and a ▶ after the last (the same
@@ -5659,7 +5615,7 @@ class MainWindow(QMainWindow):
         mtb.addAction(self.act('Master properties', self.master_props, None, 'document-properties'))
         mtb.addAction(self.act('Delete master page', self.delete_master, None, 'edit-delete'))
         sl.addWidget(mtb)
-        self.d_site = self.dock('Site', sw, 'site')
+        self.d_site = self.dock('Pages', sw, 'site')
         # Keep the 'Site' windowTitle so its TAB reads 'Site' (not a blank blue square),
         # but still suppress the untabbed title strip with an empty title-bar widget.
         self.d_site.setTitleBarWidget(QWidget())
@@ -6030,7 +5986,7 @@ class MainWindow(QMainWindow):
             else:
                 p = self.page(); label(f'Page: {p["title"]}'); tb.addSeparator()
                 label('Background'); add(ColorButton(self.page_bg(), lambda c: self.set_bg(c), 'Page background'))
-                tb.addAction(self.a['pageprops']); tb.addAction(self.a['siteprops'])
+                tb.addAction(self.a['pageprops'])
             tb.addSeparator(); tb.addAction(self.a['grid']); tb.addAction(self.a['snap'])
             return
         types = {x['type'] for x in objs}
@@ -6284,6 +6240,13 @@ class MainWindow(QMainWindow):
         elif kind == 'youtube': self.youtube_dialog(o)
         elif kind == 'map': self.map_dialog(o)
 
+    def open_manual(self):
+        """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
+        if os.path.isfile(MANUAL_GUIDE):
+            open_external(MANUAL_GUIDE, is_file=True)
+        else:
+            open_external('https://janszafranski.github.io/just-a-collection-of-apps/')
+
     def open_quickstart(self):
         """Open the Quick Start Guide — the bundled HTML in the browser, or the
         GitHub-hosted copy if the local file isn't installed beside the app."""
@@ -6350,6 +6313,40 @@ class MainWindow(QMainWindow):
         o['x'] = self.view.snap(max(0, cc.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, cc.y() - o['h'] / 2))
         self.add_object(o)
 
+    def place_pdf(self):
+        """Place a page of a PDF as a graphic (rasterised at 2× for crispness)."""
+        from PySide6.QtPdf import QPdfDocument
+        from PySide6.QtCore import QSize, QBuffer, QByteArray, QIODevice
+        from PySide6.QtWidgets import QInputDialog
+        path, _ = QFileDialog.getOpenFileName(self, 'Place PDF', self.settings.value('placePdfDir', os.path.expanduser('~')), 'PDF documents (*.pdf)')
+        if not path: return
+        self.settings.setValue('placePdfDir', os.path.dirname(path))
+        doc = QPdfDocument(self)
+        if doc.load(path) != QPdfDocument.Error.None_ or doc.pageCount() < 1:
+            QMessageBox.warning(self, APP, "Couldn't read that PDF."); return
+        pg = 0
+        if doc.pageCount() > 1:
+            n, ok = QInputDialog.getInt(self, 'Place PDF', f'Which page? (1–{doc.pageCount()})', 1, 1, doc.pageCount())
+            if not ok: return
+            pg = n - 1
+        sz = doc.pagePointSize(pg)
+        wpx, hpx = sz.width() * 96 / 72, sz.height() * 96 / 72
+        img = doc.render(pg, QSize(max(1, int(wpx * 2)), max(1, int(hpx * 2))))
+        if img.isNull():
+            QMessageBox.warning(self, APP, "Couldn't render that PDF page."); return
+        ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, 'PNG')
+        key = add_asset(self.site, 'data:image/png;base64,' + bytes(ba.toBase64()).decode())
+        self.site.setdefault('assetnames', {})[key] = (re.sub(r'[^\w -]+', '', os.path.basename(path))[:40] or 'placed') + '.png'
+        o = mk('picture', 40, 40, round(wpx), round(hpx), src=key, fit='stretch'); o['placed_pdf'] = os.path.basename(path)
+        self.add_object(o)
+        self.hint(f'Placed page {pg + 1} of {os.path.basename(path)}.')
+
+    def insert_page_number(self):
+        o = mk('text', self.site['width'] // 2 - 40, (self.page_h() or self.site['height']) - 54, 80, 28,
+               html='<p>#</p>', align='center'); o['pagenum'] = True; o['pad'] = 2
+        self.add_object(o)
+        self.hint('Page-number field added — put it on a master page so it shows on every page.')
+
     def insert_bullet_list(self):
         """Drop a text frame that already contains a bulleted list, ready to type over."""
         c = self.view.mapToScene(self.view.viewport().rect().center())
@@ -6412,7 +6409,34 @@ class MainWindow(QMainWindow):
         elif t == 'nav': self.nav_dialog(o)
         elif t == 'newsfeed': self.newsfeed_dialog(o)
 
+    def flow_head_obj(self, o):
+        """A linked follower frame is edited at its story's head frame."""
+        byid = {x['id']: x for x in self.layer()}
+        return byid.get(o.get('flow_head'), o)
+
+    def link_text_frames(self):
+        byid = {x['id']: x for x in self.layer()}
+        objs = [byid[i] for i in self.sel if i in byid and byid[i]['type'] == 'text']   # selection order
+        if len(objs) < 2:
+            self.hint('Select two or more text frames, then Link — they flow in selection order.'); return
+        self.commit()
+        head = objs[0]
+        for i, o in enumerate(objs):
+            o['flow_head'] = head['id']
+            o['flow_next'] = objs[i + 1]['id'] if i + 1 < len(objs) else None
+            if i > 0: o['html'] = ''          # the story lives on the head frame
+        self.refresh(); self.hint(f'Linked {len(objs)} text frames — text flows between them.')
+
+    def unlink_text_frames(self):
+        objs = [o for o in self.sel_objs() if o.get('flow_head')]
+        if not objs: return
+        self.commit()
+        for o in objs:
+            o.pop('flow_head', None); o.pop('flow_next', None)
+        self.refresh(); self.hint('Unlinked text frames.')
+
     def start_edit(self, o, select_all=False):
+        o = self.flow_head_obj(o)        # edit a linked story at its head frame
         it = self.items.get(o['id'])
         if not it: return
         self.select([o['id']])
@@ -6455,6 +6479,20 @@ class MainWindow(QMainWindow):
         try: ed.setParentItem(None); self.view.scene().removeItem(ed)
         except RuntimeError: pass
         self.refresh()
+
+    def apply_text_style(self, name):
+        st = TEXT_STYLE_PRESETS.get(name)
+        if not st: return
+        objs = [o for o in self.sel_objs() if o['type'] in ('text', 'artistic', 'button')]
+        if not objs:
+            self.hint('Select a text frame, then apply a style.'); return
+        self.commit()
+        for o in objs:
+            o.setdefault('italic', False); o.setdefault('bold', False)
+            o.update({'bold': False, 'italic': False})          # reset, then apply the style's attrs
+            o.update(st); o['style_name'] = name
+            clear_text_format(o, ['font', 'size', 'bold', 'italic', 'color'])   # drop per-word overrides so the frame style shows
+        self.refresh(); self.hint(f'Applied the “{name}” style.')
 
     def text_style(self, key):
         if self.editor:
@@ -7756,27 +7794,84 @@ class MainWindow(QMainWindow):
 
     def page_props(self, p):
         if not p: return
-        title = QLineEdit(p['title']); file = QLineEdit(p['file'])
+        title = QLineEdit(p['title'])
         mas = QComboBox(); [mas.addItem(m['name'], m['id']) for m in self.site['masters']]; mas.setCurrentIndex(max(0, mas.findData(p['master'])))
-        nav = QCheckBox('Include this page in navigation bars'); nav.setChecked(p.get('nav', True))
-        date = QLineEdit(p.get('date', '') or '')
-        date.setPlaceholderText('e.g. 2026-11-22 or 15 Nov 2013 — used to order News feeds (optional)')
-        date.setToolTip('Published date for this story. Leave blank and a News Feed will fall back to any\n'
-                        '“posted …” date in the page text, or the page order.')
-        hh = QSpinBox(); hh.setRange(0, 30000); hh.setSpecialValueText('Site default'); hh.setValue(p.get('height') or 0); hh.setSuffix(' px')
+        hh = QSpinBox(); hh.setRange(0, 30000); hh.setSpecialValueText('Document default'); hh.setValue(p.get('height') or 0); hh.setSuffix(' px')
         bgc = [p.get('bg', '')]
         bgb = ColorButton(p.get('bg') or self.master_of(p).get('bg'), lambda c: (bgc.__setitem__(0, c), bgb.setIcon(swatch_icon(c or self.master_of(p).get('bg'), 18))), 'Page background', allow_none=True)
         bgb.setToolTip('Choose None to use the master page background')
-        dlg = form_dialog(self, 'Page Properties', [('Page name:', title), ('File name:', file), ('Master page:', mas), ('Height:', hh),
-                                                     ('Published date:', date), ('Background:', bgb), ('', nav)])
+        dlg = form_dialog(self, 'Page Properties', [('Page name:', title), ('Master page:', mas),
+                                                    ('Page height:', hh), ('Background:', bgb)])
         if not dlg.exec(): return
-        fn = re.sub(r'[^A-Za-z0-9._-]+', '-', file.text().strip()) or slug(title.text(), set())
-        if not fn.lower().endswith(('.html', '.htm')): fn += '.html'
-        if any(q['file'] == fn and q is not p for q in self.site['pages']):
-            QMessageBox.warning(self, APP, f'Another page already uses the file name {fn}.'); return
         self.commit()
-        p.update(title=title.text().strip() or p['title'], file=fn, master=mas.currentData(), nav=nav.isChecked(),
-                 height=hh.value() or None, bg=bgc[0], date=date.text().strip())
+        p.update(title=title.text().strip() or p['title'], master=mas.currentData(),
+                 height=hh.value() or None, bg=bgc[0])
+        self.refresh()
+
+    def gradient_dialog(self):
+        from PySide6.QtWidgets import QSpinBox
+        objs = [o for o in self.sel_objs() if o['type'] in ('shape', 'text', 'picture', 'button')]
+        if not objs: return
+        g0 = objs[0].get('grad') or {}
+        c1 = [g0.get('c1', '#ffffff')]; c2 = [g0.get('c2', '#2a7d6b')]
+        b1 = ColorButton(c1[0], lambda c: c1.__setitem__(0, c or '#ffffff'), 'Start colour')
+        b2 = ColorButton(c2[0], lambda c: c2.__setitem__(0, c or '#000000'), 'End colour')
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
+        dlg = form_dialog(self, 'Gradient Fill', [('Start colour:', b1), ('End colour:', b2), ('Angle:', ang)],
+                          QLabel('A linear gradient between two colours. Right-click ▸ Remove Gradient to clear.'))
+        if not dlg.exec(): return
+        self.commit()
+        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': 'linear'}
+        self.refresh()
+
+    def remove_gradient(self):
+        objs = [o for o in self.sel_objs() if o.get('grad')]
+        if not objs: return
+        self.commit()
+        for o in objs: o.pop('grad', None)
+        self.refresh()
+
+    def toggle_wrap(self):
+        objs = [o for o in self.sel_objs() if o['type'] in ('picture', 'shape')]
+        if not objs: return
+        self.commit()
+        v = not objs[0].get('wrap')
+        for o in objs: o['wrap'] = v
+        self.refresh()
+        self.hint('Overlapping frame text now wraps around this object.' if v else 'Text wrap turned off.')
+
+    def guides_dialog(self):
+        """Column/row guides laid inside the page margin — the DTP layout grid.
+        Non-printing. Columns=1 and Rows=1 means no extra guides."""
+        from PySide6.QtWidgets import QSpinBox, QDoubleSpinBox
+        mm_px = self.site.get('margin_mm', 12.7) / 25.4 * 96
+        cols = QSpinBox(); cols.setRange(1, 20); cols.setValue(self.site.get('cols', 1))
+        cgut = QDoubleSpinBox(); cgut.setRange(0, 50); cgut.setDecimals(0); cgut.setSuffix(' mm'); cgut.setValue(self.site.get('colgut', 5))
+        rows = QSpinBox(); rows.setRange(1, 20); rows.setValue(self.site.get('rows', 1))
+        rgut = QDoubleSpinBox(); rgut.setRange(0, 50); rgut.setDecimals(0); rgut.setSuffix(' mm'); rgut.setValue(self.site.get('rowgut', 5))
+        show = QCheckBox('Show guides'); show.setChecked(getattr(self, 'show_guides', True))
+        dlg = form_dialog(self, 'Guides & Columns',
+                          [('Columns:', cols), ('Column gutter:', cgut), ('Rows:', rows), ('Row gutter:', rgut), ('', show)],
+                          QLabel('Guides are laid inside the page margin to divide it into columns and rows.\n'
+                                 'They are on-screen aids only and never print. Set both to 1 to clear them.'))
+        if not dlg.exec(): return
+        self.commit()
+        W, H = self.site['width'], self.site['height']
+        if cols.value() == 1 and rows.value() == 1:
+            self.site['guides'] = {'v': [], 'h': []}
+        else:
+            cg, rg = cgut.value() / 25.4 * 96, rgut.value() / 25.4 * 96
+            cw = (W - 2 * mm_px - (cols.value() - 1) * cg) / cols.value()
+            rh = (H - 2 * mm_px - (rows.value() - 1) * rg) / rows.value()
+            v, x = [], mm_px
+            for _ in range(cols.value()):
+                v += [round(x, 1), round(x + cw, 1)]; x += cw + cg
+            h, y = [], mm_px
+            for _ in range(rows.value()):
+                h += [round(y, 1), round(y + rh, 1)]; y += rh + rg
+            self.site['guides'] = {'v': sorted(set(v)), 'h': sorted(set(h))}
+        self.site.update(cols=cols.value(), colgut=cgut.value(), rows=rows.value(), rowgut=rgut.value())
+        self.show_guides = show.isChecked()
         self.refresh()
 
     def document_setup(self):
@@ -7793,6 +7888,8 @@ class MainWindow(QMainWindow):
         wmm = QDoubleSpinBox(); wmm.setRange(10, 2000); wmm.setDecimals(0); wmm.setSuffix(' mm')
         hmm = QDoubleSpinBox(); hmm.setRange(10, 2000); hmm.setDecimals(0); hmm.setSuffix(' mm')
         land = QCheckBox('Landscape')
+        marg = QDoubleSpinBox(); marg.setRange(0, 100); marg.setDecimals(0); marg.setSuffix(' mm')
+        marg.setValue(round(self.site.get('margin_mm', 12.7)))
         cw, ch = round(to_mm(self.site['width'])), round(to_mm(self.site['height']))
         portrait_w, portrait_h = min(cw, ch), max(cw, ch)
         wmm.setValue(cw); hmm.setValue(ch); land.setChecked(self.site['width'] > self.site['height'])
@@ -7811,9 +7908,11 @@ class MainWindow(QMainWindow):
                 a, b = wmm.value(), hmm.value(); wmm.setValue(b); hmm.setValue(a)
         land.toggled.connect(lambda *_: on_orient())
         dlg = form_dialog(self, 'Document Setup',
-                          [('Page size:', combo), ('Width:', wmm), ('Height:', hmm), ('', land)],
+                          [('Page size:', combo), ('Width:', wmm), ('Height:', hmm), ('', land),
+                           ('Margin guide:', marg)],
                           QLabel('Applies to the whole document. Objects keep their positions;\n'
-                                 'a bigger page gives more room, a smaller one may clip edges.'))
+                                 'a bigger page gives more room, a smaller one may clip edges.\n'
+                                 'The margin guide is a non-printing on-screen guide only.'))
         if not dlg.exec():
             return
         w, h = to_px(wmm.value()), to_px(hmm.value())
@@ -7821,6 +7920,7 @@ class MainWindow(QMainWindow):
         if not land.isChecked() and w > h: w, h = h, w
         self.commit()
         self.site['width'], self.site['height'] = w, h
+        self.site['margin_mm'] = marg.value()
         for p in self.site['pages']:
             if p.get('height'):
                 p['height'] = max(p['height'], h)
@@ -8280,6 +8380,15 @@ class MainWindow(QMainWindow):
             m.addAction(self.a['lock'])
             o = self.sel_objs()[0]
             if o['type'] in ('text', 'artistic', 'button'): m.addAction('Edit Text', lambda: self.start_edit(o))
+            if o['type'] == 'text':
+                n_text = sum(1 for i in self.sel if (self.find(i) or {}).get('type') == 'text')
+                if n_text >= 2: m.addAction(ticon(['insert-link', 'link'], ''), 'Link Text Frames', self.link_text_frames)
+                if o.get('flow_head'): m.addAction('Unlink Text Frames', self.unlink_text_frames)
+            if o['type'] in ('shape', 'text', 'picture', 'button'):
+                m.addAction('Gradient Fill…', self.gradient_dialog)
+                if o.get('grad'): m.addAction('Remove Gradient', self.remove_gradient)
+            if o['type'] in ('picture', 'shape'):
+                m.addAction('Stop Wrapping Text' if o.get('wrap') else 'Wrap Text Around This', self.toggle_wrap)
             if o['type'] == 'picture': m.addAction('Replace Picture…', lambda: self.pick_picture(o))
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
         else:
@@ -8290,6 +8399,11 @@ class MainWindow(QMainWindow):
         on = self.a['rulers'].isChecked()
         for w in self.ruler_widgets: w.setVisible(on)
         self.settings.setValue('rulers', on)
+
+    def toggle_crosshair(self):
+        self.crosshair = self.a['crosshair'].isChecked()
+        self.view.viewport().setCursor(Qt.CrossCursor if self.crosshair else Qt.ArrowCursor)
+        self.view.viewport().update()
 
     def toggle_grid(self):
         self.show_grid = self.a['grid'].isChecked(); self.settings.setValue('grid', self.show_grid); self.view.viewport().update()
@@ -8338,6 +8452,7 @@ class MainWindow(QMainWindow):
             if dlg.result_update: self.install_update(); return
             if dlg.result_site: self.set_site(dlg.result_site)
             elif dlg.result_path: self.load_path(dlg.result_path)
+            elif dlg.result_pageplus: self.open_pageplus()
             elif dlg.result_webplus: self.load_webplus(*dlg.result_webplus)
             elif dlg.result_import: self.import_folder(skip_save_check=True)
 
@@ -8376,7 +8491,7 @@ class MainWindow(QMainWindow):
     def open_dialog(self):
         if not self.maybe_save(): return
         start = os.path.dirname(self.path) if self.path else os.path.expanduser('~')
-        path, _ = QFileDialog.getOpenFileName(self, 'Open Site', start, f'WEBcreator sites (*{EXT});;All files (*)')
+        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', start, f'PAGEcreator publications (*{EXT});;All files (*)')
         if path: self.load_path(path)
 
     # ------------------------------------------------- Serif WebPlus (.wpp)
@@ -8483,7 +8598,7 @@ class MainWindow(QMainWindow):
     def save_as(self):
         if self.editor: self.finish_edit()
         start = self.path or os.path.join(os.path.expanduser('~'), re.sub(r'[^\w -]+', '', self.site['name']).strip() + EXT)
-        path, _ = QFileDialog.getSaveFileName(self, 'Save Site As', start, f'WEBcreator sites (*{EXT})')
+        path, _ = QFileDialog.getSaveFileName(self, 'Save Publication As', start, f'PAGEcreator publications (*{EXT})')
         if not path: return False
         if not path.endswith(EXT): path += EXT
         return self.write(path)
@@ -8894,40 +9009,132 @@ class MainWindow(QMainWindow):
         self.dirty = True
         return bool(self.site['netlify']['site_id'])
 
-    def export_pdf(self):
-        """Export the document to a vector PDF, one PDF page per document page.
-        Reuses paint_obj (the canvas renderer), so text stays text and shapes
-        stay vectors. 1 canvas px = 1/96 inch, so an A4 doc prints at true size."""
-        from PySide6.QtGui import QPdfWriter, QPageSize
-        from PySide6.QtCore import QSizeF, QMarginsF
-        start = os.path.splitext(self.path or self.site.get('name') or 'document')[0] + '.pdf'
-        path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', start, 'PDF documents (*.pdf)')
-        if not path: return
-        if not path.lower().endswith('.pdf'): path += '.pdf'
-        site = self.site; Wpx = site['width']; pages = site['pages']
-        def mm(px): return px / 96.0 * 25.4
-        w = QPdfWriter(path); w.setResolution(96); w.setTitle(site.get('name') or 'Document')
-        H0 = pages[0].get('height') or site['height']
-        w.setPageSize(QPageSize(QSizeF(mm(Wpx), mm(H0)), QPageSize.Millimeter))
-        w.setPageMargins(QMarginsF(0, 0, 0, 0))
-        painter = QPainter(w)
+    def preflight(self):
+        """Scan the document for common print problems: off-page objects, empty or
+        low-resolution pictures, and text that overflows its frame."""
+        from PySide6.QtWidgets import QTextEdit
+        site = self.site; issues = []
+        for pi, page in enumerate(site['pages']):
+            Wp, Hp = site['width'], page.get('height') or site['height']
+            tag = f'Page {pi + 1}'
+            for o in page['objects']:
+                nm = TYPE_NAMES.get(o['type'], o['type'])
+                if o['x'] < -2 or o['y'] < -2 or o['x'] + o['w'] > Wp + 2 or o['y'] + o['h'] > Hp + 2:
+                    issues.append(f'{tag}: a {nm} extends past the page edge (set a bleed if intentional).')
+                if o['type'] == 'picture' and not o.get('src'):
+                    issues.append(f'{tag}: a picture frame has no image.')
+                elif o['type'] == 'picture':
+                    pm = pixmap_for(site, o['src'])
+                    if pm and not pm.isNull() and o['w'] > 0:
+                        dpi = pm.width() / (o['w'] / 96.0)
+                        if dpi < 150:
+                            issues.append(f'{tag}: a picture is low-resolution ({dpi:.0f} dpi here; 300 dpi is ideal for print).')
+                if o['type'] == 'text' and not o.get('flow_next') and not o.get('flow_head') and not o.get('pagenum'):
+                    pad = o.get('pad', 8)
+                    if make_doc(o).size().height() > o['h'] - 2 * pad + 1:
+                        issues.append(f'{tag}: a text frame has more text than fits (overflow).')
+        dlg = QDialog(self); dlg.setWindowTitle('Preflight Check'); dlg.resize(540, 420)
+        v = QVBoxLayout(dlg)
+        if issues:
+            v.addWidget(QLabel(f'<b>{len(issues)} issue(s) to check before printing:</b>'))
+            te = QTextEdit(); te.setReadOnly(True); te.setPlainText('\n'.join(f'•  {i}' for i in issues)); v.addWidget(te)
+        else:
+            v.addWidget(QLabel('✓  No problems found — the document looks ready to print or export.'))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok); bb.accepted.connect(dlg.accept); v.addWidget(bb)
+        dlg.exec()
+
+    def print_document(self):
+        """Print to a physical printer via the system print dialog. Renders each page
+        with the same paint_obj path as PDF export, scaled to the printer's resolution."""
+        from PySide6.QtPrintSupport import QPrinter, QPrintDialog
+        from PySide6.QtGui import QPageSize
+        from PySide6.QtCore import QSizeF
+        site = self.site; Wpx = site['pages'] and site['width']; pages = site['pages']
+        if not pages: return
+        def psize(Hpx): return QPageSize(QSizeF(Wpx / 96 * 25.4, Hpx / 96 * 25.4), QPageSize.Millimeter)
+        printer = QPrinter(QPrinter.HighResolution); printer.setDocName(site.get('name') or 'Document')
+        printer.setPageSize(psize(pages[0].get('height') or site['height']))
+        dlg = QPrintDialog(printer, self); dlg.setWindowTitle('Print')
+        if dlg.exec() != QPrintDialog.Accepted: return
+        scale = printer.resolution() / 96.0
+        painter = QPainter(printer)
         try:
             for i, page in enumerate(pages):
                 Hpx = page.get('height') or site['height']
                 if i:
-                    w.setPageSize(QPageSize(QSizeF(mm(Wpx), mm(Hpx)), QPageSize.Millimeter))
-                    w.newPage()
+                    printer.setPageSize(psize(Hpx)); printer.newPage()
+                painter.save(); painter.scale(scale, scale)
                 m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
-                painter.fillRect(0, 0, Wpx, Hpx, QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff'))
+                painter.fillRect(QRectF(0, 0, Wpx, Hpx), QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff'))
                 for o in page_objects(site, page):
                     if o.get('hidden'): continue
                     painter.save(); painter.translate(o['x'], o['y'])
                     if o.get('rot'):
                         painter.translate(o['w'] / 2, o['h'] / 2); painter.rotate(o['rot']); painter.translate(-o['w'] / 2, -o['h'] / 2)
                     painter.setOpacity(o.get('opacity', 1)); paint_obj(painter, o, site, page, edit=False); painter.restore()
+                painter.restore()
         finally:
             painter.end()
-        self.hint(f'Exported {len(pages)} page(s) to {os.path.basename(path)}')
+        self.hint(f'Sent {len(pages)} page(s) to the printer.')
+
+    def export_pdf(self):
+        """Export to a vector PDF (one page per document page), with optional bleed
+        and printer crop marks. Reuses paint_obj so text stays text, shapes stay vector."""
+        from PySide6.QtGui import QPdfWriter, QPageSize
+        from PySide6.QtCore import QSizeF, QMarginsF
+        from PySide6.QtWidgets import QDoubleSpinBox
+        bleed = QDoubleSpinBox(); bleed.setRange(0, 20); bleed.setDecimals(0); bleed.setSuffix(' mm'); bleed.setValue(self.site.get('bleed_mm', 0))
+        marks = QCheckBox('Add printer crop marks'); marks.setChecked(bool(self.site.get('crop_marks', False)))
+        dlg = form_dialog(self, 'Export PDF', [('Bleed:', bleed), ('', marks)],
+                          QLabel('Bleed extends artwork past the trim edge so edge-to-edge printing has no\n'
+                                 'white slivers. Crop marks show the trim lines for a print shop.'))
+        if not dlg.exec(): return
+        start = os.path.splitext(self.path or self.site.get('name') or 'document')[0] + '.pdf'
+        path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', start, 'PDF documents (*.pdf)')
+        if not path: return
+        if not path.lower().endswith('.pdf'): path += '.pdf'
+        self.site['bleed_mm'] = bleed.value(); self.site['crop_marks'] = marks.isChecked()
+        bpx = bleed.value() / 25.4 * 96
+        mark = marks.isChecked()
+        ext = (bpx + 18) if mark else bpx          # page grows by this on every side
+        site = self.site; Wpx = site['width']; pages = site['pages']
+        def mm(px): return px / 96.0 * 25.4
+        w = QPdfWriter(path); w.setResolution(96); w.setTitle(site.get('name') or 'Document')
+        def setsize(Hpx):
+            w.setPageSize(QPageSize(QSizeF(mm(Wpx + 2 * ext), mm(Hpx + 2 * ext)), QPageSize.Millimeter))
+            w.setPageMargins(QMarginsF(0, 0, 0, 0))
+        def crop(painter, Wp, Hp):
+            pen = QPen(QColor('#000')); pen.setWidthF(0.5); painter.setPen(pen)
+            L, gap = 18.0, max(0.0, bpx)
+            for cx, cy in ((ext, ext), (ext + Wp, ext), (ext, ext + Hp), (ext + Wp, ext + Hp)):
+                sx = -1 if cx < ext + Wp / 2 else 1
+                sy = -1 if cy < ext + Hp / 2 else 1
+                painter.drawLine(QPointF(cx + sx * gap, cy), QPointF(cx + sx * (gap + L), cy))
+                painter.drawLine(QPointF(cx, cy + sy * gap), QPointF(cx, cy + sy * (gap + L)))
+        setsize(pages[0].get('height') or site['height'])
+        painter = QPainter(w)
+        try:
+            for i, page in enumerate(pages):
+                Hpx = page.get('height') or site['height']
+                if i: setsize(Hpx); w.newPage()
+                m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
+                bg = QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff')
+                painter.fillRect(QRectF(ext - bpx, ext - bpx, Wpx + 2 * bpx, Hpx + 2 * bpx), bg)
+                painter.save(); painter.translate(ext, ext)
+                painter.setClipRect(QRectF(-bpx, -bpx, Wpx + 2 * bpx, Hpx + 2 * bpx))
+                for o in page_objects(site, page):
+                    if o.get('hidden'): continue
+                    painter.save(); painter.translate(o['x'], o['y'])
+                    if o.get('rot'):
+                        painter.translate(o['w'] / 2, o['h'] / 2); painter.rotate(o['rot']); painter.translate(-o['w'] / 2, -o['h'] / 2)
+                    painter.setOpacity(o.get('opacity', 1)); paint_obj(painter, o, site, page, edit=False); painter.restore()
+                painter.restore()
+                if mark: crop(painter, Wpx, Hpx)
+        finally:
+            painter.end()
+        extra = [f'{bleed.value():.0f}mm bleed'] if bleed.value() else []
+        if mark: extra.append('crop marks')
+        self.hint(f'Exported {len(pages)} page(s)' + (f' ({", ".join(extra)})' if extra else '') + f' to {os.path.basename(path)}')
 
     def publish_disk(self):
         """Publish = pick Static or Responsive, then show the 'put it online'
@@ -8953,7 +9160,7 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted: return
         self.site['responsive'] = rb_resp.isChecked()
         # Step 2: write the files automatically to a stable per-site folder.
-        base = re.sub(r'[^A-Za-z0-9 ._-]+', '', (self.site.get('name') or 'My Site')).strip() or 'My Site'
+        base = re.sub(r'[^A-Za-z0-9 ._-]+', '', (self.site.get('name') or 'Untitled')).strip() or 'Untitled'
         folder = self.site.get('publishDir')
         if not folder:
             root = os.path.expanduser('~/Published Sites')
@@ -9222,38 +9429,19 @@ class MainWindow(QMainWindow):
             self.hint(f'Updated to {ver}. The new version starts next time you open the app.')
 
     def update_settings(self):
-        """The single Settings dialog (Help ▸ Settings). Merges what used to be a
-        separate File ▸ Site Properties dialog: site design, contact details, AI
-        image provider, image editor and the software-update source — all in one
-        place, so there are no longer two overlapping 'settings' dialogs."""
+        """The single Settings dialog (Help ▸ Settings): document details, contact
+        details for letterheads/business documents, the AI image provider, the image
+        editor and where app updates come from."""
         from PySide6.QtWidgets import QScrollArea
         s = self.site
-        # --- Site design ---
         name = QLineEdit(s['name'])
-        w = QSpinBox(); w.setRange(320, 4000); w.setValue(s['width']); w.setSuffix(' px')
-        h = QSpinBox(); h.setRange(200, 30000); h.setValue(s['height']); h.setSuffix(' px')
         bgc = [s.get('bg', '#ffffff')]
-        bgb = ColorButton(bgc[0], lambda c: (bgc.__setitem__(0, c), bgb.setIcon(swatch_icon(c, 18))), 'Browser background')
-        pic = [s.get('bgimage')]
-        picb = QPushButton(s.get('assetnames', {}).get(pic[0], 'Choose picture…') if pic[0] else 'Choose picture…')
-        picm = QMenu(picb)
-        def choose_pic():
-            path, _ = QFileDialog.getOpenFileName(self, 'Background picture', os.path.expanduser('~/Pictures'), 'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
-            uri = self.picture_uri(path) if path else None
-            if uri:
-                k = add_asset(s, uri); s.setdefault('assetnames', {})[k] = os.path.basename(path)
-                pic[0] = k; picb.setText(os.path.basename(path))
-        picm.addAction('Choose picture…', choose_pic)
-        picm.addAction('No picture', lambda: (pic.__setitem__(0, None), picb.setText('Choose picture…')))
-        picb.setMenu(picm)
-        # --- Contact / author details ---
+        bgb = ColorButton(bgc[0], lambda c: (bgc.__setitem__(0, c), bgb.setIcon(swatch_icon(c, 18))), 'Page background')
         c = s.get('contact', {})
-        c_name = QLineEdit(c.get('name', '')); c_name.setPlaceholderText('Your name / the site author')
+        c_name = QLineEdit(c.get('name', '')); c_name.setPlaceholderText('Your name or organisation')
         c_email = QLineEdit(c.get('email', '')); c_email.setPlaceholderText('name@example.org')
         c_phone = QLineEdit(c.get('phone', ''))
         c_addr = QLineEdit(c.get('address', ''))
-        c_web = QLineEdit(c.get('website', '')); c_web.setPlaceholderText('example.org')
-        # --- AI image provider ---
         ai_prov = QComboBox()
         ai_prov.addItem('Pollinations (free, no account)', 'pollinations')
         ai_prov.addItem('OpenAI (DALL·E — needs API key)', 'openai')
@@ -9261,57 +9449,45 @@ class MainWindow(QMainWindow):
         ai_prov.setCurrentIndex(max(0, ai_prov.findData(self.settings.value('aiProvider', 'pollinations'))))
         ai_key = QLineEdit(self.settings.value('aiOpenAIKey', '') or self.settings.value('aiStabilityKey', ''))
         ai_key.setEchoMode(QLineEdit.Password); ai_key.setPlaceholderText('Only needed for OpenAI / Stability')
-        # --- Tools & software updates ---
         painter = QLineEdit(self.settings.value('imagePainterCmd', '') or 'IMAGEpainter'); painter.setPlaceholderText('IMAGEpainter')
-        repo = QLineEdit(self.update_repo()); repo.setPlaceholderText('yourname/webcreator')
+        repo = QLineEdit(self.update_repo()); repo.setPlaceholderText('yourname/pagecreator')
         branch = QLineEdit(self.settings.value('updateBranch', '') or UPDATE_BRANCH)
         path = QLineEdit(self.settings.value('updatePath', '') or UPDATE_PATH); path.setPlaceholderText('pagecreator.py')
         auto = QCheckBox('Check for updates when the app starts'); auto.setChecked(self.settings.value('autoUpdate', True, type=bool))
 
         def section(txt, hint):
             lab = QLabel(hint); lab.setStyleSheet('color:gray'); return (f'— {txt} —', lab)
-        rows = [section('Site', 'Name, size and background of this site'),
-                ('Site name:', name), ('Page width:', w), ('Default page height:', h),
-                ('Browser background:', bgb), ('Background picture:', picb),
-                section('Contact details', 'Used by Insert ▸ Contact details'),
-                ('Author / name:', c_name), ('Email:', c_email), ('Phone:', c_phone),
-                ('Address:', c_addr), ('Website:', c_web),
+        rows = [section('Document', 'Name and page background of this document'),
+                ('Document name:', name), ('Page background:', bgb),
+                section('Contact details', 'For letterheads and business documents'),
+                ('Name / organisation:', c_name), ('Email:', c_email),
+                ('Phone:', c_phone), ('Address:', c_addr),
                 section('AI images', 'Used by Insert ▸ Picture ▸ Create with AI'),
                 ('Image generator:', ai_prov), ('API key (if needed):', ai_key),
                 section('Tools & updates', 'Image editor, and where app updates come from'),
                 ('Image editor (IMAGEpainter button):', painter),
                 ('GitHub repository:', repo), ('Branch:', branch), ('File in it:', path), ('', auto)]
 
-        # The merged form is long, so make the dialog scrollable.
-        dlg = QDialog(self); dlg.setWindowTitle('Settings'); dlg.resize(560, 660)
+        dlg = QDialog(self); dlg.setWindowTitle('Settings'); dlg.resize(560, 600)
         outer = QVBoxLayout(dlg)
         area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QScrollArea.NoFrame)
         inner = QWidget(); form = QFormLayout(inner)
         for lbl, wdg in rows: form.addRow(lbl, wdg)
         area.setWidget(inner); outer.addWidget(area, 1)
-        note = QLabel('The browser background (and picture, tiled) fills the window around your pages when '
-                      f'published. App updates are read from the public repository above.\nNow: {self.update_url()}')
+        note = QLabel(f'App updates are read from the public repository above.\nNow: {self.update_url()}')
         note.setWordWrap(True); note.setStyleSheet('color:gray'); outer.addWidget(note)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); outer.addWidget(bb)
         if not dlg.exec(): return
 
-        # --- Save: site design (incl. footer shift when the default height changes) ---
         self.commit()
-        dh = h.value() - s['height']
-        for m in s['masters']:
-            for o in m['objects']:
-                if o.get('anchor') == 'bottom': o['y'] += dh
-        s.update(name=name.text().strip() or s['name'], width=w.value(), height=h.value(), bg=bgc[0], bgimage=pic[0])
+        s.update(name=name.text().strip() or s['name'], bg=bgc[0])
         s['contact'] = {'name': c_name.text().strip(), 'email': c_email.text().strip(),
-                        'phone': c_phone.text().strip(), 'address': c_addr.text().strip(),
-                        'website': c_web.text().strip()}
-        # --- Save: AI provider ---
+                        'phone': c_phone.text().strip(), 'address': c_addr.text().strip()}
         prov = ai_prov.currentData(); self.settings.setValue('aiProvider', prov)
         k = ai_key.text().strip()
         if prov == 'openai': self.settings.setValue('aiOpenAIKey', k)
         elif prov == 'stability': self.settings.setValue('aiStabilityKey', k)
-        # --- Save: tools & updates ---
         self.settings.setValue('imagePainterCmd', painter.text().strip() or 'IMAGEpainter')
         self.settings.setValue('updateRepo', repo.text().strip()); self.settings.setValue('updateBranch', branch.text().strip() or UPDATE_BRANCH)
         self.settings.setValue('updatePath', path.text().strip() or UPDATE_PATH)
@@ -9329,8 +9505,8 @@ class MainWindow(QMainWindow):
                 bl = QLabel(); bl.setPixmap(pm.scaledToWidth(560, Qt.SmoothTransformation))
                 bl.setAlignment(Qt.AlignCenter); v.addWidget(bl)
         body = QLabel(f'<p>Version {VERSION}</p>'
-                      '<p>A desktop website designer. Lay out pages freely, share headers and footers on master pages, '
-                      'preview in your browser and publish plain HTML to a folder.</p>'
+                      '<p>A desktop publishing app. Lay out print pages freely, share headers and footers on master '
+                      'pages, see your document as a booklet, and export it to PDF.</p>'
                       f'<p style="color:gray">Built with Qt {QApplication.instance().applicationVersion() or ""} — '
                       'it follows your desktop theme.</p>')
         body.setWordWrap(True); body.setTextFormat(Qt.RichText)
@@ -9346,7 +9522,11 @@ class MainWindow(QMainWindow):
         self.view.fit_width(); self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().minimum())
         self.view.centerOn(QPointF(self.site['width'] / 2, 300))
         args = [a for a in sys.argv[1:] if not a.startswith('-')]
-        if args and os.path.exists(args[0]) and args[0].lower().endswith(WPP_EXT): self.load_webplus(args[0])
+        if args and os.path.exists(args[0]) and args[0].lower().endswith('.ppp'):
+            root = self.webplus_root()
+            if root:
+                try: self.set_site(import_pageplus_file(args[0], root))
+                except Exception as ex: QMessageBox.warning(self, APP, f"Couldn't open {os.path.basename(args[0])}.\n\n{ex}")
         elif args and os.path.exists(args[0]): self.load_path(args[0])
         elif self.settings.value('showStartup', True, type=bool) and '--no-startup' not in sys.argv:
             self.startup()

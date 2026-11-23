@@ -5,5 +5,5 @@ Comment=Design print documents, then export them as PDF
 Exec=pagecreator %f
 Icon=pagecreator
 Terminal=false
-Categories=Office;Publishing;Graphics;
+Categories=Graphics;2DGraphics;Publishing;
 MimeType=application/x-pagecreator-site;

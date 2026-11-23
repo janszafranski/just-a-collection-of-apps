@@ -25,6 +25,14 @@ python3 -c 'import PySide6' 2>/dev/null \
 log "Installing the app"
 install -Dm755 "$SELF/pagecreator.py" "$DATA/pagecreator/pagecreator.py"
 install -Dm644 "$SELF/banner.png" "$DATA/pagecreator/banner.png"
+[[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$DATA/pagecreator/manual.html"
+[[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$DATA/pagecreator/quickstart.html"
+
+log "Installing the icon"
+for sz in 32 48 64 128 256; do
+  [[ -f "$SELF/icon-$sz.png" ]] && install -Dm644 "$SELF/icon-$sz.png" "$DATA/icons/hicolor/${sz}x${sz}/apps/pagecreator.png"
+done
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$DATA/icons/hicolor" 2>/dev/null || true
 
 log "Installing the launcher"
 install -d "$BIN"
