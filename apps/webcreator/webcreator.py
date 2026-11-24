@@ -976,6 +976,96 @@ def _dropcap_web(inner, o):
     style = f"float:left;font-size:{size}px;line-height:.72;padding:4px 7px 0 0;font-weight:700"
     return inner[:pos] + f'<span style="{style}">{inner[pos]}</span>' + inner[pos + 1:]
 
+# ---------------------------------------------------------------- Spell check
+# A dictionary-backed checker. The word list is cached once in a shared folder
+# (downloaded on first use if absent); a personal list sits beside it. If no
+# dictionary can be loaded, ok() returns True for everything (never a false flag).
+SPELL_DIR = os.path.expanduser('~/.local/share/justapps-spell')
+SPELL_URL = 'https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt'
+_SPELL = None
+
+class SpellChecker:
+    COMMON = set(('dont cant wont isnt arent wasnt werent didnt doesnt dont hasnt havent '
+                  'wouldnt couldnt shouldnt im ive id ill youre youve youll hes shes theyre '
+                  'theyve theyll weve wed lets thats whats heres theres its oclock').split())
+    EXTRA = set(('analytics api apis app apps asperger aspergers aspie aspies autism autistic '
+                 'autoplay backend blog blogs bluetooth chatbot chatbots checkbox checkboxes checkout '
+                 'config cpu css dashboard dashboards dataset datasets dropdown dropdowns ecommerce '
+                 'email emails emoji emojis faq faqs favicon frontend fullstack gif gonna gotta gpu '
+                 'homepage html hyperlink hyperlinks internet intranet jpeg jpg json livestream '
+                 'livestreams login logout metadata multimedia neurodivergent neurodiverse neurodiversity '
+                 'neurotypical newsletter newsletters offline okay onboarding online password passwords '
+                 'pdf plugin plugins png podcast podcasts ram realtime scalable sidebar sidebars signin '
+                 'signout signup smartphone smartphones startup startups stim stimming stims svg thumbnail '
+                 'thumbnails toolbar toolbars tooltip tooltips uri url urls username usernames vlog vlogs '
+                 'wanna webpage webpages website websites wifi wireframe wordpress workflow workflows '
+                 'wysiwyg xml').split())
+    def __init__(self):
+        self.words = set(); self.personal = set(); self.ready = False; self._load()
+    def _load(self):
+        for p in (os.path.join(SPELL_DIR, 'words.txt'), '/usr/share/dict/words',
+                  '/usr/share/dict/british-english', '/usr/share/dict/american-english'):
+            if os.path.isfile(p):
+                try:
+                    with open(p, encoding='utf-8', errors='ignore') as fh:
+                        self.words = {l.strip().lower() for l in fh if l.strip()}
+                    if self.words: self.ready = True; break
+                except Exception: pass
+        if self.ready: self.words |= self.EXTRA
+        pf = os.path.join(SPELL_DIR, 'personal.txt')
+        if os.path.isfile(pf):
+            try:
+                with open(pf, encoding='utf-8', errors='ignore') as fh:
+                    self.personal = {l.strip().lower() for l in fh if l.strip()}
+            except Exception: pass
+    def try_download(self):
+        try:
+            import urllib.request
+            os.makedirs(SPELL_DIR, exist_ok=True)
+            data = urllib.request.urlopen(SPELL_URL, timeout=25).read()
+            with open(os.path.join(SPELL_DIR, 'words.txt'), 'wb') as fh: fh.write(data)
+            self.words = set(); self.ready = False; self._load(); return self.ready
+        except Exception: return False
+    def ok(self, w):
+        if not self.ready: return True
+        if len(w) <= 1 or any(c.isdigit() for c in w): return True
+        lw = w.lower().replace('’', "'")
+        if lw in self.personal: return True
+        if lw.replace("'", '') in self.COMMON: return True
+        if lw.endswith("'s"): lw = lw[:-2]
+        lw = lw.replace("'", '')
+        return (not lw) or (lw in self.words)
+    def add_personal(self, w):
+        w = w.lower(); self.personal.add(w)
+        try:
+            os.makedirs(SPELL_DIR, exist_ok=True)
+            with open(os.path.join(SPELL_DIR, 'personal.txt'), 'a', encoding='utf-8') as fh: fh.write(w + '\n')
+        except Exception: pass
+    def suggest(self, w, limit=8):
+        if not self.ready: return []
+        w = w.lower(); letters = 'abcdefghijklmnopqrstuvwxyz'; e1 = set()
+        splits = [(w[:i], w[i:]) for i in range(len(w) + 1)]
+        for a, b in splits:
+            if b: e1.add(a + b[1:])
+            if len(b) > 1: e1.add(a + b[1] + b[0] + b[2:])
+            for c in letters:
+                if b: e1.add(a + c + b[1:])
+                e1.add(a + c + b)
+        cand = {x for x in e1 if x in self.words}
+        return sorted(cand, key=lambda x: (x[0] != w[0], abs(len(x) - len(w)), x))[:limit]
+
+def spell():
+    global _SPELL
+    if _SPELL is None: _SPELL = SpellChecker()
+    return _SPELL
+
+def _replace_word_in_html(html_src, old, new):
+    """Replace whole-word `old` with `new` only in text (never inside tags)."""
+    out = []
+    for seg in re.split(r'(<[^>]+>)', html_src):
+        out.append(seg if seg.startswith('<') else re.sub(r'\b' + re.escape(old) + r'\b', new, seg))
+    return ''.join(out)
+
 def make_doc(o):
     doc = QTextDocument(); doc.setDocumentMargin(0); doc.setDefaultFont(qfont(o))
     opt = QTextOption(); opt.setAlignment(ALIGN.get(o.get('align', 'left'), Qt.AlignLeft))
@@ -5623,7 +5713,9 @@ class MainWindow(QMainWindow):
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
         menu('F&ormat', [a['bold'], a['italic'], a['underline'], None, a['aleft'], a['acenter'], a['aright'], a['ajust'],
-                         None, ('Lists / Bullets', list_sub), None, a['pageprops']])
+                         None, ('Lists / Bullets', list_sub), None,
+                         self.act('Chec&k Spelling…', lambda: self.spell_dialog(), 'F7', ['tools-check-spelling', 'gtk-spell-check']),
+                         a['pageprops']])
         al = [self.act(n, lambda _=False, k=k: self.align(k), None, ic) for k, n, ic in (
             ('left', 'Align Left Edges', 'align-horizontal-left'), ('hcenter', 'Align Centres Horizontally', 'align-horizontal-center'),
             ('right', 'Align Right Edges', 'align-horizontal-right'), ('top', 'Align Top Edges', 'align-vertical-top'),
@@ -7754,6 +7846,77 @@ class MainWindow(QMainWindow):
                 o['glow'] = {'blur': gbl.value(), 'opacity': gop.value(), 'color': gcol[0]}
             else: o.pop('glow', None)
         self.refresh()
+
+    def _collect_misspellings(self):
+        import html as _h
+        sp = spell(); word_re = re.compile(r"[A-Za-z]+(?:['’][A-Za-z]+)?"); res = {}; seen = set()
+        for pg in self.site['pages']:
+            for o in page_objects(self.site, pg):
+                if o.get('type') not in ('text', 'artistic', 'button') or not o.get('html'): continue
+                if o['id'] in seen: continue
+                seen.add(o['id'])
+                text = _h.unescape(re.sub(r'<[^>]+>', ' ', o['html']))
+                for m in word_re.finditer(text):
+                    w = m.group(0)
+                    if not sp.ok(w): res.setdefault(w, []).append(o)
+        return res
+
+    def spell_dialog(self):
+        from PySide6.QtWidgets import QDialog, QListWidget, QHBoxLayout, QVBoxLayout, QPushButton, QLineEdit
+        sp = spell()
+        if not sp.ready:
+            if QMessageBox.question(self, 'Spell Check', 'No spelling dictionary is installed yet.\n\n'
+                    'Download a free English word list now (about 4 MB, one time)?',
+                    QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+                return
+            QApplication.setOverrideCursor(Qt.WaitCursor); okk = sp.try_download(); QApplication.restoreOverrideCursor()
+            if not okk:
+                QMessageBox.warning(self, 'Spell Check', 'Could not download a dictionary. Check your internet '
+                    'connection, or install one with your package manager (for example hunspell-en_gb).')
+                return
+        miss = self._collect_misspellings()
+        if not miss:
+            QMessageBox.information(self, 'Spell Check', 'No misspellings found. ✓'); return
+        dlg = QDialog(self); dlg.setWindowTitle('Spell Check'); dlg.resize(500, 340)
+        lay = QHBoxLayout(dlg)
+        left = QListWidget()
+        for w in sorted(miss, key=str.lower): left.addItem(w)
+        lay.addWidget(left, 1)
+        right = QVBoxLayout(); lay.addLayout(right, 1)
+        sugg = QListWidget(); changeto = QLineEdit()
+        right.addWidget(QLabel('Suggestions:')); right.addWidget(sugg, 1)
+        right.addWidget(QLabel('Change to:')); right.addWidget(changeto)
+        bChange = QPushButton('Change All'); bIgnore = QPushButton('Ignore')
+        bAdd = QPushButton('Add to Dictionary'); bClose = QPushButton('Close')
+        for b in (bChange, bIgnore, bAdd, bClose): right.addWidget(b)
+        def refresh_sugg(*_):
+            sugg.clear(); it = left.currentItem()
+            if not it: changeto.clear(); return
+            s = sp.suggest(it.text())
+            for x in s: sugg.addItem(x)
+            changeto.setText(s[0] if s else it.text())
+        left.currentItemChanged.connect(refresh_sugg)
+        sugg.currentItemChanged.connect(lambda *_: changeto.setText(sugg.currentItem().text()) if sugg.currentItem() else None)
+        def drop_current():
+            it = left.currentItem()
+            if it: miss.pop(it.text(), None); left.takeItem(left.row(it))
+            if left.count() == 0: dlg.accept()
+        def do_change():
+            it = left.currentItem()
+            if not it: return
+            w = it.text(); new = changeto.text().strip()
+            if not new or new == w: return
+            self.commit()
+            for o in miss.get(w, []): o['html'] = _replace_word_in_html(o.get('html', ''), w, new)
+            self.refresh(); drop_current()
+        def do_add():
+            it = left.currentItem()
+            if it: sp.add_personal(it.text())
+            drop_current()
+        bChange.clicked.connect(do_change); bIgnore.clicked.connect(drop_current)
+        bAdd.clicked.connect(do_add); bClose.clicked.connect(dlg.accept)
+        if left.count(): left.setCurrentRow(0)
+        dlg.exec()
 
     def transform_dialog(self):
         """Type an exact position, size and rotation for the selection."""
