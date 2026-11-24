@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>just a... CREATORsuite</title>
+<link rel="stylesheet" href="style.css">
+<header class="top"><div class="wrap">
+<h1><a href="index.html" style="color:inherit;text-decoration:none">just a... CREATORsuite</a></h1>
+<p class="mute" style="margin:0">Simple applications for Linux, each one a ground-up recreation.</p>
+</div></header>
+<div class="wrap">
+
+<nav class="crumbs mute"><a href="index.html">just a... CREATORsuite</a> &rsaquo; just a&hellip; CREATORsuite</nav>
+<h2 style="margin-top:0">just a&hellip; CREATORsuite</h2>
+<img class="shot" src="assets/banner-collectionofapps.png" alt="just a… CREATORsuite">
+<p class="lede">The home for the whole family: a two-pane hub with your apps on the left and everything you have made on the right — a Recent list and a browser of your “just a…” folders, so you can jump straight back into a project.</p>
+<img class="shot" src="assets/shot-hub.png" alt="The CREATORsuite hub">
+<h2>What it does</h2>
+<ul><li>Launch any app, or filter the file list to one app</li><li>Recent files across every app, newest first</li><li>Import older files you saved before the shared folders existed</li><li>Updates each app from GitHub, and installs ones you don&#x27;t have yet</li><li>One place for everything you make</li></ul>
+<h2>Install CREATORsuite</h2>
+<p class="small mute">Install the dependencies for your distribution, then clone and run the
+installer. Nothing needs root except the dependency line.</p>
+<p class="small mute">Arch / CachyOS / Manjaro:</p>
+<pre><code>sudo pacman -S --needed pyside6</code></pre>
+<p class="small mute">Then, on any distribution:</p>
+<pre><code>git clone https://github.com/janszafranski/just-a-collection-of-apps.git
+just-a-collection-of-apps/apps/collectionofapps/install.sh</code></pre>
+<p class="small mute">Only PySide6 is strictly required &mdash; use your distribution's package,
+not pip, so the app follows your desktop theme. The installer checks the rest and tells you
+what, if anything, is missing. There is an <code>uninstall.sh</code> beside it.</p>
+<p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
+
+<footer>Built from the source in
+<a href="https://github.com/janszafranski/just-a-collection-of-apps">janszafranski/just-a-collection-of-apps</a>
+on 2026-11-24. Every template picture on this site is rendered
+by the app itself.</footer>
+</div>
+</html>

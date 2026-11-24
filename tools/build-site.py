@@ -182,36 +182,157 @@ be. If you need what ARTcraft can do, use ARTcraft.</p>
 """
 
 
+# Each app: its page, banner, one-line tag, blurb, feature bullets, deps, and an
+# optional real screenshot. The site is a card per app plus a page per app.
+APPS_META = [
+    dict(key="webcreator", slug="webcreator.html", title="WEBcreator",
+         banner="banner-webcreator.png", tag="Website designer", ext=".webc",
+         blurb="Design a website by laying pages out — drag text, pictures, buttons and "
+               "menus where you want them, share the header on a master page, preview in your "
+               "browser, and publish plain HTML you can upload anywhere.",
+         feats=["Lay pages out freely; master pages for shared headers and menus",
+                "Text, pictures, shapes, nav bars, galleries, forms, tables, a news feed",
+                "QuickShapes, drop shadow & glow, dashed lines & arrowheads",
+                "Drop cap, spell check, convert text to a table",
+                "Edit any picture in PAINTcanvas and it updates on save",
+                "Publishes plain HTML/CSS; opens Serif WebPlus .wpp sites"],
+         deps="sudo pacman -S --needed pyside6 python-beautifulsoup4 qt6-webengine"),
+    dict(key="pagecreator", slug="pagedesigner.html", title="PAGEdesigner",
+         banner="banner-pagecreator.png", tag="Print documents & PDF", ext=".pagc",
+         blurb="Design print documents page by page — text frames that flow between columns, "
+               "master pages, guides and page numbers — then export a vector PDF.",
+         feats=["Linked text frames (newspaper-style text flow), booklet view",
+                "Master pages, guides, columns, page numbers",
+                "QuickShapes, effects, drop cap, spell check, tables",
+                "Calendar wizard and CSV mail merge",
+                "Edit pictures in PAINTcanvas; opens Serif PagePlus files",
+                "Vector PDF export with bleed & crop marks"],
+         deps="sudo pacman -S --needed pyside6 python-beautifulsoup4"),
+    dict(key="paint", slug="paintcanvas.html", title="PAINTcanvas",
+         banner="banner-paint.png", tag="Photo & image editor", ext=".png / .jpg",
+         shot="shot-paint.png",
+         blurb="A layer-based image editor — paint and draw, retouch photos, and apply "
+               "adjustments and filters — in the spirit of PhotoPlus.",
+         feats=["Layers with blend modes, opacity and visibility",
+                "Adjust: brightness/contrast, levels, hue/saturation, colour balance, "
+                "temperature, threshold, posterize, greyscale, sepia, invert",
+                "Filters: Gaussian blur, unsharp mask, median, sharpen, emboss, find edges",
+                "Rectangular & elliptical selections; crop, resize, straighten, rotate, flip",
+                "Retouch: clone, red-eye, dodge, burn, and a gradient tool",
+                "Drop shadow & outer glow on a transparent canvas"],
+         deps="sudo pacman -S --needed pyside6 python-pillow python-numpy"),
+    dict(key="draw", slug="drawmaster.html", title="DRAWmaster",
+         banner="banner-draw.png", tag="Vector drawing", ext=".svg",
+         blurb="A vector editor — shapes, lines, freehand and polylines, a QuickShapes gallery "
+               "and drop-shadow/glow effects — saved as scalable SVG it can re-open and keep editing.",
+         feats=["Rectangles, ellipses, lines, pen (polyline) and freehand paths",
+                "A gallery of 20 QuickShapes; drop shadow & outer glow",
+                "Re-opens its own SVGs losslessly (the drawing is stored in the file)",
+                "Export PNG, or send the drawing to PAINTcanvas for raster work",
+                "Infinitely scalable SVG output"],
+         deps="sudo pacman -S --needed pyside6"),
+]
+
+HUB_META = dict(key="collectionofapps", slug="creatorsuite.html", title="CREATORsuite",
+    banner="banner-collectionofapps.png", tag="The launcher & file hub", ext="",
+    shot="shot-hub.png",
+    blurb="The home for the whole family: a two-pane hub with your apps on the left and "
+          "everything you have made on the right — a Recent list and a browser of your "
+          "“just a…” folders, so you can jump straight back into a project.",
+    feats=["Launch any app, or filter the file list to one app",
+           "Recent files across every app, newest first",
+           "Import older files you saved before the shared folders existed",
+           "Updates each app from GitHub, and installs ones you don't have yet",
+           "One place for everything you make"],
+    deps="sudo pacman -S --needed pyside6")
+
+
+def _install_block(meta):
+    return f"""<h2>Install {html.escape(meta['title'])}</h2>
+<p class="small mute">Install the dependencies for your distribution, then clone and run the
+installer. Nothing needs root except the dependency line.</p>
+<p class="small mute">Arch / CachyOS / Manjaro:</p>
+<pre><code>{html.escape(meta['deps'])}</code></pre>
+<p class="small mute">Then, on any distribution:</p>
+<pre><code>git clone https://github.com/janszafranski/just-a-collection-of-apps.git
+just-a-collection-of-apps/apps/{meta['key']}/install.sh</code></pre>
+<p class="small mute">Only PySide6 is strictly required &mdash; use your distribution's package,
+not pip, so the app follows your desktop theme. The installer checks the rest and tells you
+what, if anything, is missing. There is an <code>uninstall.sh</code> beside it.</p>"""
+
+
 def build_index(counts):
+    cards = []
+    for m in APPS_META:
+        feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"][:3])
+        cards.append(f"""<div class="app">
+  <a href="{m['slug']}"><img src="assets/{m['banner']}" alt="just a… {html.escape(m['title'])}"
+     style="width:100%;border-radius:8px;display:block;margin-bottom:12px"></a>
+  <h3><a href="{m['slug']}">just a&hellip; {html.escape(m['title'])}</a></h3>
+  <p class="mute small" style="margin:.1em 0 .5em">{html.escape(m['tag'])}{' &middot; saves <code>'+html.escape(m['ext'])+'</code>' if m['ext'] else ''}</p>
+  <p class="small">{html.escape(m['blurb'])}</p>
+  <ul class="small mute" style="margin:.3em 0 .6em;padding-left:1.2em">{feats}</ul>
+  <p class="small"><a href="{m['slug']}">Features &amp; install &rsaquo;</a></p>
+</div>""")
+    hub = HUB_META
     body = INTRO + f"""
 <h2>The apps</h2>
 <div class="apps">
-  <div class="app">
-    <h3><a href="webcreator.html">just a&hellip; WEBcreator</a></h3>
-    <p class="small">Design a website by laying pages out &mdash; drag text,
-    pictures, buttons and menus where you want them, share the header on a
-    master page, preview in your browser, and publish plain HTML to a folder
-    you can upload anywhere. Starts from any of
-    <a href="webcreator.html#templates">{counts['total']} templates</a>.
-    Saves <code>.webc</code>. Also opens a Serif <strong>WebPlus</strong>
-    <code>.wpp</code> site, read-only on your original.</p>
-    <p class="mute small">Python + Qt 6 (PySide6). Follows your desktop theme.</p>
-  </div>
+{''.join(cards)}
 </div>
-<p class="mute small">More will join it. It is a collection, not a suite: each
-app stands on its own, installs on its own, and updates itself from the
-repository.</p>
+
+<h2 style="margin-top:2em">just a&hellip; {html.escape(hub['title'])} &mdash; the launcher</h2>
+<p>{html.escape(hub['blurb'])}</p>
+<a href="{hub['slug']}"><img class="shot" src="assets/{hub['shot']}" alt="The CREATORsuite hub"></a>
+<p class="small"><a href="{hub['slug']}">About the launcher &amp; how to install it &rsaquo;</a></p>
 
 <h2>Install</h2>
-<p>Clone, then run the app's own installer. Nothing needs root.</p>
+<p>Each app installs and updates on its own. Clone once, then run whichever installers you
+want &mdash; nothing needs root beyond the dependency line.</p>
 <pre><code>git clone https://github.com/janszafranski/just-a-collection-of-apps.git
 cd just-a-collection-of-apps
-apps/webcreator/install.sh</code></pre>
-<p>Each app also checks the repository for a newer version of itself
-&mdash; <strong>Help &rsaquo; Check for Updates&hellip;</strong> &mdash; and each
-has an <code>uninstall.sh</code> beside its installer.</p>
+apps/collectionofapps/install.sh   # the launcher / hub
+apps/webcreator/install.sh
+apps/pagecreator/install.sh
+apps/paint/install.sh
+apps/draw/install.sh</code></pre>
+<p class="mute small">Each app checks the repository for a newer version of itself (and the
+launcher shows an Update button), and each has an <code>uninstall.sh</code> beside its installer.</p>
 """
     (DOCS / "index.html").write_text(page(SITE, body), encoding="utf-8")
+
+
+def build_app_pages(counts):
+    for m in APPS_META:
+        if m["key"] == "webcreator":
+            continue   # WEBcreator's own rich page (templates gallery) is built separately
+        feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"])
+        shot = (f'<img class="shot" src="assets/{m["shot"]}" alt="just a… {html.escape(m["title"])}">'
+                if m.get("shot") else "")
+        body = f"""<nav class="crumbs mute"><a href="index.html">{html.escape(SITE)}</a> &rsaquo; just a&hellip; {html.escape(m['title'])}</nav>
+<h2 style="margin-top:0">just a&hellip; {html.escape(m['title'])}</h2>
+<img class="shot" src="assets/{m['banner']}" alt="just a… {html.escape(m['title'])}">
+<p class="lede">{html.escape(m['blurb'])}</p>
+{shot}
+<h2>What it does</h2>
+<ul>{feats}</ul>
+{_install_block(m)}
+<p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
+"""
+        (DOCS / m["slug"]).write_text(page(f"just a... {m['title']}", body), encoding="utf-8")
+    m = HUB_META
+    feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"])
+    body = f"""<nav class="crumbs mute"><a href="index.html">{html.escape(SITE)}</a> &rsaquo; just a&hellip; {html.escape(m['title'])}</nav>
+<h2 style="margin-top:0">just a&hellip; {html.escape(m['title'])}</h2>
+<img class="shot" src="assets/{m['banner']}" alt="just a… {html.escape(m['title'])}">
+<p class="lede">{html.escape(m['blurb'])}</p>
+<img class="shot" src="assets/{m['shot']}" alt="The CREATORsuite hub">
+<h2>What it does</h2>
+<ul>{feats}</ul>
+{_install_block(m)}
+<p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
+"""
+    (DOCS / m["slug"]).write_text(page(f"just a... {m['title']}", body), encoding="utf-8")
 
 
 SECTIONS = (
@@ -419,13 +540,19 @@ def main(argv=None):
     (DOCS / "assets").mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "apps" / "webcreator" / "assets" / "screenshot.png",
                  DOCS / "assets" / "screenshot.png")
+    # each app's banner becomes its card header / page hero
+    for key in ("collectionofapps", "webcreator", "pagecreator", "paint", "draw"):
+        src = ROOT / "apps" / key / "banner.png"
+        if src.exists():
+            shutil.copy2(src, DOCS / "assets" / f"banner-{key}.png")
     grab_chooser(wc)
 
     tiles = render_previews(wc, args.fast)
     counts = {"total": len(tiles)}
     build_index(counts)
+    build_app_pages(counts)
     build_webcreator(tiles)
-    print(f":: {len(tiles)} templates -> {DOCS}")
+    print(f":: {len(tiles)} templates, {len(APPS_META)} app pages -> {DOCS}")
     return 0
 
 
