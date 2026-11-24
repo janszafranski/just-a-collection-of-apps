@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# install.sh — just a... COLLECTION of apps: a tiny launcher for the "just a..."
+# install.sh — just a... CREATORsuite: a tiny launcher for the "just a..."
 # app family. Lists the installed apps, launches them, and shows an Update button
 # when a newer version is published. Run as your normal user; nothing needs root.
 set -euo pipefail
@@ -40,5 +40,5 @@ sed "s|^Exec=collectionofapps|Exec=$BIN/collectionofapps|" "$SELF/collectionofap
 chmod 644 "$APPS/collectionofapps.desktop"
 command -v update-desktop-database >/dev/null && update-desktop-database "$APPS" 2>/dev/null || true
 
-log "Done. Open \"just a... COLLECTION of apps\" from your app menu, or run: collectionofapps"
+log "Done. Open \"just a... CREATORsuite\" from your app menu, or run: collectionofapps"
 warn "If ~/.local/bin is not on your PATH, add it to use the command directly."

@@ -26,7 +26,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "apps" / "webcreator" / "webcreator.py"
 DOCS = ROOT / "docs"
-SITE = "just a... COLLECTION of apps"
+SITE = "just a... CREATORsuite"
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 

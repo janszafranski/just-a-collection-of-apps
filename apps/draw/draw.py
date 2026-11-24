@@ -36,7 +36,7 @@ def _just_dir(kind):
 
 
 def _justapps_recent(appkey, path):
-    """Append to the shared recents log the COLLECTION launcher reads."""
+    """Append to the shared recents log the CREATORsuite launcher reads."""
     import json, time
     try:
         d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)
@@ -491,7 +491,7 @@ class Main(QMainWindow):
         exe = shutil.which('paint') or os.path.expanduser('~/.local/bin/paint')
         if not os.path.exists(exe):
             QMessageBox.information(self, APP, 'just a… PAINTcanvas isn’t installed yet.\n\n'
-                                   'Install it from the “just a… COLLECTION of apps” launcher.')
+                                   'Install it from the “just a… CREATORsuite” launcher.')
             return
         base = os.path.splitext(os.path.basename(self.path))[0] if self.path else 'drawing'
         path = os.path.join(_just_dir('pics'), base + '.png')

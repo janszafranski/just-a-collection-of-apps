@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# just a... COLLECTION of apps — a tiny launcher for the "just a..." app family.
+# just a... CREATORsuite — a tiny launcher for the "just a..." app family.
 #
 # Shows a banner header and a row per app. An INSTALLED app's banner launches it
 # when clicked, and gets an "Update" button at the right edge of its banner when a
@@ -16,11 +16,11 @@ try:
     from PySide6.QtCore import Qt, QUrl, QProcess, QTimer, QSize, QFileSystemWatcher, QSettings
     from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 except ImportError:
-    sys.stderr.write("just a... COLLECTION of apps needs PySide6 (use your distro package):\n"
+    sys.stderr.write("just a... CREATORsuite needs PySide6 (use your distro package):\n"
                      "    sudo pacman -S --needed pyside6\n")
     sys.exit(1)
 
-APP = "just a... COLLECTION of apps"
+APP = "just a... CREATORsuite"
 ORG = "justacollectionofapps"
 VERSION = "1.2-00"
 

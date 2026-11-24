@@ -51,7 +51,7 @@ def _just_dir(kind):
 
 
 def _justapps_recent(appkey, path):
-    """Append to the shared recents log the COLLECTION launcher reads."""
+    """Append to the shared recents log the CREATORsuite launcher reads."""
     import json, time
     try:
         d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)
@@ -6622,7 +6622,7 @@ class MainWindow(QMainWindow):
         if not os.path.exists(exe):
             if QMessageBox.question(self, 'Install PAINTcanvas',
                     'just a… PAINTcanvas isn’t installed yet.\n\nInstall it from the '
-                    '“just a… COLLECTION of apps” launcher. Open the download page now?',
+                    '“just a… CREATORsuite” launcher. Open the download page now?',
                     QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
                 from PySide6.QtGui import QDesktopServices
                 QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
@@ -6856,7 +6856,7 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass
         QMessageBox.information(self, APP, f'“just a… {label}” isn’t installed yet.\n\n'
-                               'Install it from the “just a… COLLECTION of apps” launcher.')
+                               'Install it from the “just a… CREATORsuite” launcher.')
 
     def open_manual(self):
         """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""

@@ -38,7 +38,7 @@ def _just_dir(kind):
 
 
 def _justapps_recent(appkey, path):
-    """Append to the shared recents log the COLLECTION launcher reads."""
+    """Append to the shared recents log the CREATORsuite launcher reads."""
     import json, time
     try:
         d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)

@@ -7,7 +7,7 @@ desktop theme — Plasma colours, accent, fonts and icons.
 
 <p align="center"><img src="assets/screenshot.png" alt="just a... WEBcreator — menu bar, toolbar, tool palette, canvas and the Site tree" width="820"></p>
 
-The first of the **[just a... COLLECTION of apps](../../README.md)** — simple
+The first of the **[just a... CREATORsuite](../../README.md)** — simple
 applications for people who want to do what the excellent **ARTcraft** apps do
 without learning everything new, and without needing the powerful, complicated
 half. Every one of them is a ground-up recreation rather than a port or a fork.

@@ -1,4 +1,4 @@
-# just a... COLLECTION of apps
+# just a... CREATORsuite
 
 **[The site →](https://janszafranski.github.io/just-a-collection-of-apps/)**
 
