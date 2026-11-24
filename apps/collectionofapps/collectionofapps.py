@@ -13,7 +13,7 @@ try:
                                    QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSizePolicy,
                                    QListWidget, QListWidgetItem, QToolButton)
     from PySide6.QtGui import QPixmap, QIcon, QCursor, QColor, QPainter, QFont
-    from PySide6.QtCore import Qt, QUrl, QProcess, QTimer, QSize, QFileSystemWatcher
+    from PySide6.QtCore import Qt, QUrl, QProcess, QTimer, QSize, QFileSystemWatcher, QSettings
     from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 except ImportError:
     sys.stderr.write("just a... COLLECTION of apps needs PySide6 (use your distro package):\n"
@@ -104,6 +104,65 @@ def scan_files():
             items.append({'path': p, 'app': app, 'mtime': mt})
     items.sort(key=lambda x: -x['mtime'])
     return items
+
+
+def _log_recent(appkey, path):
+    import json, time
+    try:
+        d = os.path.dirname(RECENTS_FILE); os.makedirs(d, exist_ok=True)
+        try:
+            with open(RECENTS_FILE) as fh: data = json.load(fh)
+        except Exception: data = []
+        data = [e for e in data if isinstance(e, dict) and e.get('path') != path]
+        data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
+        with open(RECENTS_FILE, 'w') as fh: json.dump(data[:50], fh)
+    except Exception: pass
+
+
+def find_importable():
+    """Native project files living OUTSIDE the 'just a...' folders — the user's older work.
+    Reads WEB/PAGE recent-file settings plus a shallow scan of the usual folders.
+    Only DRAWmaster-made SVGs (with the embedded tag) count; foreign SVGs are skipped."""
+    found = {}
+    for org, appn, key in (('justawebcreator', 'WEBcreator', 'webcreator'),
+                           ('justapagecreator', 'PAGEdesigner', 'pagecreator')):
+        try:
+            r = QSettings(org, appn).value('recent', [], type=list) or []
+            for p in r:
+                if isinstance(p, str) and os.path.isfile(p): found[p] = key
+        except Exception:
+            pass
+    skip = {'node_modules', '__pycache__', '.git', 'Android', 'Sdk'}
+    for dirpath, dirnames, filenames in os.walk(HOME):
+        depth = dirpath[len(HOME):].count(os.sep)
+        if depth >= 2:
+            dirnames[:] = []
+        dirnames[:] = [d for d in dirnames if not d.startswith('.') and d not in skip]
+        if os.path.abspath(dirpath) in (os.path.abspath(JUST_DOCS), os.path.abspath(JUST_PICS)):
+            continue
+        for fn in filenames:
+            ext = os.path.splitext(fn)[1].lower()
+            if ext not in ('.webc', '.pagc', '.svg'):
+                continue
+            p = os.path.join(dirpath, fn)
+            if p in found:
+                continue
+            if ext == '.svg':
+                try:
+                    with open(p, encoding='utf-8', errors='ignore') as fh:
+                        if 'justadraw1:' not in fh.read(4000): continue
+                except Exception:
+                    continue
+            found[p] = EXT_APP.get(ext)
+    out = []
+    for p, app in found.items():
+        if os.path.dirname(p) in (JUST_DOCS, JUST_PICS):
+            continue
+        try: mt = os.path.getmtime(p)
+        except OSError: mt = 0
+        out.append({'path': p, 'app': app, 'mtime': mt})
+    out.sort(key=lambda x: -x['mtime'])
+    return out
 
 
 def make_file_icon(app, path):
@@ -329,8 +388,16 @@ class FilePane(QWidget):
         v = QVBoxLayout(self); v.setContentsMargins(16, 16, 16, 16); v.setSpacing(8)
 
         self.title = QLabel('Your files'); self.title.setObjectName('panetitle'); v.addWidget(self.title)
+        head = QHBoxLayout()
         self.sub = QLabel('Everything you make with the apps, in one place.')
-        self.sub.setObjectName('panesub'); self.sub.setWordWrap(True); v.addWidget(self.sub)
+        self.sub.setObjectName('panesub'); self.sub.setWordWrap(True)
+        head.addWidget(self.sub, 1)
+        self.import_btn = QPushButton('Import older files…'); self.import_btn.setObjectName('importbtn')
+        self.import_btn.setCursor(QCursor(Qt.PointingHandCursor))
+        self.import_btn.setToolTip('Find projects you saved before, and copy them into your “just a...” folders')
+        self.import_btn.clicked.connect(lambda: self.win.import_dialog())
+        head.addWidget(self.import_btn, 0, Qt.AlignTop)
+        v.addLayout(head)
 
         self.rec_toggle = QToolButton(); self.rec_toggle.setObjectName('section')
         self.rec_toggle.setText('▾  Recent'); self.rec_toggle.setCheckable(True); self.rec_toggle.setChecked(True)
@@ -469,6 +536,9 @@ class Launcher(QMainWindow):
             #filelist::item { padding: 7px; border-radius: 6px; }
             #filelist::item:selected { background: #2f6f8f; color: #ffffff; }
             #empty { color: #7a828c; font-size: 13px; }
+            #importbtn { background: #2b3a44; color: #cfe3ef; border: 1px solid #3a4a55;
+                border-radius: 7px; padding: 5px 10px; font-size: 11px; }
+            #importbtn:hover { background: #34454f; }
         ''')
 
         for row in self.rows:
@@ -501,6 +571,57 @@ class Launcher(QMainWindow):
 
     def launch_file(self, app, path):
         self.run_cmd(app, [path])
+
+    def import_dialog(self):
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget,
+                                       QListWidgetItem, QPushButton, QLabel, QDialogButtonBox, QMessageBox)
+        import shutil
+        btn = self.filepane.import_btn
+        btn.setText('Searching…'); btn.setEnabled(False); QApplication.processEvents()
+        cands = find_importable()
+        btn.setText('Import older files…'); btn.setEnabled(True)
+        dlg = QDialog(self); dlg.setWindowTitle('Import older files'); dlg.resize(600, 480)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('Projects found outside your “just a...” folders. Tick the ones to copy in — '
+                           'the originals are left exactly where they are.'))
+        lw = QListWidget(); lw.setIconSize(QSize(40, 40)); v.addWidget(lw, 1)
+        for c in cands:
+            it = QListWidgetItem(make_file_icon(c['app'], c['path']),
+                                 f"{os.path.basename(c['path'])}      {os.path.dirname(c['path']).replace(HOME, '~')}")
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable); it.setCheckState(Qt.Unchecked)
+            it.setToolTip(c['path']); it.setData(Qt.UserRole, c); lw.addItem(it)
+        if not cands:
+            it = QListWidgetItem('Nothing to import — everything is already in place.'); it.setFlags(Qt.NoItemFlags); lw.addItem(it)
+        row = QHBoxLayout()
+        ball = QPushButton('Select all'); bnone = QPushButton('Select none')
+        ball.clicked.connect(lambda: [lw.item(i).setCheckState(Qt.Checked) for i in range(lw.count()) if lw.item(i).data(Qt.UserRole)])
+        bnone.clicked.connect(lambda: [lw.item(i).setCheckState(Qt.Unchecked) for i in range(lw.count()) if lw.item(i).data(Qt.UserRole)])
+        row.addWidget(ball); row.addWidget(bnone); row.addStretch(1); v.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Copy in')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if not dlg.exec():
+            return
+        n = 0
+        for i in range(lw.count()):
+            it = lw.item(i); c = it.data(Qt.UserRole)
+            if not c or it.checkState() != Qt.Checked:
+                continue
+            ext = os.path.splitext(c['path'])[1].lower()
+            dest_dir = JUST_PICS if ext in IMG_EXTS else JUST_DOCS
+            try: os.makedirs(dest_dir, exist_ok=True)
+            except OSError: pass
+            dest = os.path.join(dest_dir, os.path.basename(c['path']))
+            b, e = os.path.splitext(dest); k = 1
+            while os.path.exists(dest):
+                dest = f'{b} ({k}){e}'; k += 1
+            try:
+                shutil.copy2(c['path'], dest); _log_recent(c['app'], dest); n += 1
+            except Exception:
+                pass
+        self.filepane.refresh()
+        QMessageBox.information(self, APP, f'Copied {n} file(s) into your “just a...” folders.'
+                               if n else 'No files were copied.')
 
     def _center_on_screen(self):
         screen = QApplication.primaryScreen().availableGeometry()
