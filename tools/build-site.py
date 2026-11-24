@@ -291,6 +291,11 @@ APPS_META = [
                 "Calendar wizard and CSV mail merge",
                 "Edit pictures in PAINTcanvas; opens Serif PagePlus files",
                 "Vector PDF export with bleed & crop marks"],
+         based="PagePlus",
+         gallery=[("shot-page.png", "Lay out pages with rulers and guides, the tool palette down the "
+                   "left, and the Pages, Layers and Transform panels to the right of the canvas."),
+                  ("shot-page-start.png", "Start from a paper size — A-sizes, business cards, booklets "
+                   "or posters — or set your own, then open a blank page ready to lay out.")],
          deps="sudo pacman -S --needed pyside6 python-beautifulsoup4"),
     dict(key="paint", slug="paintcanvas.html", title="PAINTcanvas",
          banner="banner-paint.png", tag="Photo & image editor", ext=".png / .jpg",
@@ -304,6 +309,9 @@ APPS_META = [
                 "Rectangular & elliptical selections; crop, resize, straighten, rotate, flip",
                 "Retouch: clone, red-eye, dodge, burn, and a gradient tool",
                 "Drop shadow & outer glow on a transparent canvas"],
+         based="PhotoPlus",
+         gallery=[("shot-paint.png", "Paint and retouch with layers, blend modes and the Adjust and "
+                   "Filter menus — the familiar darkroom, on Linux.")],
          deps="sudo pacman -S --needed pyside6 python-pillow python-numpy"),
     dict(key="draw", slug="drawmaster.html", title="DRAWmaster",
          banner="banner-draw.png", tag="Vector drawing", ext=".svg",
@@ -314,6 +322,11 @@ APPS_META = [
                 "Re-opens its own SVGs losslessly (the drawing is stored in the file)",
                 "Export PNG, or send the drawing to PAINTcanvas for raster work",
                 "Infinitely scalable SVG output"],
+         based="DrawPlus",
+         gallery=[("shot-draw.png", "QuickShapes with fills and outlines, a hand-drawn line, and "
+                   "drop-shadow and glow effects — all on one canvas."),
+                  ("shot-quickshapes.png", "The QuickShapes gallery: twenty ready-made shapes to drag "
+                   "straight onto the page.")],
          deps="sudo pacman -S --needed pyside6"),
 ]
 
@@ -328,6 +341,8 @@ HUB_META = dict(key="collectionofapps", slug="creatorsuite.html", title="CREATOR
            "Import older files you saved before the shared folders existed",
            "Updates each app from GitHub, and installs ones you don't have yet",
            "One place for everything you make"],
+    gallery=[("shot-hub.png", "Your apps down one side, everything you have made down the other — "
+              "a Recent list and a browser of your “just a…” folders.")],
     deps="sudo pacman -S --needed pyside6")
 
 
@@ -396,52 +411,47 @@ launcher shows an Update button), and each has an <code>uninstall.sh</code> besi
 
 
 def _og_for(m):
+    if m.get("gallery"):
+        return f"assets/{m['gallery'][0][0]}"
     return f"assets/{m['shot']}" if m.get("shot") else f"assets/{m['banner']}"
 
 
-def build_app_pages(counts):
-    for m in APPS_META:
-        if m["key"] == "webcreator":
-            continue   # WEBcreator's own rich page (templates gallery) is built separately
-        feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"])
-        shot = (f'<img class="shot" src="assets/{m["shot"]}" alt="just a… {html.escape(m["title"])}">'
-                if m.get("shot") else "")
-        body = f"""<nav class="crumbs mute"><a href="index.html">{html.escape(SITE)}</a> &rsaquo; just a&hellip; {html.escape(m['title'])}</nav>
-<h2 style="margin-top:0">just a&hellip; {html.escape(m['title'])}</h2>
-<img class="shot" src="assets/{m['banner']}" alt="just a… {html.escape(m['title'])}">
-<p class="lede">{html.escape(m['blurb'])}</p>
-{shot}
+def _app_body(m):
+    e = html.escape
+    based = (f'<p class="mute" style="margin:-.3em 0 1em">A ground-up recreation in the spirit of '
+             f'Serif&rsquo;s <b>{e(m["based"])}</b> &mdash; the same menus, in the same places.</p>'
+             if m.get("based") else "")
+    gallery = ""
+    for img, cap in m.get("gallery", []):
+        gallery += (f'<figure style="margin:0 0 1.8em"><img class="shot" style="margin-bottom:.5em" '
+                    f'src="assets/{img}" alt="{e(cap)}">'
+                    f'<figcaption class="mute small">{e(cap)}</figcaption></figure>\n')
+    feats = "".join(f"<li>{e(f)}</li>" for f in m["feats"])
+    tour = f"<h2>A closer look</h2>\n{gallery}" if gallery else ""
+    return f"""<nav class="crumbs mute"><a href="index.html">{e(SITE)}</a> &rsaquo; just a&hellip; {e(m['title'])}</nav>
+<h2 style="margin-top:0">just a&hellip; {e(m['title'])}</h2>
+<img class="shot" src="assets/{m['banner']}" alt="just a… {e(m['title'])}">
+{based}
+<p class="lede">{e(m['blurb'])}</p>
+{tour}
 <h2>What it does</h2>
 <ul>{feats}</ul>
 {_install_block(m)}
 <p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
 """
+
+
+def build_app_pages(counts):
+    for m in APPS_META + [HUB_META]:
+        if m["key"] == "webcreator":
+            continue   # WEBcreator's own rich page (templates gallery) is built separately
         name = f"just a... {m['title']}"
         og = _og_for(m)
         desc = DESC.get(m["slug"], m["blurb"])
         (DOCS / m["slug"]).write_text(
-            page(name, body, slug=m["slug"], og_image=og, desc=desc,
+            page(name, _app_body(m), slug=m["slug"], og_image=og, desc=desc,
                  jsonld=jsonld_app(name, m["slug"], desc, og)),
             encoding="utf-8")
-    m = HUB_META
-    feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"])
-    body = f"""<nav class="crumbs mute"><a href="index.html">{html.escape(SITE)}</a> &rsaquo; just a&hellip; {html.escape(m['title'])}</nav>
-<h2 style="margin-top:0">just a&hellip; {html.escape(m['title'])}</h2>
-<img class="shot" src="assets/{m['banner']}" alt="just a… {html.escape(m['title'])}">
-<p class="lede">{html.escape(m['blurb'])}</p>
-<img class="shot" src="assets/{m['shot']}" alt="The CREATORsuite hub">
-<h2>What it does</h2>
-<ul>{feats}</ul>
-{_install_block(m)}
-<p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
-"""
-    name = f"just a... {m['title']}"
-    og = _og_for(m)
-    desc = DESC.get(m["slug"], m["blurb"])
-    (DOCS / m["slug"]).write_text(
-        page(name, body, slug=m["slug"], og_image=og, desc=desc,
-             jsonld=jsonld_app(name, m["slug"], desc, og)),
-        encoding="utf-8")
 
 
 SECTIONS = (
