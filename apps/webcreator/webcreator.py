@@ -4435,6 +4435,33 @@ class Canvas(QGraphicsView):
         super().resizeEvent(e); self.win.update_rulers()
 
 
+class CornerToggle(QWidget):
+    """The ruler-intersection square: click to switch between the mouse pointer and
+    the crosshair guide. Draws a NW-pointing arrow (mouse) or a crosshair (on)."""
+    def __init__(self, win):
+        super().__init__()
+        self.win = win; self.setFixedSize(20, 20); self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("Switch between the mouse pointer and the crosshair")
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        pal = self.palette(); p.fillRect(self.rect(), pal.color(QPalette.Window).darker(112))
+        ink = pal.color(QPalette.WindowText)
+        if getattr(self.win, "crosshair", False):
+            p.setPen(QPen(ink, 1.4))
+            p.drawLine(10, 3, 10, 7); p.drawLine(10, 13, 10, 17)
+            p.drawLine(3, 10, 7, 10); p.drawLine(13, 10, 17, 10)
+            p.setPen(Qt.NoPen); p.setBrush(ink); p.drawEllipse(QPointF(10, 10), 1.2, 1.2)
+        else:
+            p.setPen(QPen(ink, 1.2)); p.setBrush(ink)
+            p.drawPolygon(QPolygonF([QPointF(5, 4), QPointF(5, 15), QPointF(8, 12),
+                                     QPointF(10.5, 17), QPointF(12, 16), QPointF(9.5, 11), QPointF(13, 11)]))
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self.win.toggle_crosshair(); self.update()
+
+
 class Ruler(QWidget):
     def __init__(self, view, horiz):
         super().__init__()
@@ -5151,7 +5178,7 @@ class MainWindow(QMainWindow):
     def build_canvas_area(self):
         self.view = Canvas(self)
         self.rx, self.ry = Ruler(self.view, True), Ruler(self.view, False)
-        corner = QWidget(); corner.setFixedSize(20, 20)
+        corner = CornerToggle(self); self.corner_toggle = corner
         self.banner = QFrame(); bl = QHBoxLayout(self.banner); bl.setContentsMargins(10, 6, 10, 6)
         self.banner.setAutoFillBackground(True)
         pal = self.banner.palette(); pal.setColor(QPalette.Window, pal.color(QPalette.Highlight)); pal.setColor(QPalette.WindowText, pal.color(QPalette.HighlightedText))
@@ -8428,10 +8455,14 @@ class MainWindow(QMainWindow):
         for w in self.ruler_widgets: w.setVisible(on)
         self.settings.setValue('rulers', on)
 
-    def toggle_crosshair(self):
-        self.crosshair = self.a['crosshair'].isChecked()
+    def toggle_crosshair(self, *_):
+        self.crosshair = not self.crosshair
+        a = self.a.get("crosshair")
+        if a is not None and a.isChecked() != self.crosshair:
+            a.blockSignals(True); a.setChecked(self.crosshair); a.blockSignals(False)
         self.view.viewport().setCursor(Qt.CrossCursor if self.crosshair else Qt.ArrowCursor)
         self.view.viewport().update()
+        if getattr(self, "corner_toggle", None): self.corner_toggle.update()
 
     def toggle_grid(self):
         self.show_grid = self.a['grid'].isChecked(); self.settings.setValue('grid', self.show_grid); self.view.viewport().update()
