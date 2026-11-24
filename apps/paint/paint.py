@@ -11,7 +11,8 @@ try:
                                    QSlider, QCheckBox, QFormLayout, QDialogButtonBox,
                                    QDockWidget, QListWidget, QListWidgetItem)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
-                               QKeySequence, QCursor, QFont, QPainterPath, QActionGroup)
+                               QKeySequence, QCursor, QFont, QPainterPath, QActionGroup,
+                               QLinearGradient, QTransform)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
 except ImportError:
     sys.stderr.write("just a... PAINTcanvas needs PySide6 (use your distro package, not pip):\n"
@@ -20,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.3-00"
+VERSION = "1.4-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -127,6 +128,15 @@ def adj_temperature(k):
         return _merge_a(p, Image.fromarray(a.astype('uint8'), 'RGB'))
     return f
 
+def adj_colorbalance(cr, mg, yb):
+    def f(p):
+        a = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        a[..., 0] = _np.clip(a[..., 0] + cr, 0, 255)
+        a[..., 1] = _np.clip(a[..., 1] + mg, 0, 255)
+        a[..., 2] = _np.clip(a[..., 2] + yb, 0, 255)
+        return _merge_a(p, Image.fromarray(a.astype('uint8'), 'RGB'))
+    return f
+
 # ---- filters ----
 def flt_gaussian(r):  return lambda p: p.filter(ImageFilter.GaussianBlur(max(0.1, r)))
 def flt_unsharp(r):   return lambda p: p.filter(ImageFilter.UnsharpMask(radius=max(0.1, r), percent=160))
@@ -172,6 +182,9 @@ class Canvas(QWidget):
         self.preview = None            # (tool, QPoint start, QPoint cur) while dragging a shape
         self.sel = None                # {'rect': QRect, 'kind': 'rect'|'ellipse'} marquee selection
         self.sel_drag = None           # (start, cur) while dragging a marquee
+        self.clone_src = None          # clone-tool source anchor (Ctrl-click)
+        self.clone_off = None          # clone offset once a stroke begins
+        self.clone_base = None         # snapshot of the layer cloned FROM
         self.undo, self.redo = [], []
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
@@ -314,6 +327,8 @@ class Canvas(QWidget):
             if tool == 'line': p.drawLine(a, b)
             elif tool == 'rect': p.drawRect(QRectF(a, b).normalized())
             elif tool == 'ellipse': p.drawEllipse(QRectF(a, b).normalized())
+            elif tool == 'gradient':
+                gp = QPen(QColor('#000'), 1, Qt.DashLine); gp.setCosmetic(True); p.setPen(gp); p.drawLine(a, b)
             p.restore()
         if self.sel or self.sel_drag:
             p.save(); p.scale(self.zoom, self.zoom)
@@ -354,10 +369,24 @@ class Canvas(QWidget):
             return
         if self.tool in ('mrect', 'mellipse'):          # marquee selection — not an image edit
             self.start = pos; self.sel_drag = (pos, pos); self.update(); return
+        if self.tool == 'clone' and (e.modifiers() & Qt.ControlModifier):
+            self.clone_src = pos; self.clone_off = None
+            self.win.status.showMessage('Clone source set — now paint to copy from it.', 3000); return
+        if self.tool == 'redeye':
+            if HAS_PIL: self.snapshot(); self.red_eye(pos); self.update()
+            return
         self.snapshot()
-        if self.tool in ('brush', 'eraser'):
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn'):
             self.last = pos; self._stroke(pos, pos)
-        else:                               # line / rect / ellipse
+        elif self.tool == 'clone':
+            if self.clone_src is None:
+                self.win.status.showMessage('Hold Ctrl and click to set a clone source first.', 3000)
+                self.undo.pop(); return
+            self.clone_base = self.img.copy()
+            if self.clone_off is None:
+                self.clone_off = (pos.x() - self.clone_src.x(), pos.y() - self.clone_src.y())
+            self.last = pos; self._stroke(pos, pos)
+        else:                               # line / rect / ellipse / gradient
             self.start = pos; self.preview = (self.tool, pos, pos)
         self.update()
 
@@ -365,9 +394,9 @@ class Canvas(QWidget):
         pos = self.img_pos(e)
         self.win.set_pos(pos)
         if not (e.buttons() & Qt.LeftButton): return
-        if self.tool in ('brush', 'eraser') and self.last is not None:
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone') and self.last is not None:
             self._stroke(self.last, pos); self.last = pos; self.update()
-        elif self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
+        elif self.tool in ('line', 'rect', 'ellipse', 'gradient') and self.start is not None:
             self.preview = (self.tool, self.start, pos); self.update()
         elif self.tool in ('mrect', 'mellipse') and self.start is not None:
             self.sel_drag = (self.start, pos); self.update()
@@ -380,23 +409,82 @@ class Canvas(QWidget):
             self.sel = ({'rect': r, 'kind': 'ellipse' if self.tool == 'mellipse' else 'rect'}
                         if r.width() > 2 and r.height() > 2 else None)
             self.start = self.sel_drag = None; self.update(); return
-        if self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
+        if self.tool == 'gradient' and self.start is not None:
+            self._draw_gradient(self.start, pos)
+        elif self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
             p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing); p.setPen(self._pen()); p.setBrush(Qt.NoBrush)
             if self.tool == 'line': p.drawLine(self.start, pos)
             elif self.tool == 'rect': p.drawRect(QRect(self.start, pos).normalized())
             else: p.drawEllipse(QRect(self.start, pos).normalized())
             p.end()
         self.last = self.start = self.preview = None
+        self.clone_base = None
         self.update()
 
+    def _draw_gradient(self, a, b):
+        g = QLinearGradient(QPointF(a), QPointF(b))
+        c0 = QColor(self.color); c1 = QColor(self.color); c1.setAlpha(0)
+        g.setColorAt(0, c0); g.setColorAt(1, c1)
+        p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
+        reg = self.sel_region()
+        if reg:
+            r, kind = reg; path = QPainterPath()
+            path.addEllipse(QRectF(r)) if kind == 'ellipse' else path.addRect(QRectF(r))
+            p.setClipPath(path)
+        p.fillRect(self.img.rect(), QBrush(g)); p.end()
+
+    def red_eye(self, pos):
+        r = max(8, self.size * 2)
+        x0 = max(0, pos.x() - r); y0 = max(0, pos.y() - r)
+        x1 = min(self.doc_w(), pos.x() + r); y1 = min(self.doc_h(), pos.y() + r)
+        if x1 <= x0 or y1 <= y0: return
+        sub = self.img.copy(QRect(x0, y0, x1 - x0, y1 - y0))
+        a = _np.asarray(q2pil(sub)).astype(_np.int16)
+        R, G, B = a[..., 0], a[..., 1], a[..., 2]
+        mask = (R > 55) & (R > G * 1.4) & (R > B * 1.4)
+        gray = (G + B) // 2
+        a[..., 0] = _np.where(mask, gray, R)
+        p = QPainter(self.img)
+        p.drawImage(QPointF(x0, y0), pil2q(Image.fromarray(a.astype('uint8'), 'RGBA'))); p.end()
+
+    def straighten(self, angle):
+        w, h = self.doc_w(), self.doc_h()
+        self.snapshot_full()
+        for l in self.layers:
+            big = l.img.transformed(QTransform().rotate(angle), Qt.SmoothTransformation)
+            x = (big.width() - w) // 2; y = (big.height() - h) // 2
+            l.img = big.copy(QRect(x, y, w, h))
+        self.sel = None; self._fit()
+
     def _stroke(self, a, b):
+        if self.tool == 'clone':
+            self._clone_stroke(a, b); return
         p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
         if self.tool == 'eraser':
             p.setCompositionMode(QPainter.CompositionMode_Clear)
             pen = QPen(Qt.transparent, self.size); pen.setCapStyle(Qt.RoundCap); p.setPen(pen)
+        elif self.tool in ('dodge', 'burn'):
+            p.setOpacity(0.15)
+            p.setCompositionMode(QPainter.CompositionMode_Screen if self.tool == 'dodge'
+                                 else QPainter.CompositionMode_Multiply)
+            col = QColor('#ffffff') if self.tool == 'dodge' else QColor('#000000')
+            pen = QPen(col, self.size); pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin); p.setPen(pen)
         else:
             p.setPen(self._pen())
         p.drawLine(a, b); p.end()
+
+    def _clone_stroke(self, a, b):
+        if self.clone_off is None or self.clone_base is None: return
+        ox, oy = self.clone_off
+        p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
+        r = max(1, self.size / 2)
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        n = max(1, int((dx * dx + dy * dy) ** 0.5))
+        for i in range(n + 1):
+            cx = a.x() + dx * i / n; cy = a.y() + dy * i / n
+            path = QPainterPath(); path.addEllipse(QPointF(cx, cy), r, r)
+            p.save(); p.setClipPath(path); p.drawImage(QPointF(ox, oy), self.clone_base); p.restore()
+        p.end()
 
     # ---- selection & the PhotoPlus image engine ----
     def sel_region(self):
@@ -549,7 +637,10 @@ class AdjustDialog(QDialog):
 class Main(QMainWindow):
     TOOLS = [('brush', 'Brush', '🖌'), ('eraser', 'Eraser', '◻'), ('line', 'Line', '╱'),
              ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'), ('fill', 'Fill', '🪣'),
-             ('picker', 'Pick colour', '🎯'), ('text', 'Text', 'A'),
+             ('gradient', 'Gradient fill (drag)', '▨'), ('picker', 'Pick colour', '🎯'),
+             ('text', 'Text', 'A'), ('clone', 'Clone — Ctrl-click to set source', '❏'),
+             ('redeye', 'Red-eye removal', '◉'), ('dodge', 'Dodge — lighten', '☀'),
+             ('burn', 'Burn — darken', '◐'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌')]
 
     def __init__(self):
@@ -665,6 +756,7 @@ class Main(QMainWindow):
         img.addAction(self.act('&Resize Image…', self.resize_image))
         img.addAction(self.act('&Canvas Size…', self.canvas_size))
         img.addAction(self.act('Crop to &Selection', lambda: self.canvas.crop_to_sel()))
+        img.addAction(self.act('&Straighten…', self.dlg_straighten))
         img.addSeparator()
         img.addAction(self.act('Rotate 90° &Right', lambda: self.canvas.rotate(90)))
         img.addAction(self.act('Rotate 90° &Left', lambda: self.canvas.rotate(-90)))
@@ -677,6 +769,7 @@ class Main(QMainWindow):
         adj.addAction(self.act('&Levels…', self.dlg_levels))
         adj.addAction(self.act('&Hue / Saturation…', self.dlg_huesat))
         adj.addAction(self.act('Colour &Temperature…', self.dlg_temperature))
+        adj.addAction(self.act('Colour &Balance…', self.dlg_colorbalance))
         adj.addAction(self.act('&Threshold…', self.dlg_threshold))
         adj.addAction(self.act('&Posterize…', self.dlg_posterize))
         adj.addSeparator()
@@ -799,6 +892,17 @@ class Main(QMainWindow):
         if self._need_pil():
             AdjustDialog(self, 'Threshold', [('t', 'Level:', 0, 255, 128, 1.0)],
                          lambda v: adj_threshold(v['t'])).exec()
+
+    def dlg_colorbalance(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Colour Balance',
+                         [('cr', 'Cyan — Red:', -100, 100, 0, 1.0), ('mg', 'Magenta — Green:', -100, 100, 0, 1.0),
+                          ('yb', 'Yellow — Blue:', -100, 100, 0, 1.0)],
+                         lambda v: adj_colorbalance(v['cr'], v['mg'], v['yb'])).exec()
+
+    def dlg_straighten(self):
+        ang, ok = QInputDialog.getDouble(self, 'Straighten', 'Rotate by angle (°):', 0.0, -45.0, 45.0, 1)
+        if ok and abs(ang) > 0.001: self.canvas.straighten(ang)
 
     def dlg_posterize(self):
         if self._need_pil():
