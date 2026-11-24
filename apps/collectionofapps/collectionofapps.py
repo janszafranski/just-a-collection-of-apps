@@ -12,7 +12,7 @@ try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QPushButton,
                                    QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSizePolicy,
                                    QListWidget, QListWidgetItem, QToolButton)
-    from PySide6.QtGui import QPixmap, QIcon, QCursor, QColor, QPainter, QFont
+    from PySide6.QtGui import QPixmap, QIcon, QCursor, QColor, QPainter, QFont, QAction, QDesktopServices
     from PySide6.QtCore import Qt, QUrl, QProcess, QTimer, QSize, QFileSystemWatcher, QSettings
     from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 except ImportError:
@@ -27,6 +27,7 @@ VERSION = "1.2-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
 BANNER_IMG = os.path.join(HERE, 'banner.png')
+MANUAL = os.path.join(HERE, 'manual.html')
 
 UPDATE_REPO = "janszafranski/just-a-collection-of-apps"
 UPDATE_BRANCH = "main"
@@ -511,6 +512,10 @@ class Launcher(QMainWindow):
         self.filepane = FilePane(self)
         body.addWidget(self.filepane, 1)
 
+        help_menu = self.menuBar().addMenu('&Help')
+        a_guide = QAction('&User Guide', self); a_guide.triggered.connect(self.open_manual); help_menu.addAction(a_guide)
+        a_about = QAction('&About', self); a_about.triggered.connect(self.about); help_menu.addAction(a_about)
+
         self.setStyleSheet('''
             QMainWindow { background: #1c1f24; }
             #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; }
@@ -571,6 +576,17 @@ class Launcher(QMainWindow):
 
     def launch_file(self, app, path):
         self.run_cmd(app, [path])
+
+    def open_manual(self):
+        if os.path.isfile(MANUAL):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(MANUAL))
+        else:
+            QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
+
+    def about(self):
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.about(self, APP, f'<b>{APP}</b><br>Version {VERSION}<br><br>'
+                          'A home for the “just a...” apps and the files you make with them.')
 
     def import_dialog(self):
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget,

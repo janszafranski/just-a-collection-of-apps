@@ -24,6 +24,7 @@ python3 -c 'import PySide6' 2>/dev/null \
 log "Installing the launcher app"
 install -Dm755 "$SELF/collectionofapps.py" "$DATA/collectionofapps/collectionofapps.py"
 install -Dm644 "$SELF/banner.png" "$DATA/collectionofapps/banner.png"
+[[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$DATA/collectionofapps/manual.html"
 
 log "Installing the command"
 install -d "$BIN"
