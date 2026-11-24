@@ -7496,6 +7496,44 @@ class MainWindow(QMainWindow):
         uri = f'data:image/{mime};base64,' + base64.b64encode(data).decode()
         self._apply_picture(o, uri)
 
+    def text_to_table(self):
+        """Turn the selected text frame's lines into a table, splitting columns on a delimiter."""
+        from PySide6.QtWidgets import QComboBox
+        objs = [o for o in self.sel_objs() if o['type'] in ('text', 'artistic', 'button') and o.get('html')]
+        if not objs:
+            QMessageBox.information(self, APP, 'Select a text frame to convert to a table.'); return
+        o = objs[0]
+        txt = re.sub(r'</p\s*>|<br\s*/?>|</li\s*>', '\n', o['html'], flags=re.I)
+        txt = H.unescape(re.sub(r'<[^>]+>', '', txt))
+        lines = [ln.strip() for ln in txt.split('\n') if ln.strip()]
+        if not lines:
+            QMessageBox.information(self, APP, 'That text frame has no text.'); return
+        det = 0
+        if any('\t' in ln for ln in lines): det = 1
+        elif any(';' in ln for ln in lines): det = 3
+        elif any(',' in ln for ln in lines): det = 2
+        cb = QComboBox(); cb.addItems(['Two or more spaces', 'Tabs', 'Commas', 'Semicolons', 'Whole line (one column)'])
+        cb.setCurrentIndex(det)
+        dlg = form_dialog(self, 'Convert Text to Table', [('Split columns on:', cb)],
+                          QLabel(f'{len(lines)} line(s) will become table rows; the first row is the header.'))
+        if not dlg.exec(): return
+        splitters = [r'\s{2,}', '\t', ',', ';', None]; sp = splitters[cb.currentIndex()]
+        def split(ln):
+            if sp is None: return [ln]
+            if sp in ('\t', ',', ';'): return [c.strip() for c in ln.split(sp)]
+            return [c.strip() for c in re.split(sp, ln)]
+        cells = [[H.escape(c) for c in split(ln)] for ln in lines]
+        ncol = max(len(r) for r in cells)
+        for r in cells: r.extend([''] * (ncol - len(r)))
+        self.commit()
+        t = mk('table', o['x'], o['y'], max(120, o['w']), 0); t['cells'] = cells
+        for k in ('font', 'size', 'color'):
+            if o.get(k): t[k] = o[k]
+        t['h'] = max(60, len(cells) * (int(t.get('size', 14)) + 16) + 8)
+        L = self.layer(); L.append(t)
+        if o in L: L.remove(o)
+        self.sel = [t['id']]; self.refresh()
+
     def table_dialog(self, o):
         cells = o.get('cells') or [['']]
         dlg = QDialog(self); dlg.setWindowTitle('Edit Table'); dlg.resize(620, 380); lay = QVBoxLayout(dlg)
@@ -8982,6 +9020,8 @@ class MainWindow(QMainWindow):
             m.addAction(self.a['lock'])
             o = self.sel_objs()[0]
             if o['type'] in ('text', 'artistic', 'button'): m.addAction('Edit Text', lambda: self.start_edit(o))
+            if o['type'] in ('text', 'artistic', 'button') and o.get('html'):
+                m.addAction(ticon(['insert-table', 'table'], ''), 'Convert to Table…', self.text_to_table)
             if o['type'] == 'picture': m.addAction('Replace Picture…', lambda: self.pick_picture(o))
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
             if o['type'] in self.FX_OBJ: m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
