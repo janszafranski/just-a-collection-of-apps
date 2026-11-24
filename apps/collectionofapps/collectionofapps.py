@@ -28,6 +28,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
+ICON = os.path.join(HERE, 'icon.png')
 
 UPDATE_REPO = "janszafranski/just-a-collection-of-apps"
 UPDATE_BRANCH = "main"
@@ -708,6 +709,7 @@ def main():
     app.setApplicationDisplayName(APP)
     app.setOrganizationName(ORG)
     app.setApplicationVersion(VERSION)
+    app.setWindowIcon(QIcon(ICON) if os.path.isfile(ICON) else QIcon.fromTheme('collectionofapps'))
     w = Launcher()
     w.show()
     sys.exit(app.exec())

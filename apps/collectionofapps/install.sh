@@ -26,6 +26,13 @@ install -Dm755 "$SELF/collectionofapps.py" "$DATA/collectionofapps/collectionofa
 install -Dm644 "$SELF/banner.png" "$DATA/collectionofapps/banner.png"
 [[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$DATA/collectionofapps/manual.html"
 
+log "Installing the icon"
+for sz in 32 48 64 128 256; do
+  [[ -f "$SELF/icon-$sz.png" ]] && install -Dm644 "$SELF/icon-$sz.png" "$DATA/icons/hicolor/${sz}x${sz}/apps/collectionofapps.png"
+done
+[[ -f "$SELF/icon-256.png" ]] && install -Dm644 "$SELF/icon-256.png" "$DATA/collectionofapps/icon.png"
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$DATA/icons/hicolor" 2>/dev/null || true
+
 log "Installing the command"
 install -d "$BIN"
 cat > "$BIN/collectionofapps" <<'LAUNCH'

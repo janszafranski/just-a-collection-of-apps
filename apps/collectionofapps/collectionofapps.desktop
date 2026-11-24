@@ -3,6 +3,6 @@ Type=Application
 Name=just a... CREATORsuite
 Comment=Launcher for the "just a..." app family
 Exec=collectionofapps
-Icon=applications-other
+Icon=collectionofapps
 Terminal=false
 Categories=Utility;
