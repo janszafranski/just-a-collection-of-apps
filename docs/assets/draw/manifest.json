@@ -1,0 +1,122 @@
+[
+{
+"file": "draw/triangle.png",
+"label": "Triangle",
+"meta": "QuickShape",
+"tags": "quickshape Triangle triangle"
+},
+{
+"file": "draw/rtriangle.png",
+"label": "Right triangle",
+"meta": "QuickShape",
+"tags": "quickshape Right triangle rtriangle"
+},
+{
+"file": "draw/diamond.png",
+"label": "Diamond",
+"meta": "QuickShape",
+"tags": "quickshape Diamond diamond"
+},
+{
+"file": "draw/pentagon.png",
+"label": "Pentagon",
+"meta": "QuickShape",
+"tags": "quickshape Pentagon pentagon"
+},
+{
+"file": "draw/hexagon.png",
+"label": "Hexagon",
+"meta": "QuickShape",
+"tags": "quickshape Hexagon hexagon"
+},
+{
+"file": "draw/octagon.png",
+"label": "Octagon",
+"meta": "QuickShape",
+"tags": "quickshape Octagon octagon"
+},
+{
+"file": "draw/star5.png",
+"label": "Star (5-point)",
+"meta": "QuickShape",
+"tags": "quickshape Star (5-point) star5"
+},
+{
+"file": "draw/star6.png",
+"label": "Star (6-point)",
+"meta": "QuickShape",
+"tags": "quickshape Star (6-point) star6"
+},
+{
+"file": "draw/arrow.png",
+"label": "Arrow",
+"meta": "QuickShape",
+"tags": "quickshape Arrow arrow"
+},
+{
+"file": "draw/darrow.png",
+"label": "Double arrow",
+"meta": "QuickShape",
+"tags": "quickshape Double arrow darrow"
+},
+{
+"file": "draw/chevron.png",
+"label": "Chevron",
+"meta": "QuickShape",
+"tags": "quickshape Chevron chevron"
+},
+{
+"file": "draw/plus.png",
+"label": "Cross",
+"meta": "QuickShape",
+"tags": "quickshape Cross plus"
+},
+{
+"file": "draw/parallelogram.png",
+"label": "Parallelogram",
+"meta": "QuickShape",
+"tags": "quickshape Parallelogram parallelogram"
+},
+{
+"file": "draw/trapezoid.png",
+"label": "Trapezoid",
+"meta": "QuickShape",
+"tags": "quickshape Trapezoid trapezoid"
+},
+{
+"file": "draw/heart.png",
+"label": "Heart",
+"meta": "QuickShape",
+"tags": "quickshape Heart heart"
+},
+{
+"file": "draw/lightning.png",
+"label": "Lightning bolt",
+"meta": "QuickShape",
+"tags": "quickshape Lightning bolt lightning"
+},
+{
+"file": "draw/speech.png",
+"label": "Speech bubble",
+"meta": "QuickShape",
+"tags": "quickshape Speech bubble speech"
+},
+{
+"file": "draw/cloud.png",
+"label": "Cloud",
+"meta": "QuickShape",
+"tags": "quickshape Cloud cloud"
+},
+{
+"file": "draw/rect.png",
+"label": "Rectangle",
+"meta": "QuickShape",
+"tags": "quickshape Rectangle rect"
+},
+{
+"file": "draw/ellipse.png",
+"label": "Ellipse",
+"meta": "QuickShape",
+"tags": "quickshape Ellipse ellipse"
+}
+]

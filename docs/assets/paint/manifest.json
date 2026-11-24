@@ -1,0 +1,140 @@
+[
+{
+"file": "paint/original.jpg",
+"label": "Original",
+"meta": "the untouched photo",
+"tags": "adjust Original the untouched photo"
+},
+{
+"file": "paint/brightness.jpg",
+"label": "Brightness",
+"meta": "brighter exposure",
+"tags": "adjust Brightness brighter exposure"
+},
+{
+"file": "paint/contrast.jpg",
+"label": "Contrast",
+"meta": "punchier contrast",
+"tags": "adjust Contrast punchier contrast"
+},
+{
+"file": "paint/saturation.jpg",
+"label": "Saturation",
+"meta": "richer colour",
+"tags": "adjust Saturation richer colour"
+},
+{
+"file": "paint/levels.jpg",
+"label": "Levels",
+"meta": "black & white points, gamma",
+"tags": "adjust Levels black & white points, gamma"
+},
+{
+"file": "paint/hue.jpg",
+"label": "Hue shift",
+"meta": "rotate every colour",
+"tags": "adjust Hue shift rotate every colour"
+},
+{
+"file": "paint/temperature.jpg",
+"label": "Temperature",
+"meta": "warmer white balance",
+"tags": "adjust Temperature warmer white balance"
+},
+{
+"file": "paint/colorbalance.jpg",
+"label": "Colour balance",
+"meta": "push the channels",
+"tags": "adjust Colour balance push the channels"
+},
+{
+"file": "paint/threshold.jpg",
+"label": "Threshold",
+"meta": "pure black & white",
+"tags": "adjust Threshold pure black & white"
+},
+{
+"file": "paint/posterize.jpg",
+"label": "Posterize",
+"meta": "flatten to few levels",
+"tags": "adjust Posterize flatten to few levels"
+},
+{
+"file": "paint/greyscale.jpg",
+"label": "Greyscale",
+"meta": "drop all colour",
+"tags": "adjust Greyscale drop all colour"
+},
+{
+"file": "paint/sepia.jpg",
+"label": "Sepia",
+"meta": "warm monochrome",
+"tags": "adjust Sepia warm monochrome"
+},
+{
+"file": "paint/invert.jpg",
+"label": "Invert",
+"meta": "a photographic negative",
+"tags": "adjust Invert a photographic negative"
+},
+{
+"file": "paint/autocontrast.jpg",
+"label": "Auto-contrast",
+"meta": "stretch the range",
+"tags": "adjust Auto-contrast stretch the range"
+},
+{
+"file": "paint/equalize.jpg",
+"label": "Equalize",
+"meta": "balance the histogram",
+"tags": "adjust Equalize balance the histogram"
+},
+{
+"file": "paint/gaussian.jpg",
+"label": "Gaussian blur",
+"meta": "soft defocus",
+"tags": "filter Gaussian blur soft defocus"
+},
+{
+"file": "paint/unsharp.jpg",
+"label": "Unsharp mask",
+"meta": "crisp the detail",
+"tags": "filter Unsharp mask crisp the detail"
+},
+{
+"file": "paint/median.jpg",
+"label": "Median",
+"meta": "smooth, keep edges",
+"tags": "filter Median smooth, keep edges"
+},
+{
+"file": "paint/sharpen.jpg",
+"label": "Sharpen",
+"meta": "a sharpening pass",
+"tags": "filter Sharpen a sharpening pass"
+},
+{
+"file": "paint/soften.jpg",
+"label": "Soften",
+"meta": "gently smooth",
+"tags": "filter Soften gently smooth"
+},
+{
+"file": "paint/emboss.jpg",
+"label": "Emboss",
+"meta": "raised relief",
+"tags": "filter Emboss raised relief"
+},
+{
+"file": "paint/edges.jpg",
+"label": "Find edges",
+"meta": "trace the outlines",
+"tags": "filter Find edges trace the outlines"
+},
+{
+"file": "paint/contour.jpg",
+"label": "Contour",
+"meta": "line-drawing look",
+"tags": "filter Contour line-drawing look"
+}
+]

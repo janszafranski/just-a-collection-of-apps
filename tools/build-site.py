@@ -292,6 +292,11 @@ APPS_META = [
                 "Edit pictures in PAINTcanvas; opens Serif PagePlus files",
                 "Vector PDF export with bleed & crop marks"],
          based="PagePlus",
+         grid=dict(dir="page", heading="Start from the right size",
+                   note="Every paper size the Startup Assistant offers — A-sizes, business stationery, "
+                        "booklets and large-format posters. Each thumbnail is drawn to the sheet's real "
+                        "proportions. Pick one and start laying out.",
+                   ph="Filter sizes by name or category…"),
          gallery=[("shot-page.png", "Lay out pages with rulers and guides, the tool palette down the "
                    "left, and the Pages, Layers and Transform panels to the right of the canvas."),
                   ("shot-page-start.png", "Start from a paper size — A-sizes, business cards, booklets "
@@ -310,6 +315,10 @@ APPS_META = [
                 "Retouch: clone, red-eye, dodge, burn, and a gradient tool",
                 "Drop shadow & outer glow on a transparent canvas"],
          based="PhotoPlus",
+         grid=dict(dir="paint", heading="Adjustments & filters, on one photo",
+                   note="The same picture through every adjustment and filter in the app. None of these "
+                        "is a stock example — each one is produced by PAINTcanvas's own image code.",
+                   ph="Filter effects by name…"),
          gallery=[("shot-paint.png", "Paint and retouch with layers, blend modes and the Adjust and "
                    "Filter menus — the familiar darkroom, on Linux.")],
          deps="sudo pacman -S --needed pyside6 python-pillow python-numpy"),
@@ -323,6 +332,10 @@ APPS_META = [
                 "Export PNG, or send the drawing to PAINTcanvas for raster work",
                 "Infinitely scalable SVG output"],
          based="DrawPlus",
+         grid=dict(dir="draw", heading="The QuickShapes",
+                   note="Twenty ready-made shapes, each one drawn by the app itself. Drag a shape onto "
+                        "the page, then resize, recolour and add effects.",
+                   ph="Filter shapes by name…"),
          gallery=[("shot-draw.png", "QuickShapes with fills and outlines, a hand-drawn line, and "
                    "drop-shadow and glow effects — all on one canvas."),
                   ("shot-quickshapes.png", "The QuickShapes gallery: twenty ready-made shapes to drag "
@@ -416,6 +429,44 @@ def _og_for(m):
     return f"assets/{m['shot']}" if m.get("shot") else f"assets/{m['banner']}"
 
 
+GRID_JS = """
+(function(){
+  var q=document.getElementById('gq'), grid=document.getElementById('ggrid'),
+      none=document.getElementById('gnone'), tiles=[].slice.call(grid.children);
+  function run(){var v=q.value.trim().toLowerCase(), n=0;
+    tiles.forEach(function(t){var m=t.getAttribute('data-text').indexOf(v)>=0;
+      t.style.display=m?'':'none'; if(m)n++;});
+    none.style.display=n?'none':'block';}
+  q.addEventListener('input', run); run();
+})();
+"""
+
+
+def _grid_section(m):
+    g = m.get("grid")
+    if not g:
+        return ""
+    manifest = DOCS / "assets" / g["dir"] / "manifest.json"
+    if not manifest.exists():
+        return ""
+    import json as _json
+    items = _json.loads(manifest.read_text())
+    e = html.escape
+    tiles = "".join(
+        f'<div class="tile" data-text="{e(it["tags"].lower())}">'
+        f'<img src="assets/{it["file"]}" alt="{e(it["label"])}" loading="lazy">'
+        f'<div class="body"><div class="name">{e(it["label"])}</div>'
+        f'<div class="meta">{e(it["meta"])}</div></div></div>'
+        for it in items)
+    return f"""<h2>{e(g['heading'])} <span class="mute" style="font-weight:400">&middot; {len(items)}</span></h2>
+<p class="small mute">{e(g['note'])}</p>
+<div class="filter"><input id="gq" type="search" placeholder="{e(g['ph'])}" autocomplete="off"></div>
+<p class="none" id="gnone">Nothing matches that.</p>
+<div class="grid" id="ggrid">{tiles}</div>
+<script>{GRID_JS}</script>
+"""
+
+
 def _app_body(m):
     e = html.escape
     based = (f'<p class="mute" style="margin:-.3em 0 1em">A ground-up recreation in the spirit of '
@@ -434,6 +485,7 @@ def _app_body(m):
 {based}
 <p class="lede">{e(m['blurb'])}</p>
 {tour}
+{_grid_section(m)}
 <h2>What it does</h2>
 <ul>{feats}</ul>
 {_install_block(m)}
