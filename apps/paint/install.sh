@@ -8,6 +8,8 @@ die(){ printf '\033[1;31mxx\033[0m %s\n' "$*" >&2; exit 1; }
 BIN="$HOME/.local/bin"; DATA="${XDG_DATA_HOME:-$HOME/.local/share}"; APPS="$DATA/applications"
 command -v python3 >/dev/null || die "python3 not found."
 python3 -c 'import PySide6' 2>/dev/null || die "Needs PySide6 (distro package): sudo pacman -S --needed pyside6"
+python3 -c 'import PIL, numpy' 2>/dev/null || printf '\033[1;33m!!\033[0m %s\n' \
+  "Optional: install Pillow + NumPy for the Adjust/Filter menus — e.g. sudo pacman -S python-pillow python-numpy"
 log "Installing the app"
 install -Dm755 "$SELF/paint.py" "$DATA/paint/paint.py"
 install -Dm644 "$SELF/banner.png" "$DATA/paint/banner.png"
