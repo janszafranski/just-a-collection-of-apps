@@ -9,7 +9,7 @@ import subprocess, shutil
 
 try:
     from PySide6.QtCore import (Qt, QRectF, QPointF, QSizeF, QTimer, QSettings, QUrl,
-                                QByteArray, QBuffer, QIODevice, QSize, QLineF, QEvent,
+                                QByteArray, QBuffer, QIODevice, QSize, QLineF, QEvent, QFileSystemWatcher,
                                 Signal, QMimeData, QPoint)
     from PySide6.QtGui import (QAction, QActionGroup, QIcon, QPixmap, QImage, QPainter, QColor, QDrag,
                                QPen, QBrush, QFont, QFontMetrics, QPainterPath, QPalette, QTransform,
@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.13-00"
+VERSION = "1.14-00"
 
 
 def _just_dir(kind):
@@ -943,6 +943,42 @@ def pixmap_for(site, key):
         pm = QPixmap(); pm.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
         _PIX[key] = pm
     return _PIX[key]
+
+
+# ---- in-app picture adjustments (PhotoPlus-style, via Pillow) ----
+try:
+    from PIL import Image as _PILImage, ImageEnhance as _PILEnh, ImageOps as _PILOps, ImageFilter as _PILFilt
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+def _q2pil(img):
+    im = img.convertToFormat(QImage.Format_RGBA8888)
+    return _PILImage.frombytes('RGBA', (im.width(), im.height()), im.constBits().tobytes())
+
+def _pil2q(pil):
+    if pil.mode != 'RGBA': pil = pil.convert('RGBA')
+    d = pil.tobytes('raw', 'RGBA')
+    return QImage(d, pil.width, pil.height, QImage.Format_RGBA8888).convertToFormat(QImage.Format_ARGB32).copy()
+
+def _pil_keepA(src, rgb):
+    return _PILImage.merge('RGBA', rgb.convert('RGB').split() + (src.split()[3],))
+
+PIC_ADJUST = [
+    ('Auto Contrast', lambda p: _pil_keepA(p, _PILOps.autocontrast(p.convert('RGB'), cutoff=1))),
+    ('Greyscale', lambda p: _pil_keepA(p, _PILOps.grayscale(p).convert('RGB'))),
+    ('Sepia', lambda p: _pil_keepA(p, _PILOps.colorize(_PILOps.grayscale(p), black=(30, 16, 8), white=(255, 240, 200), mid=(150, 110, 70)))),
+    ('Invert (Negative)', lambda p: _pil_keepA(p, _PILOps.invert(p.convert('RGB')))),
+    (None, None),
+    ('Brighter', lambda p: _pil_keepA(p, _PILEnh.Brightness(p.convert('RGB')).enhance(1.2))),
+    ('Darker', lambda p: _pil_keepA(p, _PILEnh.Brightness(p.convert('RGB')).enhance(0.83))),
+    ('More Contrast', lambda p: _pil_keepA(p, _PILEnh.Contrast(p.convert('RGB')).enhance(1.3))),
+    ('More Saturation', lambda p: _pil_keepA(p, _PILEnh.Color(p.convert('RGB')).enhance(1.3))),
+    ('Less Saturation', lambda p: _pil_keepA(p, _PILEnh.Color(p.convert('RGB')).enhance(0.7))),
+    (None, None),
+    ('Sharpen', lambda p: p.filter(_PILFilt.SHARPEN)),
+    ('Blur', lambda p: p.filter(_PILFilt.GaussianBlur(2))),
+]
 
 ALIGN = {'left': Qt.AlignLeft, 'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}
 DASH = {'solid': Qt.SolidLine, 'dashed': Qt.DashLine, 'dotted': Qt.DotLine}
@@ -5784,8 +5820,11 @@ class MainWindow(QMainWindow):
                 ('Edit in PAINTcanvas', 'paint', ['draw-brush', 'krita', 'applications-graphics'], '🖌'),
                 ('WEBcreator', 'webcreator', ['applications-internet', 'internet-web-browser'], '🌐')):
             nm = 'PAINTcanvas' if cmd == 'paint' else 'WEBcreator'
-            pa = QAction(ticon(icons, glyph), label, self); pa.setToolTip(f'Open just a… {nm}')
-            pa.triggered.connect(lambda _=False, c=cmd, n=nm: self.launch_app(c, n)); photo.addAction(pa)
+            pa = QAction(ticon(icons, glyph), label, self)
+            pa.setToolTip('Edit the selected picture in just a… PAINTcanvas' if cmd == 'paint' else f'Open just a… {nm}')
+            pa.triggered.connect((lambda _=False: self.edit_in_paint()) if cmd == 'paint'
+                                 else (lambda _=False, c=cmd, n=nm: self.launch_app(c, n)))
+            photo.addAction(pa)
             w = photo.widgetForAction(pa)
             if w: w.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(Qt.TopToolBarArea, photo)
@@ -6191,9 +6230,9 @@ class MainWindow(QMainWindow):
         browse = QPushButton(ticon(['folder-open', 'document-open'], ''), 'Browse…'); browse.setToolTip('Add every picture from a folder'); browse.clicked.connect(self.asset_browse_folder)
         add_file = QPushButton(ticon(['document-open'], ''), 'Open…'); add_file.clicked.connect(self.asset_add_file)
         add_ai = QPushButton(ticon(['applications-graphics'], ''), 'AI image…'); add_ai.clicked.connect(self.asset_add_ai)
-        paint = QPushButton(ticon(['draw-brush', 'krita', 'applications-graphics'], '🖌'), 'IMAGEpainter')
-        paint.setToolTip('Open IMAGEpainter (set in Settings) to paint or edit an image')
-        paint.clicked.connect(self.launch_imagepainter)
+        paint = QPushButton(ticon(['draw-brush', 'krita', 'applications-graphics'], '🖌'), 'Edit in PAINTcanvas')
+        paint.setToolTip('Open the selected picture in just a… PAINTcanvas (or right-click an asset)')
+        paint.clicked.connect(lambda: self.edit_in_paint())
         for b in (browse, add_file, add_ai, paint): b.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Fixed)
         # full words, no truncation — scroll the row with the < > arrows when it overflows
         al.addWidget(self._hscroll_row([browse, add_file, add_ai, paint]))
@@ -6566,25 +6605,103 @@ class MainWindow(QMainWindow):
                                'is here for parity with WebPlus but does not do anything.')
 
     def launch_imagepainter(self):
-        """Open the image editor set in Settings (defaults to 'IMAGEpainter'). If it isn't on the
-        system yet, offer to install it."""
-        cmd = (self.settings.value('imagePainterCmd', '') or 'IMAGEpainter').strip()
-        exe = shutil.which(cmd) or shutil.which(cmd.lower()) or shutil.which('imagepainter')
-        if exe:
-            try:
-                subprocess.Popen([exe])
-                self.hint(f'Opening {cmd}…')
-            except Exception as e:
-                QMessageBox.warning(self, cmd, f'Could not start {cmd}:\n{e}')
+        self.edit_in_paint()
+
+    def _paint_exe(self):
+        import shutil
+        cmd = (self.settings.value('imagePainterCmd', '') or '').strip()
+        if cmd and cmd.lower() != 'imagepainter':          # a custom editor set in Settings
+            e = shutil.which(cmd) or (cmd if os.path.isabs(cmd) and os.path.exists(cmd) else None)
+            if e: return e
+        return shutil.which('paint') or os.path.expanduser('~/.local/bin/paint')
+
+    def edit_in_paint(self, key=None):
+        """Open an image in just a… PAINTcanvas. If `key` (or a selected picture) names an
+        asset, that picture is opened and re-imported when you save it there."""
+        exe = self._paint_exe()
+        if not os.path.exists(exe):
+            if QMessageBox.question(self, 'Install PAINTcanvas',
+                    'just a… PAINTcanvas isn’t installed yet.\n\nInstall it from the '
+                    '“just a… COLLECTION of apps” launcher. Open the download page now?',
+                    QMessageBox.Yes | QMessageBox.No) == QMessageBox.Yes:
+                from PySide6.QtGui import QDesktopServices
+                QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
             return
-        r = QMessageBox.question(
-            self, 'Install IMAGEpainter',
-            f'“{cmd}” isn’t installed on this system yet.\n\n'
-            'IMAGEpainter is the companion image editor — paint and edit pictures, then drop them '
-            'straight into your site. Would you like to install it?',
-            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
-        if r == QMessageBox.Yes:
-            open_external('https://janszafranski.github.io/just-a-collection-of-apps/')
+        if key is None:
+            o = next((o for o in self.sel_objs() if o.get('type') == 'picture' and o.get('src')), None)
+            key = o['src'] if o else None
+        if not key or key not in self.site.get('assets', {}):
+            subprocess.Popen([exe], start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.hint('Opened PAINTcanvas. Select a picture first to edit it directly.')
+            return
+        src = self.site['assets'][key]
+        m = re.match(r'data:image/([a-z0-9+]+);base64,', src)
+        ext = {'jpeg': 'jpg', 'svg+xml': 'svg'}.get(m.group(1), m.group(1)) if m else 'png'
+        if ext not in ('png', 'jpg', 'jpeg'): ext = 'png'
+        nm = self.site.get('assetnames', {}).get(key) or key
+        base = re.sub(r'[^A-Za-z0-9._-]+', '-', os.path.splitext(nm)[0]).strip('-') or key[:8]
+        path = os.path.join(_just_dir('pics'), f'{base}.{ext}')
+        try:
+            with open(path, 'wb') as fh: fh.write(base64.b64decode(src.split(',', 1)[1]))
+        except Exception as ex:
+            QMessageBox.warning(self, APP, f'Could not export the picture:\n{ex}'); return
+        subprocess.Popen([exe, path], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.hint(f'Editing “{base}” in PAINTcanvas — save there (Ctrl+S) and it updates here.')
+        self._watch_paint_edit(key, path)
+
+    def _watch_paint_edit(self, key, path):
+        if not hasattr(self, '_paint_watcher'):
+            self._paint_watcher = QFileSystemWatcher(self); self._paint_watch = {}
+            self._paint_watcher.fileChanged.connect(self._on_paint_saved)
+        self._paint_watch[path] = key
+        if path not in self._paint_watcher.files():
+            self._paint_watcher.addPath(path)
+
+    def _on_paint_saved(self, path):
+        QTimer.singleShot(400, lambda: self._reimport_paint(path))
+
+    def _reimport_paint(self, path):
+        key = getattr(self, '_paint_watch', {}).get(path)
+        if not key or not os.path.exists(path): return
+        if path not in self._paint_watcher.files():
+            self._paint_watcher.addPath(path)
+        try:
+            with open(path, 'rb') as fh: data = fh.read()
+        except OSError:
+            return
+        ext = os.path.splitext(path)[1].lstrip('.').lower()
+        mime = 'jpeg' if ext in ('jpg', 'jpeg') else (ext or 'png')
+        self.site['assets'][key] = f'data:image/{mime};base64,' + base64.b64encode(data).decode()
+        _PIX.pop(key, None); self.dirty = True
+        self.refresh(); self.hint('Picture updated from PAINTcanvas.')
+
+    def adjust_picture(self, key, func):
+        """Apply a PhotoPlus-style adjustment to a picture's asset image, in place."""
+        if not _HAS_PIL:
+            QMessageBox.information(self, APP, 'In-app picture adjustments need the Pillow library '
+                                   '(e.g. sudo pacman -S python-pillow). Or use Edit in PAINTcanvas.')
+            return
+        src = self.site.get('assets', {}).get(key)
+        if not src or not src.startswith('data:image'): return
+        try:
+            qi = QImage(); qi.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
+            if qi.isNull(): return
+            out = _pil2q(func(_q2pil(qi)))
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly)
+            out.save(buf, 'PNG'); buf.close()
+            self.commit()
+            self.site['assets'][key] = 'data:image/png;base64,' + bytes(ba.toBase64()).decode()
+            _PIX.pop(key, None); self.dirty = True; self.refresh(); self.hint('Picture adjusted.')
+        except Exception as ex:
+            QMessageBox.warning(self, APP, f'Could not adjust the picture:\n{ex}')
+
+    def _pic_adjust_menu(self, menu, key):
+        sub = menu.addMenu(ticon(['adjustlevels', 'image-adjust'], '◐'), 'Adjust Picture')
+        for name, fn in PIC_ADJUST:
+            if name is None: sub.addSeparator(); continue
+            sub.addAction(name, lambda _=False, f=fn: self.adjust_picture(key, f))
 
     def refresh_site_tab(self):
         self.site_name_label.setText(f'<b>{H.escape(self.site["name"])}</b> &nbsp;·&nbsp; {self.site["width"]} px wide')
@@ -9145,7 +9262,11 @@ class MainWindow(QMainWindow):
             m.addAction('Transform — Position & Size…', self.transform_dialog)
             if o['type'] in ('picture', 'shape'):
                 m.addAction('Stop Wrapping Text' if o.get('wrap') else 'Wrap Text Around This', self.toggle_wrap)
-            if o['type'] == 'picture': m.addAction('Replace Picture…', lambda: self.pick_picture(o))
+            if o['type'] == 'picture':
+                m.addAction('Replace Picture…', lambda: self.pick_picture(o))
+                if o.get('src'):
+                    m.addAction(ticon(['draw-brush', 'krita'], '🖌'), 'Edit in PAINTcanvas', lambda: self.edit_in_paint(o['src']))
+                    self._pic_adjust_menu(m, o['src'])
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
         else:
             m.addAction(self.a['paste']); m.addSeparator(); m.addAction(self.a['pageprops']); m.addAction(self.a['newpage'])
@@ -10247,7 +10368,7 @@ class MainWindow(QMainWindow):
         ai_prov.setCurrentIndex(max(0, ai_prov.findData(self.settings.value('aiProvider', 'pollinations'))))
         ai_key = QLineEdit(self.settings.value('aiOpenAIKey', '') or self.settings.value('aiStabilityKey', ''))
         ai_key.setEchoMode(QLineEdit.Password); ai_key.setPlaceholderText('Only needed for OpenAI / Stability')
-        painter = QLineEdit(self.settings.value('imagePainterCmd', '') or 'IMAGEpainter'); painter.setPlaceholderText('IMAGEpainter')
+        painter = QLineEdit(self.settings.value('imagePainterCmd', '') or ''); painter.setPlaceholderText('paint (just a… PAINTcanvas)')
         repo = QLineEdit(self.update_repo()); repo.setPlaceholderText('yourname/pagecreator')
         branch = QLineEdit(self.settings.value('updateBranch', '') or UPDATE_BRANCH)
         path = QLineEdit(self.settings.value('updatePath', '') or UPDATE_PATH); path.setPlaceholderText('pagecreator.py')
@@ -10263,7 +10384,7 @@ class MainWindow(QMainWindow):
                 section('AI images', 'Used by Insert ▸ Picture ▸ Create with AI'),
                 ('Image generator:', ai_prov), ('API key (if needed):', ai_key),
                 section('Tools & updates', 'Image editor, and where app updates come from'),
-                ('Image editor (IMAGEpainter button):', painter),
+                ('Image editor (blank = PAINTcanvas):', painter),
                 ('GitHub repository:', repo), ('Branch:', branch), ('File in it:', path), ('', auto)]
 
         dlg = QDialog(self); dlg.setWindowTitle('Settings'); dlg.resize(560, 600)
@@ -10286,7 +10407,7 @@ class MainWindow(QMainWindow):
         k = ai_key.text().strip()
         if prov == 'openai': self.settings.setValue('aiOpenAIKey', k)
         elif prov == 'stability': self.settings.setValue('aiStabilityKey', k)
-        self.settings.setValue('imagePainterCmd', painter.text().strip() or 'IMAGEpainter')
+        self.settings.setValue('imagePainterCmd', painter.text().strip())
         self.settings.setValue('updateRepo', repo.text().strip()); self.settings.setValue('updateBranch', branch.text().strip() or UPDATE_BRANCH)
         self.settings.setValue('updatePath', path.text().strip() or UPDATE_PATH)
         self.settings.setValue('autoUpdate', auto.isChecked())
