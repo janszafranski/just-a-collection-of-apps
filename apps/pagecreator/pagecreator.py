@@ -1250,10 +1250,76 @@ def shape_svg(o):
             f'{("<defs>" + defs + "</defs>") if defs else ""}'
             f'<path d="{d}" transform="translate({ins:g},{ins:g})" fill="{fill}"{stroke}/></svg>')
 
+# ---------------------------------------------------------------- Object effects
+# Drop shadow / outer glow (PagePlus Filter Effects). o['shadow'] / o['glow'] =
+# {dx,dy,blur,color,opacity}. Drawn as a blurred colour stamp behind the object
+# (canvas + PDF, via draw_object_fx) and as a CSS filter at publish (fx_css).
+def _rgba(hexcol, opacity):
+    c = QColor(hexcol); return f"rgba({c.red()},{c.green()},{c.blue()},{opacity / 100.0:g})"
+
+def obj_silhouette_path(o):
+    """The filled outline of an object in local (0,0,w,h) coords — for effects."""
+    t = o['type']; w, h = o['w'], o['h']; rad = o.get('radius', 0)
+    pp = QPainterPath()
+    if t == 'shape':
+        sh = o.get('shape', 'rect')
+        if sh == 'ellipse': pp.addEllipse(QRectF(0, 0, w, h))
+        elif sh != 'rect' and sh in QS_KEYS: return quickshape_path(sh, w, h)
+        elif rad: pp.addRoundedRect(QRectF(0, 0, w, h), rad, rad)
+        else: pp.addRect(QRectF(0, 0, w, h))
+        return pp
+    if t == 'line': return None
+    if rad: pp.addRoundedRect(QRectF(0, 0, w, h), rad, rad)
+    else: pp.addRect(QRectF(0, 0, w, h))
+    return pp
+
+def _fx_image(path, w, h, color, blur, pad):
+    """A blurred, solid-colour stamp of `path` (QImage) with `pad` margin all round.
+    Blur is a downscale→smooth-upscale (a cheap Gaussian) — no QApplication needed."""
+    W, H = int(w + 2 * pad), int(h + 2 * pad)
+    base = QImage(W, H, QImage.Format_ARGB32_Premultiplied); base.fill(Qt.transparent)
+    q = QPainter(base); q.setRenderHint(QPainter.Antialiasing)
+    q.translate(pad, pad); q.setPen(Qt.NoPen); q.setBrush(QColor(color)); q.drawPath(path); q.end()
+    if blur <= 0: return base
+    f = max(2, int(round(blur / 1.5)))
+    sw, sh = max(1, W // f), max(1, H // f)
+    small = base.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    return small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+
+def draw_object_fx(p, o):
+    """Draw outer glow and/or drop shadow behind an object (canvas + PDF)."""
+    sh = o.get('shadow'); gl = o.get('glow')
+    if not sh and not gl: return
+    sil = obj_silhouette_path(o)
+    if sil is None: return
+    w, h = o['w'], o['h']
+    if gl:
+        blur = max(1, gl.get('blur', 12)); pad = blur + 6
+        img = _fx_image(sil, w, h, gl.get('color', '#ffe08a'), blur, pad)
+        p.save(); p.setOpacity(p.opacity() * gl.get('opacity', 70) / 100.0)
+        p.drawImage(QPointF(-pad, -pad), img); p.drawImage(QPointF(-pad, -pad), img); p.restore()
+    if sh:
+        blur = max(0, sh.get('blur', 8)); pad = blur + 6
+        img = _fx_image(sil, w, h, sh.get('color', '#000000'), blur, pad)
+        p.save(); p.setOpacity(p.opacity() * sh.get('opacity', 45) / 100.0)
+        p.drawImage(QPointF(sh.get('dx', 6) - pad, sh.get('dy', 6) - pad), img); p.restore()
+
+def fx_css(o):
+    """CSS `filter` implementing an object's drop-shadow/glow at publish."""
+    parts = []; sh = o.get('shadow'); gl = o.get('glow')
+    if sh:
+        parts.append(f"drop-shadow({sh.get('dx', 6):g}px {sh.get('dy', 6):g}px "
+                     f"{max(0, sh.get('blur', 8)):g}px {_rgba(sh.get('color', '#000'), sh.get('opacity', 45))})")
+    if gl:
+        c = _rgba(gl.get('color', '#ffe08a'), gl.get('opacity', 70)); b = max(1, gl.get('blur', 12))
+        parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
+    return ('filter:' + ' '.join(parts) + ';') if parts else ''
+
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
     rad = o.get('radius', 0)
+    draw_object_fx(p, o)
     def box():
         sw = o.get('strokeW', 0) if o.get('stroke') else 0
         rr = r.adjusted(sw / 2, sw / 2, -sw / 2, -sw / 2)
@@ -1861,6 +1927,7 @@ def obj_html(o, site, page, img):
     st = f"left:{o['x']:g}px;top:{o['y']:g}px;width:{o['w']:g}px;height:{o['h']:g}px;"
     if o.get('rot'): st += f"transform:rotate({o['rot']:g}deg);"
     if o.get('opacity', 1) < 1: st += f"opacity:{o['opacity']:g};"
+    st += fx_css(o)
     tag, attrs = 'div', ''
     L = o.get('link')
     if L and t not in ('nav', 'form'):
@@ -4204,6 +4271,9 @@ class ObjItem(QGraphicsItem):
     def boundingRect(self):
         pad = self.o.get('strokeW', 0) / 2 + 2
         if self.o['type'] == 'nav': pad += 40
+        sh = self.o.get('shadow'); gl = self.o.get('glow')
+        if sh: pad = max(pad, abs(sh.get('dx', 6)) + sh.get('blur', 8) + 8, abs(sh.get('dy', 6)) + sh.get('blur', 8) + 8)
+        if gl: pad = max(pad, gl.get('blur', 12) + 8)
         return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad)
 
     def shape(self):
@@ -6195,6 +6265,9 @@ class MainWindow(QMainWindow):
             lw = QSpinBox(); lw.setRange(0, 60); lw.setValue(int(o.get('strokeW', 0))); lw.setSuffix(' px'); lw.setToolTip('Line width')
             lw.editingFinished.connect(lambda: self.set_prop('strokeW', lw.value())); add(lw)
             tb.addSeparator()
+        if types & set(self.FX_OBJ):
+            btn(['tools-wizard', 'adjustlevels', 'image-adjust'], 'Effects — drop shadow & glow…', self.effects_dialog, glyph='✦')
+            tb.addSeparator()
         if len(objs) == 1:
             t = o['type']
             if t == 'shape':
@@ -8016,6 +8089,42 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     FILL_OBJ = ('shape', 'text', 'picture', 'button')
+    FX_OBJ = ('shape', 'text', 'artistic', 'picture', 'button', 'table', 'gallery')
+
+    def effects_dialog(self):
+        from PySide6.QtWidgets import QSpinBox, QCheckBox
+        objs = [o for o in self.sel_objs() if o['type'] in self.FX_OBJ]
+        if not objs: return
+        o0 = objs[0]; s0 = o0.get('shadow') or {}; g0 = o0.get('glow') or {}
+        s_on = QCheckBox('Enable drop shadow'); s_on.setChecked(bool(o0.get('shadow')))
+        sdx = QSpinBox(); sdx.setRange(-100, 100); sdx.setSuffix(' px'); sdx.setValue(int(s0.get('dx', 6)))
+        sdy = QSpinBox(); sdy.setRange(-100, 100); sdy.setSuffix(' px'); sdy.setValue(int(s0.get('dy', 6)))
+        sbl = QSpinBox(); sbl.setRange(0, 80); sbl.setSuffix(' px'); sbl.setValue(int(s0.get('blur', 8)))
+        sop = QSpinBox(); sop.setRange(0, 100); sop.setSuffix(' %'); sop.setValue(int(s0.get('opacity', 45)))
+        scol = [s0.get('color', '#000000')]
+        scb = ColorButton(scol[0], lambda c: scol.__setitem__(0, c or '#000000'), 'Shadow colour')
+        g_on = QCheckBox('Enable outer glow'); g_on.setChecked(bool(o0.get('glow')))
+        gbl = QSpinBox(); gbl.setRange(1, 80); gbl.setSuffix(' px'); gbl.setValue(int(g0.get('blur', 12)))
+        gop = QSpinBox(); gop.setRange(0, 100); gop.setSuffix(' %'); gop.setValue(int(g0.get('opacity', 70)))
+        gcol = [g0.get('color', '#ffd54a')]
+        gcb = ColorButton(gcol[0], lambda c: gcol.__setitem__(0, c or '#ffd54a'), 'Glow colour')
+        rows = [('', s_on), ('Offset across:', sdx), ('Offset down:', sdy), ('Shadow blur:', sbl),
+                ('Shadow strength:', sop), ('Shadow colour:', scb),
+                ('', g_on), ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb)]
+        dlg = form_dialog(self, 'Effects — Shadow & Glow', rows,
+                          QLabel('Drop shadow and outer glow lift an object off the page. They preview live '
+                                 'and publish as CSS filters on the web.'))
+        if not dlg.exec(): return
+        self.commit()
+        for o in objs:
+            if s_on.isChecked():
+                o['shadow'] = {'dx': sdx.value(), 'dy': sdy.value(), 'blur': sbl.value(),
+                               'opacity': sop.value(), 'color': scol[0]}
+            else: o.pop('shadow', None)
+            if g_on.isChecked():
+                o['glow'] = {'blur': gbl.value(), 'opacity': gop.value(), 'color': gcol[0]}
+            else: o.pop('glow', None)
+        self.refresh()
 
     def gradient_dialog(self, kind='linear'):
         from PySide6.QtWidgets import QSpinBox
@@ -8616,6 +8725,8 @@ class MainWindow(QMainWindow):
                 m.addAction('Linear Gradient Fill…', lambda: self.gradient_dialog('linear'))
                 m.addAction('Radial Gradient Fill…', lambda: self.gradient_dialog('radial'))
                 if o.get('grad'): m.addAction('Remove Gradient', self.remove_gradient)
+            if o['type'] in self.FX_OBJ:
+                m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
             if o['type'] in ('picture', 'shape'):
                 m.addAction('Stop Wrapping Text' if o.get('wrap') else 'Wrap Text Around This', self.toggle_wrap)
             if o['type'] == 'picture': m.addAction('Replace Picture…', lambda: self.pick_picture(o))
