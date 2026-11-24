@@ -38,7 +38,31 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.12-01"
+VERSION = "1.13-00"
+
+
+def _just_dir(kind):
+    """The shared 'just a...' folder (kind='docs' → Documents, 'pics' → Pictures), created on demand."""
+    base = os.path.expanduser('~/Documents' if kind == 'docs' else '~/Pictures')
+    d = os.path.join(base, 'just a...')
+    try: os.makedirs(d, exist_ok=True)
+    except OSError: pass
+    return d
+
+
+def _justapps_recent(appkey, path):
+    """Append to the shared recents log the COLLECTION launcher reads."""
+    import json, time
+    try:
+        d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)
+        f = os.path.join(d, 'recents.json')
+        try:
+            with open(f) as fh: data = json.load(fh)
+        except Exception: data = []
+        data = [e for e in data if isinstance(e, dict) and e.get('path') != path]
+        data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
+        with open(f, 'w') as fh: json.dump(data[:50], fh)
+    except Exception: pass
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -5248,7 +5272,7 @@ class StartupAssistant(QDialog):
         if it and it.data(Qt.UserRole): self.result_path = it.data(Qt.UserRole); self.accept()
 
     def browse(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', os.path.expanduser('~'),
+        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', _just_dir('docs'),
                                               f'PAGEdesigner publications (*{EXT});;All files (*)')
         if path: self.result_path = path; self.accept()
 
@@ -9155,6 +9179,7 @@ class MainWindow(QMainWindow):
     def add_recent(self, path):
         r = [path] + [p for p in self.recent_files() if p != path]
         self.settings.setValue('recent', r[:10])
+        _justapps_recent('pagecreator', path)
 
     def maybe_save(self):
         if self.editor: self.finish_edit()
@@ -9370,7 +9395,7 @@ class MainWindow(QMainWindow):
 
     def save_as(self):
         if self.editor: self.finish_edit()
-        start = self.path or os.path.join(os.path.expanduser('~'), re.sub(r'[^\w -]+', '', self.site['name']).strip() + EXT)
+        start = self.path or os.path.join(_just_dir('docs'), re.sub(r'[^\w -]+', '', self.site['name']).strip() + EXT)
         path, _ = QFileDialog.getSaveFileName(self, 'Save Publication As', start, f'PAGEdesigner publications (*{EXT})')
         if not path: return False
         if not path.endswith(EXT): path += EXT
@@ -10324,6 +10349,9 @@ def main():
     app.setApplicationName('PAGEdesigner'); app.setApplicationDisplayName(APP); app.setOrganizationName(ORG)
     app.setApplicationVersion(VERSION)
     w = MainWindow(); w.show()
+    _args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    if _args and os.path.isfile(_args[0]):
+        QTimer.singleShot(0, lambda: w.load_path(_args[0]))
     sys.exit(app.exec())
 
 

@@ -10,9 +10,10 @@ import os, re, sys, subprocess
 
 try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QLabel, QPushButton,
-                                   QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSizePolicy)
-    from PySide6.QtGui import QPixmap, QIcon, QCursor
-    from PySide6.QtCore import Qt, QUrl, QProcess, QTimer
+                                   QVBoxLayout, QHBoxLayout, QFrame, QScrollArea, QSizePolicy,
+                                   QListWidget, QListWidgetItem, QToolButton)
+    from PySide6.QtGui import QPixmap, QIcon, QCursor, QColor, QPainter, QFont
+    from PySide6.QtCore import Qt, QUrl, QProcess, QTimer, QSize, QFileSystemWatcher
     from PySide6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 except ImportError:
     sys.stderr.write("just a... COLLECTION of apps needs PySide6 (use your distro package):\n"
@@ -21,7 +22,7 @@ except ImportError:
 
 APP = "just a... COLLECTION of apps"
 ORG = "justacollectionofapps"
-VERSION = "1.1-00"
+VERSION = "1.2-00"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
@@ -46,6 +47,78 @@ APPS = [
          desc='Draw with vectors — shapes, lines and paths — and save a scalable SVG.'),
     # add more apps here
 ]
+
+# ---- the shared "just a..." file world -------------------------------------
+HOME = os.path.expanduser('~')
+JUST_DOCS = os.path.join(HOME, 'Documents', 'just a...')
+JUST_PICS = os.path.join(HOME, 'Pictures', 'just a...')
+JUST_DIRS = [JUST_DOCS, JUST_PICS]
+RECENTS_FILE = os.path.join(HOME, '.local/share/justapps/recents.json')
+
+# which file extensions belong to which app, and the reverse
+APP_EXTS = {'webcreator': ['.webc'], 'pagecreator': ['.pagc'],
+            'draw': ['.svg'], 'paint': ['.png', '.jpg', '.jpeg']}
+EXT_APP = {e: k for k, exts in APP_EXTS.items() for e in exts}
+APP_LABELS = {a['key']: a['name'] for a in APPS}
+# badge glyph + colour for non-image files (image files show a real thumbnail)
+APP_BADGE = {'webcreator': ('W', '#1f6f63'), 'pagecreator': ('P', '#9e2f2f'),
+             'draw': ('D', '#3a6ea5'), 'paint': ('A', '#b5651d')}
+IMG_EXTS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
+
+
+def load_recents():
+    import json
+    try:
+        with open(RECENTS_FILE) as fh:
+            data = json.load(fh)
+    except Exception:
+        return []
+    out = []
+    for e in data:
+        if isinstance(e, dict) and isinstance(e.get('path'), str) and os.path.isfile(e['path']):
+            out.append(e)
+    return out
+
+
+def scan_files():
+    """Every file in the two 'just a...' folders, newest first: {path, app, mtime}."""
+    items = []
+    for d in JUST_DIRS:
+        if not os.path.isdir(d):
+            continue
+        try:
+            names = os.listdir(d)
+        except OSError:
+            continue
+        for name in names:
+            p = os.path.join(d, name)
+            if not os.path.isfile(p):
+                continue
+            app = EXT_APP.get(os.path.splitext(name)[1].lower())
+            if not app:
+                continue
+            try:
+                mt = os.path.getmtime(p)
+            except OSError:
+                mt = 0
+            items.append({'path': p, 'app': app, 'mtime': mt})
+    items.sort(key=lambda x: -x['mtime'])
+    return items
+
+
+def make_file_icon(app, path):
+    ext = os.path.splitext(path)[1].lower()
+    if ext in IMG_EXTS:
+        pm = QPixmap(path)
+        if not pm.isNull():
+            return QIcon(pm.scaled(QSize(44, 44), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+    glyph, col = APP_BADGE.get(app, ('•', '#555'))
+    pm = QPixmap(44, 44); pm.fill(Qt.transparent)
+    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(Qt.NoPen); p.setBrush(QColor(col)); p.drawRoundedRect(3, 3, 38, 38, 9, 9)
+    p.setPen(QColor('#ffffff')); f = QFont('Noto Sans'); f.setPixelSize(22); f.setBold(True); p.setFont(f)
+    p.drawText(pm.rect(), Qt.AlignCenter, glyph); p.end()
+    return QIcon(pm)
 
 
 def read_local_version(py_path):
@@ -133,12 +206,17 @@ class AppRow(QFrame):
             self.win.fetch_banner(self)          # pull the banner from the repo to show it
 
     def _wire_launch(self):
-        hand = self.installed
-        self.logo.setCursor(QCursor(Qt.PointingHandCursor if hand else Qt.ArrowCursor))
-        self.logo.mousePressEvent = (lambda e: self.launch()) if hand else (lambda e: None)
+        # Single click filters the file pane to this app; double click opens the app.
+        self.logo.setCursor(QCursor(Qt.PointingHandCursor))
+        self.logo.mousePressEvent = lambda e: self.win.select_app(self)
+        self.logo.mouseDoubleClickEvent = lambda e: self.launch()
         if hasattr(self, 'caption'):
-            self.caption.setCursor(QCursor(Qt.PointingHandCursor if hand else Qt.ArrowCursor))
-            self.caption.mousePressEvent = (lambda e: self.launch()) if hand else (lambda e: None)
+            self.caption.setCursor(QCursor(Qt.PointingHandCursor))
+            self.caption.mousePressEvent = lambda e: self.win.select_app(self)
+            self.caption.mouseDoubleClickEvent = lambda e: self.launch()
+
+    def set_selected(self, on):
+        self.setStyleSheet('#approw{background:#283642;}' if on else '#approw{background:transparent;}')
 
     def set_banner_width(self, w):
         self._bw = w
@@ -167,20 +245,10 @@ class AppRow(QFrame):
         self._place_btn(self.install_btn)
 
     def launch(self):
+        # Open the app fresh (no file). The hub stays open as a launching pad.
         if not self.installed:
             return
-        started = False
-        try:
-            subprocess.Popen(['setsid', self.launcher], start_new_session=True,
-                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            started = True
-        except Exception:
-            try:
-                started = QProcess.startDetached(self.launcher, [])
-            except Exception:
-                started = False
-        if started:
-            QTimer.singleShot(400, QApplication.quit)
+        self.win.run_cmd(self.info['key'])
 
     # ---- update (installed apps) ----
     def offer_update(self, version, data):
@@ -250,33 +318,136 @@ class AppRow(QFrame):
             self._place_btn(self.install_btn)
 
 
+class FilePane(QWidget):
+    """The right-hand hub: a collapsible Recent list and a full file list for the
+    two 'just a...' folders, filtered to the selected app. Open a file to launch it."""
+    def __init__(self, win):
+        super().__init__()
+        self.win = win
+        self.filter_app = None
+        self.setObjectName('filepane')
+        v = QVBoxLayout(self); v.setContentsMargins(16, 16, 16, 16); v.setSpacing(8)
+
+        self.title = QLabel('Your files'); self.title.setObjectName('panetitle'); v.addWidget(self.title)
+        self.sub = QLabel('Everything you make with the apps, in one place.')
+        self.sub.setObjectName('panesub'); self.sub.setWordWrap(True); v.addWidget(self.sub)
+
+        self.rec_toggle = QToolButton(); self.rec_toggle.setObjectName('section')
+        self.rec_toggle.setText('▾  Recent'); self.rec_toggle.setCheckable(True); self.rec_toggle.setChecked(True)
+        self.rec_toggle.setCursor(QCursor(Qt.PointingHandCursor)); self.rec_toggle.clicked.connect(self.toggle_recent)
+        v.addWidget(self.rec_toggle)
+        self.rec_list = QListWidget(); self.rec_list.setObjectName('filelist'); self.rec_list.setMaximumHeight(200)
+        self.rec_list.setIconSize(QSize(44, 44))
+        self.rec_list.itemActivated.connect(self.open_item); self.rec_list.itemDoubleClicked.connect(self.open_item)
+        v.addWidget(self.rec_list)
+
+        self.files_lbl = QLabel('All files'); self.files_lbl.setObjectName('section'); v.addWidget(self.files_lbl)
+        self.files_list = QListWidget(); self.files_list.setObjectName('filelist'); self.files_list.setIconSize(QSize(44, 44))
+        self.files_list.itemActivated.connect(self.open_item); self.files_list.itemDoubleClicked.connect(self.open_item)
+        v.addWidget(self.files_list, 1)
+        self.empty = QLabel(''); self.empty.setObjectName('empty'); self.empty.setWordWrap(True)
+        self.empty.setAlignment(Qt.AlignCenter); v.addWidget(self.empty, 1)
+
+        self.watcher = QFileSystemWatcher(self)
+        for d in JUST_DIRS:
+            try: os.makedirs(d, exist_ok=True)
+            except OSError: pass
+            if os.path.isdir(d): self.watcher.addPath(d)
+        self.watcher.directoryChanged.connect(lambda _=None: self.refresh())
+        self.refresh()
+
+    def toggle_recent(self):
+        on = self.rec_toggle.isChecked()
+        self.rec_list.setVisible(on)
+        self.rec_toggle.setText(('▾' if on else '▸') + '  Recent')
+
+    def set_filter(self, app_key):
+        self.filter_app = app_key
+        name = APP_LABELS.get(app_key)
+        self.title.setText(name if name else 'Your files')
+        self.files_lbl.setText((name + ' files') if name else 'All files')
+        self.refresh()
+
+    def _add(self, listw, path, app, mtime=None):
+        import time
+        it = QListWidgetItem(make_file_icon(app, path), os.path.basename(path))
+        folder = os.path.dirname(path).replace(HOME, '~')
+        when = ('  ·  ' + time.strftime('%d %b %Y', time.localtime(mtime))) if mtime else ''
+        it.setToolTip(f'{path}{when}\nOpens in {APP_LABELS.get(app, app)}')
+        it.setData(Qt.UserRole, (app, path))
+        listw.addItem(it)
+
+    def refresh(self):
+        exts = APP_EXTS.get(self.filter_app)
+        self.rec_list.clear()
+        for e in load_recents():
+            if self.filter_app and e.get('app') != self.filter_app:
+                continue
+            self._add(self.rec_list, e['path'], e.get('app', ''))
+        if self.rec_list.count() == 0:
+            it = QListWidgetItem('Nothing opened recently'); it.setFlags(Qt.NoItemFlags); self.rec_list.addItem(it)
+
+        self.files_list.clear(); n = 0
+        for f in scan_files():
+            if exts and os.path.splitext(f['path'])[1].lower() not in exts:
+                continue
+            self._add(self.files_list, f['path'], f['app'], f['mtime']); n += 1
+        if n == 0:
+            self.files_list.hide(); self.empty.show()
+            where = APP_LABELS.get(self.filter_app, 'the apps')
+            self.empty.setText(f'No files yet.\n\nMake something in {where} and save it —\nit will show up here automatically.')
+        else:
+            self.empty.hide(); self.files_list.show()
+
+    def open_item(self, it):
+        d = it.data(Qt.UserRole)
+        if d:
+            self.win.launch_file(d[0], d[1])
+
+
 class Launcher(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle(APP)
         self.nam = QNetworkAccessManager(self)
-
-        central = QWidget()
-        self.setCentralWidget(central)
-        outer = QVBoxLayout(central)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.setSpacing(0)
-        self.outer = outer
         self.BANNER_W = 320
+        self.selected_key = None
 
-        self.header = QLabel()
-        self.header.setAlignment(Qt.AlignCenter)
+        central = QWidget(); self.setCentralWidget(central)
+        body = QHBoxLayout(central); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
+
+        # LEFT column — the title banner and a scrollable stack of app rows
+        self.SBW = 16                                   # room for the vertical scrollbar
+        leftw = QWidget(); leftw.setObjectName('leftcol'); leftw.setFixedWidth(self.BANNER_W + self.SBW)
+        left = QVBoxLayout(leftw); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(0)
+        self.header = QLabel(); self.header.setAlignment(Qt.AlignCenter)
         self._header_pm = QPixmap(BANNER_IMG) if os.path.isfile(BANNER_IMG) else None
         if self._header_pm is None or self._header_pm.isNull():
             self.header.setText(APP)
-            self.header.setStyleSheet('font-size:28px;font-weight:bold;padding:40px;background:#2b2f36;color:#f4f4f4;')
-        outer.addWidget(self.header)
-
+            self.header.setStyleSheet('font-size:22px;font-weight:bold;padding:30px;background:#2b2f36;color:#f4f4f4;')
+        else:
+            self.header.setPixmap(self._header_pm.scaledToWidth(self.BANNER_W + self.SBW, Qt.SmoothTransformation))
+        left.addWidget(self.header)
+        rowholder = QWidget()
+        self.rows_layout = QVBoxLayout(rowholder)
+        self.rows_layout.setContentsMargins(0, 0, 0, 0); self.rows_layout.setSpacing(0)
         self.rows = []
         self.build_rows()
+        self.rows_layout.addStretch(1)
+        rowscroll = QScrollArea(); rowscroll.setWidget(rowholder); rowscroll.setWidgetResizable(True)
+        rowscroll.setObjectName('rowscroll'); rowscroll.setFrameShape(QFrame.NoFrame)
+        rowscroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        left.addWidget(rowscroll, 1)
+        body.addWidget(leftw)
+
+        # RIGHT — the file hub
+        self.filepane = FilePane(self)
+        body.addWidget(self.filepane, 1)
 
         self.setStyleSheet('''
             QMainWindow { background: #1c1f24; }
+            #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; }
+            #rowscroll { background: transparent; border: none; }
             #approw { background: transparent; }
             #appdesc { color: #c7ccd2; font-size: 12px; padding: 9px 14px 13px 14px; background: #22262c; }
             #updatebtn { padding: 7px 14px; border-radius: 8px; font-weight: 600; font-size: 12px;
@@ -287,23 +458,49 @@ class Launcher(QMainWindow):
                 background: #2a7d6b; color: #ffffff; border: 1px solid rgba(255,255,255,.25); }
             #installbtn:hover { background: #329181; }
             #installbtn:disabled { background: #8a8f96; color: #e8e8e8; }
+            #filepane { background: #191c21; }
+            #panetitle { color: #f0f2f4; font-size: 18px; font-weight: 700; }
+            #panesub { color: #8b929b; font-size: 12px; }
+            QToolButton#section { color: #cfd4da; font-size: 13px; font-weight: 600; border: none;
+                padding: 6px 0; text-align: left; }
+            QLabel#section { color: #9aa1a9; font-size: 12px; font-weight: 600; padding-top: 4px; }
+            #filelist { background: #20242b; border: 1px solid #2c313a; border-radius: 8px;
+                color: #dfe3e8; padding: 4px; outline: none; }
+            #filelist::item { padding: 7px; border-radius: 6px; }
+            #filelist::item:selected { background: #2f6f8f; color: #ffffff; }
+            #empty { color: #7a828c; font-size: 13px; }
         ''')
 
-        win_w = self.BANNER_W
-        self.setFixedWidth(win_w)
-        if self._header_pm is not None and not self._header_pm.isNull():
-            self.header.setPixmap(self._header_pm.scaledToWidth(win_w, Qt.SmoothTransformation))
         for row in self.rows:
-            row.set_banner_width(win_w)
-        central.adjustSize()
+            row.set_banner_width(self.BANNER_W)
         screen = QApplication.primaryScreen().availableGeometry()
-        win_h = min(central.sizeHint().height(), int(screen.height() * 0.9))
-        self.resize(win_w, win_h)
+        self.resize(min(840, screen.width()), min(780, int(screen.height() * 0.9)))
+        self.setMinimumSize(560, 460)
         self._center_on_screen()
 
         for row in self.rows:
             if row.installed:
                 self.check_update(row)
+
+    def select_app(self, row):
+        key = row.info['key']
+        self.selected_key = None if self.selected_key == key else key
+        for r in self.rows:
+            r.set_selected(r.info['key'] == self.selected_key)
+        self.filepane.set_filter(self.selected_key)
+
+    def run_cmd(self, key, args=None):
+        launcher = os.path.join(os.path.expanduser('~/.local/bin'), key)
+        args = args or []
+        try:
+            subprocess.Popen(['setsid', launcher] + args, start_new_session=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            try: QProcess.startDetached(launcher, args)
+            except Exception: pass
+
+    def launch_file(self, app, path):
+        self.run_cmd(app, [path])
 
     def _center_on_screen(self):
         screen = QApplication.primaryScreen().availableGeometry()
@@ -323,7 +520,7 @@ class Launcher(QMainWindow):
             installed = os.path.isfile(py_path)
             name = (read_local_app_name(py_path) if installed else None) or info.get('name') or key
             row = AppRow(self, info, launcher, py_path, banner_path, name, info.get('desc', ''), installed)
-            self.outer.addWidget(row)
+            self.rows_layout.addWidget(row)
             self.rows.append(row)
 
     def fetch_banner(self, row):

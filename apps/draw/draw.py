@@ -20,10 +20,34 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.0-00"
+VERSION = "1.1-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
+
+
+def _just_dir(kind):
+    """The shared 'just a...' folder (kind='docs' → Documents, 'pics' → Pictures), created on demand."""
+    base = os.path.expanduser('~/Documents' if kind == 'docs' else '~/Pictures')
+    d = os.path.join(base, 'just a...')
+    try: os.makedirs(d, exist_ok=True)
+    except OSError: pass
+    return d
+
+
+def _justapps_recent(appkey, path):
+    """Append to the shared recents log the COLLECTION launcher reads."""
+    import json, time
+    try:
+        d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)
+        f = os.path.join(d, 'recents.json')
+        try:
+            with open(f) as fh: data = json.load(fh)
+        except Exception: data = []
+        data = [e for e in data if isinstance(e, dict) and e.get('path') != path]
+        data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
+        with open(f, 'w') as fh: json.dump(data[:50], fh)
+    except Exception: pass
 
 
 # ---------------------------------------------------------------- QuickShapes
@@ -314,9 +338,32 @@ class Canvas(QWidget):
             paint_object(painter, o, False)
 
     def export_svg(self, path):
+        import json, base64
         gen = QSvgGenerator(); gen.setFileName(path); gen.setSize(QSize(self.W, self.H))
         gen.setViewBox(QRect(0, 0, self.W, self.H)); gen.setTitle('just a... DRAWmaster')
+        # Embed the editable object model so DRAWmaster can re-open its own SVGs losslessly.
+        blob = base64.b64encode(json.dumps({'W': self.W, 'H': self.H, 'objs': self.objs}).encode()).decode()
+        gen.setDescription('justadraw1:' + blob)
         p = QPainter(gen); p.setRenderHint(QPainter.Antialiasing); self.render_to(p); p.end()
+
+    def load_svg(self, path):
+        """True = opened an editable DRAWmaster SVG; None = foreign SVG; False = error."""
+        import json, base64, re
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh: txt = fh.read()
+        except OSError:
+            return False
+        m = re.search(r'<desc>(.*?)</desc>', txt, re.S)
+        tag = (m.group(1).strip() if m else '')
+        if not tag.startswith('justadraw1:'):
+            return None
+        try:
+            data = json.loads(base64.b64decode(tag[len('justadraw1:'):]).decode())
+            self.snapshot(); self.objs = data.get('objs', []); self.sel = None
+            self.W = int(data.get('W', self.W)); self.H = int(data.get('H', self.H)); self._fit()
+            return True
+        except Exception:
+            return False
 
     def export_png(self, path):
         img = QImage(self.W, self.H, QImage.Format_ARGB32); img.fill(QColor('#ffffff'))
@@ -475,22 +522,34 @@ class Main(QMainWindow):
             self.canvas._fit(); self.path = None
 
     def save_svg(self):
-        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(os.path.expanduser('~'), 'drawing')) + '.svg'
+        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('docs'), 'drawing')) + '.svg'
         path, _ = QFileDialog.getSaveFileName(self, 'Save SVG', start, 'SVG (*.svg)')
         if not path: return
         if not path.lower().endswith('.svg'): path += '.svg'
-        self.canvas.export_svg(path); self.path = path; self.statusBar().showMessage(f'Saved {path}', 4000)
+        self.canvas.export_svg(path); self.path = path
+        _justapps_recent('draw', path); self.statusBar().showMessage(f'Saved {path}', 4000)
 
     def export_png(self):
-        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(os.path.expanduser('~'), 'drawing')) + '.png'
+        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('pics'), 'drawing')) + '.png'
         path, _ = QFileDialog.getSaveFileName(self, 'Export PNG', start, 'PNG (*.png)')
         if not path: return
         if not path.lower().endswith('.png'): path += '.png'
-        self.canvas.export_png(path); self.statusBar().showMessage(f'Exported {path}', 4000)
+        self.canvas.export_png(path)
+        _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {path}', 4000)
 
     def open_svg(self):
-        QMessageBox.information(self, APP, 'Opening existing SVGs isn’t supported yet — DRAWmaster saves '
-                               'SVG and PNG, and keeps your work in progress in the canvas.')
+        path, _ = QFileDialog.getOpenFileName(self, 'Open SVG', _just_dir('docs'), 'SVG drawings (*.svg);;All files (*)')
+        if path: self._open_path(path)
+
+    def _open_path(self, path):
+        r = self.canvas.load_svg(path)
+        if r is True:
+            self.path = path; _justapps_recent('draw', path); self.statusBar().showMessage(f'Opened {path}', 4000)
+        elif r is None:
+            QMessageBox.information(self, APP, 'That SVG wasn’t made by DRAWmaster, so its shapes can’t be loaded '
+                                   'for editing here. DRAWmaster can re-open the drawings it saved itself.')
+        else:
+            QMessageBox.warning(self, APP, 'Could not open that drawing.')
 
     def open_manual(self):
         from PySide6.QtGui import QDesktopServices
@@ -515,7 +574,10 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName('DRAWmaster'); app.setApplicationDisplayName(APP)
     app.setOrganizationName(ORG); app.setApplicationVersion(VERSION)
-    Main().show(); sys.exit(app.exec())
+    w = Main(); w.show()
+    args = [a for a in sys.argv[1:] if not a.startswith('-')]
+    if args and os.path.isfile(args[0]): w._open_path(args[0])
+    sys.exit(app.exec())
 
 
 if __name__ == '__main__':

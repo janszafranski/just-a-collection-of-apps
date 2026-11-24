@@ -18,10 +18,34 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.0-00"
+VERSION = "1.1-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
+
+
+def _just_dir(kind):
+    """The shared 'just a...' folder (kind='docs' → Documents, 'pics' → Pictures), created on demand."""
+    base = os.path.expanduser('~/Documents' if kind == 'docs' else '~/Pictures')
+    d = os.path.join(base, 'just a...')
+    try: os.makedirs(d, exist_ok=True)
+    except OSError: pass
+    return d
+
+
+def _justapps_recent(appkey, path):
+    """Append to the shared recents log the COLLECTION launcher reads."""
+    import json, time
+    try:
+        d = os.path.expanduser('~/.local/share/justapps'); os.makedirs(d, exist_ok=True)
+        f = os.path.join(d, 'recents.json')
+        try:
+            with open(f) as fh: data = json.load(fh)
+        except Exception: data = []
+        data = [e for e in data if isinstance(e, dict) and e.get('path') != path]
+        data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
+        with open(f, 'w') as fh: json.dump(data[:50], fh)
+    except Exception: pass
 
 CHECK = None   # transparency checkerboard, built once
 
@@ -329,13 +353,13 @@ class Main(QMainWindow):
             self.path = None; self.update_title()
 
     def open(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Open image', os.path.expanduser('~'),
+        path, _ = QFileDialog.getOpenFileName(self, 'Open image', _just_dir('pics'),
                                               'Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)')
         if not path: return
         img = QImage(path)
         if img.isNull():
             QMessageBox.warning(self, APP, "Couldn't open that image."); return
-        self.canvas.load(img); self.path = path; self.update_title()
+        self.canvas.load(img); self.path = path; self.update_title(); _justapps_recent('paint', path)
 
     def save(self):
         if not self.path or not self.path.lower().endswith(('.png', '.jpg', '.jpeg')):
@@ -343,7 +367,7 @@ class Main(QMainWindow):
         self._write(self.path)
 
     def save_as(self):
-        start = self.path or os.path.join(os.path.expanduser('~'), 'image.png')
+        start = self.path or os.path.join(_just_dir('pics'), 'image.png')
         path, _ = QFileDialog.getSaveFileName(self, 'Save image', start, 'PNG (*.png);;JPEG (*.jpg)')
         if not path: return
         if not path.lower().endswith(('.png', '.jpg', '.jpeg')): path += '.png'
@@ -355,7 +379,7 @@ class Main(QMainWindow):
             flat = QImage(img.size(), QImage.Format_RGB32); flat.fill(QColor('#ffffff'))
             p = QPainter(flat); p.drawImage(0, 0, img); p.end(); img = flat
         if img.save(path):
-            self.status.showMessage(f'Saved to {path}', 4000)
+            self.status.showMessage(f'Saved to {path}', 4000); _justapps_recent('paint', path)
         else:
             QMessageBox.warning(self, APP, "Couldn't save the image.")
 
@@ -391,7 +415,7 @@ def main():
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     if args and os.path.isfile(args[0]):
         img = QImage(args[0])
-        if not img.isNull(): w.canvas.load(img); w.path = args[0]; w.update_title()
+        if not img.isNull(): w.canvas.load(img); w.path = args[0]; w.update_title(); _justapps_recent('paint', args[0])
     w.show()
     sys.exit(app.exec())
 
