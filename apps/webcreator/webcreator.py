@@ -1061,6 +1061,131 @@ def nav_label(o, q):
     """Text shown for a nav item — a per-item custom label if the bar defines one, else the page title."""
     return ((o or {}).get('labels') or {}).get(q['id']) or q['title']
 
+# ---------------------------------------------------------------- QuickShapes
+# A gallery of preset shapes (PagePlus-style). A 'shape' object carries
+# o['shape'] = one of QS_KEYS; 'rect'/'ellipse' keep their fast native paths,
+# everything else is drawn from quickshape_path() on the canvas / in PDF, and
+# published as an inline SVG <path> (so curves and gradients survive).
+QUICKSHAPES = [
+    ('rect', 'Rectangle'), ('ellipse', 'Ellipse'),
+    ('triangle', 'Triangle'), ('rtriangle', 'Right triangle'),
+    ('diamond', 'Diamond'), ('pentagon', 'Pentagon'),
+    ('hexagon', 'Hexagon'), ('octagon', 'Octagon'),
+    ('star5', 'Star (5-point)'), ('star6', 'Star (6-point)'),
+    ('arrow', 'Arrow'), ('darrow', 'Double arrow'),
+    ('chevron', 'Chevron'), ('plus', 'Cross'),
+    ('parallelogram', 'Parallelogram'), ('trapezoid', 'Trapezoid'),
+    ('heart', 'Heart'), ('lightning', 'Lightning bolt'),
+    ('speech', 'Speech bubble'), ('cloud', 'Cloud'),
+]
+QS_KEYS = [k for k, _ in QUICKSHAPES]
+
+def _qs_poly(pts):
+    pp = QPainterPath(); pp.addPolygon(QPolygonF([QPointF(x, y) for x, y in pts])); pp.closeSubpath(); return pp
+
+def quickshape_path(name, w, h):
+    """A QPainterPath for a QuickShape filling the rect (0,0,w,h)."""
+    cx, cy = w / 2, h / 2
+    if name == 'ellipse':
+        pp = QPainterPath(); pp.addEllipse(QRectF(0, 0, w, h)); return pp
+    if name == 'triangle':  return _qs_poly([(cx, 0), (w, h), (0, h)])
+    if name == 'rtriangle': return _qs_poly([(0, 0), (0, h), (w, h)])
+    if name == 'diamond':   return _qs_poly([(cx, 0), (w, cy), (cx, h), (0, cy)])
+    if name in ('pentagon', 'hexagon', 'octagon'):
+        n = {'pentagon': 5, 'hexagon': 6, 'octagon': 8}[name]; off = -math.pi / 2
+        return _qs_poly([(cx + cx * math.cos(off + i * 2 * math.pi / n),
+                          cy + cy * math.sin(off + i * 2 * math.pi / n)) for i in range(n)])
+    if name in ('star5', 'star6'):
+        n = 5 if name == 'star5' else 6; off = -math.pi / 2; inner = 0.42 if n == 5 else 0.5
+        pts = []
+        for i in range(n * 2):
+            k = 1.0 if i % 2 == 0 else inner; a = off + i * math.pi / n
+            pts.append((cx + cx * k * math.cos(a), cy + cy * k * math.sin(a)))
+        return _qs_poly(pts)
+    if name == 'arrow':
+        return _qs_poly([(0, h * .3), (w * .6, h * .3), (w * .6, 0), (w, cy),
+                         (w * .6, h), (w * .6, h * .7), (0, h * .7)])
+    if name == 'darrow':
+        return _qs_poly([(0, cy), (w * .25, 0), (w * .25, h * .3), (w * .75, h * .3), (w * .75, 0),
+                         (w, cy), (w * .75, h), (w * .75, h * .7), (w * .25, h * .7), (w * .25, h)])
+    if name == 'chevron':
+        return _qs_poly([(0, 0), (w * .6, 0), (w, cy), (w * .6, h), (0, h), (w * .4, cy)])
+    if name == 'plus':
+        t = 1 / 3
+        return _qs_poly([(w * t, 0), (w * (1 - t), 0), (w * (1 - t), h * t), (w, h * t), (w, h * (1 - t)),
+                         (w * (1 - t), h * (1 - t)), (w * (1 - t), h), (w * t, h), (w * t, h * (1 - t)),
+                         (0, h * (1 - t)), (0, h * t), (w * t, h * t)])
+    if name == 'parallelogram': return _qs_poly([(w * .25, 0), (w, 0), (w * .75, h), (0, h)])
+    if name == 'trapezoid':     return _qs_poly([(w * .25, 0), (w * .75, 0), (w, h), (0, h)])
+    if name == 'lightning':
+        return _qs_poly([(w * .55, 0), (w * .1, h * .55), (w * .45, h * .55), (w * .3, h),
+                         (w * .9, h * .4), (w * .52, h * .4)])
+    if name == 'heart':
+        pp = QPainterPath(); pp.moveTo(w * .5, h * .25)
+        pp.cubicTo(w * .5, h * .1, w * .1, h * .1, w * .1, h * .35)
+        pp.cubicTo(w * .1, h * .55, w * .35, h * .7, w * .5, h * .9)
+        pp.cubicTo(w * .65, h * .7, w * .9, h * .55, w * .9, h * .35)
+        pp.cubicTo(w * .9, h * .1, w * .5, h * .1, w * .5, h * .25); pp.closeSubpath(); return pp
+    if name == 'speech':
+        bh = h * .78; rad = min(w, bh) * .18
+        pp = QPainterPath(); pp.addRoundedRect(QRectF(0, 0, w, bh), rad, rad)
+        tail = QPainterPath(); tail.moveTo(w * .28, bh - 1); tail.lineTo(w * .2, h); tail.lineTo(w * .5, bh - 1)
+        tail.closeSubpath(); return pp.united(tail)
+    if name == 'cloud':
+        def _ell(x, y, ww, hh):
+            q = QPainterPath(); q.addEllipse(QRectF(x, y, ww, hh)); return q
+        pp = _ell(w * .04, h * .45, w * .44, h * .48)
+        for rc in [(w * .18, h * .12, w * .42, h * .62),
+                   (w * .44, h * .22, w * .40, h * .54),
+                   (w * .52, h * .45, w * .44, h * .48)]:
+            pp = pp.united(_ell(*rc))
+        return pp.simplified()
+    pp = QPainterPath(); pp.addRect(QRectF(0, 0, w, h)); return pp
+
+def qpath_to_svg_d(path):
+    """Serialise a QPainterPath to an SVG path 'd' string."""
+    d = []; i = 0; n = path.elementCount()
+    while i < n:
+        e = path.elementAt(i)
+        if e.type == QPainterPath.MoveToElement: d.append(f'M{e.x:.2f} {e.y:.2f}'); i += 1
+        elif e.type == QPainterPath.LineToElement: d.append(f'L{e.x:.2f} {e.y:.2f}'); i += 1
+        elif e.type == QPainterPath.CurveToElement:
+            c2 = path.elementAt(i + 1); ep = path.elementAt(i + 2)
+            d.append(f'C{e.x:.2f} {e.y:.2f} {c2.x:.2f} {c2.y:.2f} {ep.x:.2f} {ep.y:.2f}'); i += 3
+        else: i += 1
+    return ' '.join(d) + ' Z'
+
+def shape_svg(o):
+    """Inline SVG for a QuickShape (anything other than a plain rect/ellipse)."""
+    w, h = o['w'], o['h']; sw = o.get('strokeW', 0) if o.get('stroke') else 0
+    ins = sw / 2
+    path = quickshape_path(o.get('shape', 'rect'), max(1, w - sw), max(1, h - sw))
+    d = qpath_to_svg_d(path)
+    g = o.get('grad'); defs = ''; fill = 'none'
+    if g:
+        gid = 'qsg_' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', 'x')))
+        if g.get('type') == 'radial':
+            defs = (f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">'
+                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
+                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></radialGradient>')
+        else:
+            rad = math.radians(g.get('angle', 90))
+            x1, y1 = 50 - 50 * math.cos(rad), 50 - 50 * math.sin(rad)
+            x2, y2 = 50 + 50 * math.cos(rad), 50 + 50 * math.sin(rad)
+            defs = (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
+                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
+                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+        fill = f'url(#{gid})'
+    elif o.get('fill'):
+        fill = o['fill']
+    stroke = ''
+    if sw:
+        da = {'dashed': f' stroke-dasharray="{sw * 4} {sw * 2}"', 'dotted': f' stroke-dasharray="{sw} {sw}"'}.get(o.get('dash'), '')
+        stroke = f' stroke="{o.get("stroke")}" stroke-width="{sw}" stroke-linejoin="miter"{da}'
+    return (f'<svg width="{w:g}" height="{h:g}" viewBox="0 0 {w:g} {h:g}" style="display:block;overflow:visible">'
+            f'{("<defs>" + defs + "</defs>") if defs else ""}'
+            f'<path d="{d}" transform="translate({ins:g},{ins:g})" fill="{fill}"{stroke}/></svg>')
+
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
@@ -1074,8 +1199,13 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
     if t == 'shape':
         sw = o.get('strokeW', 0); rr = r.adjusted(sw / 2, sw / 2, -sw / 2, -sw / 2)
         p.setPen(obj_pen(o)); p.setBrush(obj_brush(o))
-        if o.get('shape') == 'ellipse': p.drawEllipse(rr)
-        else: p.drawRoundedRect(rr, rad, rad) if rad else p.drawRect(rr)
+        sh = o.get('shape', 'rect')
+        if sh == 'ellipse': p.drawEllipse(rr)
+        elif sh == 'rect' or sh not in QS_KEYS:
+            p.drawRoundedRect(rr, rad, rad) if rad else p.drawRect(rr)
+        else:
+            p.save(); p.translate(rr.x(), rr.y())
+            p.drawPath(quickshape_path(sh, rr.width(), rr.height())); p.restore()
     elif t == 'line':
         pw = max(1, o.get('strokeW', 2))
         pn = QPen(QColor(o.get('stroke', '#000')), pw); pn.setStyle(DASH.get(o.get('dash', 'solid'))); pn.setCapStyle(Qt.FlatCap)
@@ -1715,8 +1845,12 @@ def obj_html(o, site, page, img):
         if t == 'text': st += f"padding:{o.get('pad', 8)}px;--pg:{o.get('pgap', .6)};"
         inner = clean_html(o.get('html', ''), site, img)
     elif t == 'shape':
-        st += box_css(o)
-        if o.get('shape') == 'ellipse': st += 'border-radius:50%;'
+        sh = o.get('shape', 'rect')
+        if sh in ('rect', 'ellipse'):
+            st += box_css(o)
+            if sh == 'ellipse': st += 'border-radius:50%;'
+        else:
+            inner = shape_svg(o)
     elif t == 'line':
         pw = max(1, o.get('strokeW', 2)); w, h = o['w'], o['h']
         if h <= pw + 2: x1, y1, x2, y2 = 0, h / 2, w, h / 2
@@ -5325,6 +5459,8 @@ class MainWindow(QMainWindow):
         for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom')]:
             ins.append(self.act(label, lambda _=False, t=tid: self.insert_default(t), None, None))
             if tid == 'html': ins.append(a['css'])   # Custom CSS sits right after Insert ▸ HTML Code
+        qs_acts = [self.act(lbl, lambda _=False, k=k: self.insert_quickshape(k), None, None) for k, lbl in QUICKSHAPES[2:]]
+        ins.append(('QuickShapes', qs_acts))   # the preset-shape gallery beyond Rectangle/Ellipse
         # Contact-details submenu: drops a text frame showing a field from Site Properties
         contact_acts = [self.act(lbl, lambda _=False, fk=fld: self.insert_contact(fk), None, None)
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
@@ -6089,8 +6225,11 @@ class MainWindow(QMainWindow):
         if len(objs) == 1:
             t = o['type']
             if t == 'shape':
-                cb = QComboBox(); cb.addItems(['Rectangle', 'Ellipse']); cb.setCurrentIndex(1 if o.get('shape') == 'ellipse' else 0)
-                cb.activated.connect(lambda i: self.set_prop('shape', 'ellipse' if i else 'rect')); add(cb)
+                cb = QComboBox()
+                for k, lbl in QUICKSHAPES: cb.addItem(lbl, k)
+                cur = o.get('shape', 'rect'); cb.setCurrentIndex(QS_KEYS.index(cur) if cur in QS_KEYS else 0)
+                cb.setToolTip('QuickShape — morph this shape')
+                cb.activated.connect(lambda i, cb=cb: self.set_prop('shape', cb.itemData(i))); add(cb)
             if t in ('shape', 'button', 'picture', 'text'):
                 rd = QSpinBox(); rd.setRange(0, 400); rd.setValue(int(o.get('radius', 0))); rd.setPrefix('Corners '); rd.setSuffix(' px')
                 rd.editingFinished.connect(lambda: self.set_prop('radius', rd.value())); add(rd)
@@ -6302,6 +6441,12 @@ class MainWindow(QMainWindow):
         elif kind == 'picture': self.pick_picture(o)
         elif kind == 'lightbox': self.lightbox_dialog(o)
         elif kind == 'gallery': self.gallery_dialog(o)
+
+    def insert_quickshape(self, key):
+        c = self.view.mapToScene(self.view.viewport().rect().center())
+        o = mk('shape', 0, 0); o['shape'] = key
+        o['x'] = self.view.snap(max(0, c.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, c.y() - o['h'] / 2))
+        self.add_object(o); self.set_tool('pointer')
 
     def insert_default(self, tool):
         c = self.view.mapToScene(self.view.viewport().rect().center())
