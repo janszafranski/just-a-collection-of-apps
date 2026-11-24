@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import html
 import importlib.util
+import json
 import os
 import shutil
 import sys
@@ -27,6 +28,33 @@ ROOT = Path(__file__).resolve().parent.parent
 APP = ROOT / "apps" / "webcreator" / "webcreator.py"
 DOCS = ROOT / "docs"
 SITE = "just a... CREATORsuite"
+BASE = "https://janszafranski.github.io/just-a-collection-of-apps/"  # trailing slash
+AUTHOR = "Jan Szafranski"
+REPO = "https://github.com/janszafranski/just-a-collection-of-apps"
+OG_DEFAULT = "assets/shot-hub.png"
+
+# One-line, plain-text SEO descriptions (≈155 chars) keyed by page slug.
+DESC = {
+    "index.html": "A small family of simple, familiar creative apps for Linux — website designer, "
+        "print & PDF, photo editor and vector drawing. Ground-up recreations you already know how "
+        "to use. No subscription, no cloud.",
+    "creatorsuite.html": "CREATORsuite: the launcher and file hub for the just a… creative apps on "
+        "Linux — your apps on one side, everything you have made on the other.",
+    "webcreator.html": "Design a website by laying pages out and publish plain HTML, on Linux — a "
+        "ground-up recreation in the spirit of WebPlus, starting from 92 templates. Saves .webc.",
+    "pagedesigner.html": "Lay out print documents and newsletters page by page and export a vector "
+        "PDF, on Linux — text that flows between columns, master pages and guides. Saves .pagc.",
+    "paintcanvas.html": "A layer-based photo and image editor for Linux — paint, retouch, "
+        "adjustments and filters, in the spirit of PhotoPlus. Saves PNG and JPEG.",
+    "drawmaster.html": "A vector drawing editor for Linux — shapes, freehand, a QuickShapes gallery "
+        "and effects — saved as editable, scalable SVG.",
+}
+# schema.org applicationCategory per slug.
+CATEGORY = {
+    "creatorsuite.html": "UtilitiesApplication", "webcreator.html": "DesignApplication",
+    "pagedesigner.html": "DesignApplication", "paintcanvas.html": "DesignApplication",
+    "drawmaster.html": "DesignApplication",
+}
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -128,23 +156,79 @@ FILTER_JS = """
 """
 
 
-def page(title, body, crumbs="", depth=0):
-    up = "" if depth == 0 else "../" * depth
+def _head(title, desc, slug, og_image, jsonld=""):
+    """The full <head>: unique title/description, canonical, Open Graph, Twitter,
+    favicon and optional JSON-LD structured data."""
+    canonical = BASE + ("" if slug == "index.html" else slug)
+    og_abs = BASE + (og_image or OG_DEFAULT)
+    e = html.escape
+    tags = [
+        f'<title>{e(title)}</title>',
+        f'<meta name="description" content="{e(desc)}">',
+        '<meta name="robots" content="index, follow">',
+        f'<meta name="author" content="{e(AUTHOR)}">',
+        f'<link rel="canonical" href="{e(canonical)}">',
+        '<meta name="theme-color" content="#1d6f63">',
+        '<link rel="icon" href="assets/icon.png" sizes="any">',
+        '<link rel="apple-touch-icon" href="assets/icon.png">',
+        '<link rel="stylesheet" href="style.css">',
+        '<meta property="og:type" content="website">',
+        f'<meta property="og:site_name" content="{e(SITE)}">',
+        f'<meta property="og:title" content="{e(title)}">',
+        f'<meta property="og:description" content="{e(desc)}">',
+        f'<meta property="og:url" content="{e(canonical)}">',
+        f'<meta property="og:image" content="{e(og_abs)}">',
+        '<meta property="og:locale" content="en_GB">',
+        '<meta name="twitter:card" content="summary_large_image">',
+        f'<meta name="twitter:title" content="{e(title)}">',
+        f'<meta name="twitter:description" content="{e(desc)}">',
+        f'<meta name="twitter:image" content="{e(og_abs)}">',
+    ]
+    if jsonld:
+        tags.append(f'<script type="application/ld+json">{jsonld}</script>')
+    return "\n".join(tags)
+
+
+def jsonld_app(name, slug, desc, og_image):
+    data = {
+        "@context": "https://schema.org", "@type": "SoftwareApplication",
+        "name": name, "description": desc,
+        "applicationCategory": CATEGORY.get(slug, "DesignApplication"),
+        "operatingSystem": "Linux", "url": BASE + slug,
+        "screenshot": BASE + (og_image or OG_DEFAULT),
+        "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
+        "author": {"@type": "Person", "name": AUTHOR},
+        "isAccessibleForFree": True,
+    }
+    return json.dumps(data, ensure_ascii=False)
+
+
+def jsonld_site():
+    return json.dumps({
+        "@context": "https://schema.org", "@type": "WebSite",
+        "name": SITE, "url": BASE, "description": DESC["index.html"],
+        "author": {"@type": "Person", "name": AUTHOR},
+    }, ensure_ascii=False)
+
+
+def page(title, body, crumbs="", *, desc=None, slug="index.html",
+         og_image=None, jsonld=""):
+    if desc is None:
+        desc = DESC.get(slug, DESC["index.html"])
     return f"""<!DOCTYPE html>
 <html lang="en-GB">
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{html.escape(title)}</title>
-<link rel="stylesheet" href="{up}style.css">
+{_head(title, desc, slug, og_image, jsonld)}
 <header class="top"><div class="wrap">
-<h1><a href="{up}index.html" style="color:inherit;text-decoration:none">{html.escape(SITE)}</a></h1>
+<h1><a href="index.html" style="color:inherit;text-decoration:none">{html.escape(SITE)}</a></h1>
 <p class="mute" style="margin:0">Simple applications for Linux, each one a ground-up recreation.</p>
 </div></header>
 <div class="wrap">
 {crumbs}
 {body}
 <footer>Built from the source in
-<a href="https://github.com/janszafranski/just-a-collection-of-apps">janszafranski/just-a-collection-of-apps</a>
+<a href="{REPO}">janszafranski/just-a-collection-of-apps</a>
 on {date.today().isoformat()}. Every template picture on this site is rendered
 by the app itself.</footer>
 </div>
@@ -299,7 +383,14 @@ apps/draw/install.sh</code></pre>
 <p class="mute small">Each app checks the repository for a newer version of itself (and the
 launcher shows an Update button), and each has an <code>uninstall.sh</code> beside its installer.</p>
 """
-    (DOCS / "index.html").write_text(page(SITE, body), encoding="utf-8")
+    (DOCS / "index.html").write_text(
+        page(f"{SITE} — familiar creative apps for Linux", body,
+             slug="index.html", og_image=OG_DEFAULT, jsonld=jsonld_site()),
+        encoding="utf-8")
+
+
+def _og_for(m):
+    return f"assets/{m['shot']}" if m.get("shot") else f"assets/{m['banner']}"
 
 
 def build_app_pages(counts):
@@ -319,7 +410,13 @@ def build_app_pages(counts):
 {_install_block(m)}
 <p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
 """
-        (DOCS / m["slug"]).write_text(page(f"just a... {m['title']}", body), encoding="utf-8")
+        name = f"just a... {m['title']}"
+        og = _og_for(m)
+        desc = DESC.get(m["slug"], m["blurb"])
+        (DOCS / m["slug"]).write_text(
+            page(name, body, slug=m["slug"], og_image=og, desc=desc,
+                 jsonld=jsonld_app(name, m["slug"], desc, og)),
+            encoding="utf-8")
     m = HUB_META
     feats = "".join(f"<li>{html.escape(f)}</li>" for f in m["feats"])
     body = f"""<nav class="crumbs mute"><a href="index.html">{html.escape(SITE)}</a> &rsaquo; just a&hellip; {html.escape(m['title'])}</nav>
@@ -332,7 +429,13 @@ def build_app_pages(counts):
 {_install_block(m)}
 <p class="small mute"><a href="index.html">&lsaquo; Back to all the apps</a></p>
 """
-    (DOCS / m["slug"]).write_text(page(f"just a... {m['title']}", body), encoding="utf-8")
+    name = f"just a... {m['title']}"
+    og = _og_for(m)
+    desc = DESC.get(m["slug"], m["blurb"])
+    (DOCS / m["slug"]).write_text(
+        page(name, body, slug=m["slug"], og_image=og, desc=desc,
+             jsonld=jsonld_app(name, m["slug"], desc, og)),
+        encoding="utf-8")
 
 
 SECTIONS = (
@@ -496,8 +599,12 @@ part that was worth recreating; the drawing is ours.</p>
 {''.join(chunks)}
 <script>{FILTER_JS}</script>
 """
+    wc_name, wc_slug, wc_og = "just a... WEBcreator", "webcreator.html", "assets/screenshot.png"
+    wc_desc = DESC[wc_slug]
     (DOCS / "webcreator.html").write_text(
-        page("just a... WEBcreator", body), encoding="utf-8")
+        page(wc_name, body, slug=wc_slug, og_image=wc_og, desc=wc_desc,
+             jsonld=jsonld_app(wc_name, wc_slug, wc_desc, wc_og)),
+        encoding="utf-8")
 
 
 def grab_chooser(wc):
@@ -540,6 +647,10 @@ def main(argv=None):
     (DOCS / "assets").mkdir(parents=True, exist_ok=True)
     shutil.copy2(ROOT / "apps" / "webcreator" / "assets" / "screenshot.png",
                  DOCS / "assets" / "screenshot.png")
+    # favicon: the suite's own 2×2 family icon
+    favicon_src = ROOT / "apps" / "collectionofapps" / "icon-256.png"
+    if favicon_src.exists():
+        shutil.copy2(favicon_src, DOCS / "assets" / "icon.png")
     # each app's banner becomes its card header / page hero
     for key in ("collectionofapps", "webcreator", "pagecreator", "paint", "draw"):
         src = ROOT / "apps" / key / "banner.png"
@@ -552,7 +663,23 @@ def main(argv=None):
     build_index(counts)
     build_app_pages(counts)
     build_webcreator(tiles)
-    print(f":: {len(tiles)} templates, {len(APPS_META)} app pages -> {DOCS}")
+
+    # sitemap.xml + robots.txt
+    pages = sorted(p.name for p in DOCS.glob("*.html"))
+    urls = "".join(
+        f"  <url><loc>{BASE}{'' if p == 'index.html' else p}</loc>"
+        f"<lastmod>{date.today().isoformat()}</lastmod>"
+        f"<priority>{'1.0' if p == 'index.html' else '0.7'}</priority></url>\n"
+        for p in pages)
+    (DOCS / "sitemap.xml").write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        f"{urls}</urlset>\n", encoding="utf-8")
+    (DOCS / "robots.txt").write_text(
+        f"User-agent: *\nAllow: /\nSitemap: {BASE}sitemap.xml\n", encoding="utf-8")
+
+    print(f":: {len(tiles)} templates, {len(APPS_META)} app pages, "
+          f"{len(pages)} pages + sitemap/robots -> {DOCS}")
     return 0
 
 
