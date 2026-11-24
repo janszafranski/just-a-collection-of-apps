@@ -8,7 +8,8 @@ try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QToolBar, QColorDialog,
                                    QFileDialog, QMessageBox, QSpinBox, QLabel, QInputDialog,
                                    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
-                                   QSlider, QCheckBox, QFormLayout, QDialogButtonBox)
+                                   QSlider, QCheckBox, QFormLayout, QDialogButtonBox,
+                                   QDockWidget, QListWidget, QListWidgetItem)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QCursor, QFont, QPainterPath, QActionGroup)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
@@ -19,7 +20,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.2-00"
+VERSION = "1.3-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -138,12 +139,30 @@ def flt_edges(p):     return _merge_a(p, p.convert('RGB').filter(ImageFilter.FIN
 def flt_contour(p):   return _merge_a(p, p.convert('RGB').filter(ImageFilter.CONTOUR))
 
 
+BLENDS = {
+    'normal': QPainter.CompositionMode_SourceOver, 'multiply': QPainter.CompositionMode_Multiply,
+    'screen': QPainter.CompositionMode_Screen, 'overlay': QPainter.CompositionMode_Overlay,
+    'darken': QPainter.CompositionMode_Darken, 'lighten': QPainter.CompositionMode_Lighten,
+    'add': QPainter.CompositionMode_Plus, 'difference': QPainter.CompositionMode_Difference,
+}
+BLEND_NAMES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'add', 'difference']
+
+
+class Layer:
+    def __init__(self, img, name='Layer', visible=True, opacity=1.0, blend='normal'):
+        self.img = img; self.name = name; self.visible = visible
+        self.opacity = opacity; self.blend = blend
+
+
 class Canvas(QWidget):
+    HIST = 24
+
     def __init__(self, win, w=1000, h=700):
         super().__init__()
         self.win = win
-        self.img = QImage(w, h, QImage.Format_ARGB32)
-        self.img.fill(QColor('#ffffff'))
+        base = QImage(w, h, QImage.Format_ARGB32); base.fill(QColor('#ffffff'))
+        self.layers = [Layer(base, 'Background')]
+        self.active = 0
         self.zoom = 1.0
         self.tool = 'brush'
         self.color = QColor('#1f2a30')
@@ -158,25 +177,122 @@ class Canvas(QWidget):
         self.setMouseTracking(True)
         self._fit()
 
+    # ---- layers ----
+    @property
+    def img(self):
+        return self.layers[self.active].img
+
+    @img.setter
+    def img(self, value):
+        self.layers[self.active].img = value
+
+    def doc_w(self): return self.layers[0].img.width()
+    def doc_h(self): return self.layers[0].img.height()
+
+    def composited(self):
+        """Flatten all visible layers to one QImage (for display and export)."""
+        base = QImage(self.doc_w(), self.doc_h(), QImage.Format_ARGB32); base.fill(Qt.transparent)
+        p = QPainter(base)
+        for l in self.layers:
+            if not l.visible or l.opacity <= 0: continue
+            p.setOpacity(l.opacity)
+            p.setCompositionMode(BLENDS.get(l.blend, QPainter.CompositionMode_SourceOver))
+            p.drawImage(0, 0, l.img)
+        p.end()
+        return base
+
+    def _copy_layers(self):
+        return [Layer(l.img.copy(), l.name, l.visible, l.opacity, l.blend) for l in self.layers]
+
+    def _unique_name(self, stem):
+        taken = {l.name for l in self.layers}; i = 1
+        while f'{stem} {i}' in taken: i += 1
+        return f'{stem} {i}'
+
+    def set_active(self, i):
+        if 0 <= i < len(self.layers) and i != self.active:
+            self.active = i; self.win.refresh_layers(); self.update()
+
+    def set_layer_prop(self, **kw):
+        l = self.layers[self.active]
+        for k, v in kw.items():
+            setattr(l, k, v)
+        self.update()
+
+    def add_layer(self):
+        self.snapshot_full()
+        im = QImage(self.doc_w(), self.doc_h(), QImage.Format_ARGB32); im.fill(Qt.transparent)
+        self.active += 1; self.layers.insert(self.active, Layer(im, self._unique_name('Layer')))
+        self.update(); self.win.refresh_layers()
+
+    def duplicate_layer(self):
+        self.snapshot_full()
+        s = self.layers[self.active]
+        self.layers.insert(self.active + 1, Layer(s.img.copy(), s.name + ' copy', s.visible, s.opacity, s.blend))
+        self.active += 1; self.update(); self.win.refresh_layers()
+
+    def delete_layer(self):
+        if len(self.layers) <= 1: return
+        self.snapshot_full(); del self.layers[self.active]
+        self.active = min(self.active, len(self.layers) - 1); self.update(); self.win.refresh_layers()
+
+    def merge_down(self):
+        if self.active == 0: return
+        self.snapshot_full()
+        top = self.layers[self.active]; bot = self.layers[self.active - 1]
+        if top.visible:
+            p = QPainter(bot.img); p.setOpacity(top.opacity)
+            p.setCompositionMode(BLENDS.get(top.blend, QPainter.CompositionMode_SourceOver))
+            p.drawImage(0, 0, top.img); p.end()
+        del self.layers[self.active]; self.active -= 1; self.update(); self.win.refresh_layers()
+
+    def move_layer(self, delta):
+        j = self.active + delta
+        if 0 <= j < len(self.layers):
+            self.snapshot_full()
+            self.layers[self.active], self.layers[j] = self.layers[j], self.layers[self.active]
+            self.active = j; self.update(); self.win.refresh_layers()
+
     def _fit(self):
         self.setMinimumSize(int(self.img.width() * self.zoom), int(self.img.height() * self.zoom))
         self.resize(self.minimumSize()); self.update()
 
-    # ---- history ----
+    # ---- history (tagged: 'layer' = active layer only, 'full' = whole stack) ----
+    def _cap(self):
+        if len(self.undo) > self.HIST: self.undo.pop(0)
+
     def snapshot(self):
-        self.undo.append(self.img.copy())
-        if len(self.undo) > 40:
-            self.undo.pop(0)
-        self.redo.clear()
-        self.win.update_title()
+        self.undo.append(('layer', self.active, self.img.copy())); self._cap(); self.redo.clear(); self.win.update_title()
+
+    def snapshot_full(self):
+        self.undo.append(('full', self._copy_layers(), self.active)); self._cap(); self.redo.clear(); self.win.update_title()
+
+    def push_undo_layer(self, idx, img):
+        self.undo.append(('layer', idx, img)); self._cap(); self.redo.clear(); self.win.update_title()
+
+    def _state_like(self, entry):
+        if entry[0] == 'layer':
+            idx = min(entry[1], len(self.layers) - 1)
+            return ('layer', idx, self.layers[idx].img.copy())
+        return ('full', self._copy_layers(), self.active)
+
+    def _restore(self, entry):
+        if entry[0] == 'layer':
+            _, idx, img = entry
+            if idx < len(self.layers): self.layers[idx].img = img
+        else:
+            _, layers, active = entry
+            self.layers = layers; self.active = max(0, min(active, len(layers) - 1))
 
     def do_undo(self):
-        if self.undo:
-            self.redo.append(self.img.copy()); self.img = self.undo.pop(); self._fit()
+        if not self.undo: return
+        self.redo.append(self._state_like(self.undo[-1]))
+        self._restore(self.undo.pop()); self.win.refresh_layers(); self._fit()
 
     def do_redo(self):
-        if self.redo:
-            self.undo.append(self.img.copy()); self.img = self.redo.pop(); self._fit()
+        if not self.redo: return
+        self.undo.append(self._state_like(self.redo[-1]))
+        self._restore(self.redo.pop()); self.win.refresh_layers(); self._fit()
 
     # ---- view ----
     def set_zoom(self, z):
@@ -188,7 +304,8 @@ class Canvas(QWidget):
         p.fillRect(self.rect(), QColor('#2b2f36'))
         p.setBrush(QBrush(checker())); p.setPen(Qt.NoPen); p.drawRect(r)
         p.setRenderHint(QPainter.SmoothPixmapTransform, self.zoom < 1)
-        p.drawImage(r, self.img, QRectF(0, 0, self.img.width(), self.img.height()))
+        comp = self.composited()
+        p.drawImage(r, comp, QRectF(0, 0, comp.width(), comp.height()))
         if self.preview:
             tool, a, b = self.preview
             p.save(); p.scale(self.zoom, self.zoom)
@@ -312,29 +429,33 @@ class Canvas(QWidget):
     def select_none(self):
         self.sel = None; self.update()
 
+    def _map_layers(self, fn):
+        """Apply fn(QImage)->QImage to every layer (a whole-document change)."""
+        self.snapshot_full()
+        for l in self.layers:
+            l.img = fn(l.img)
+        self.sel = None; self._fit()
+
     def crop_to_sel(self):
         reg = self.sel_region()
         if reg is None: return
-        r, _ = reg; self.snapshot(); self.img = self.img.copy(r); self.sel = None; self._fit()
+        r, _ = reg; self._map_layers(lambda im: im.copy(r))
 
     def resize_image(self, w, h):
-        self.snapshot()
-        self.img = self.img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32)
-        self.sel = None; self._fit()
+        self._map_layers(lambda im: im.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32))
 
     def set_canvas_size(self, w, h):
-        self.snapshot()
-        out = QImage(w, h, QImage.Format_ARGB32); out.fill(Qt.transparent)
-        p = QPainter(out); p.drawImage(0, 0, self.img); p.end()
-        self.img = out; self.sel = None; self._fit()
+        def grow(im):
+            out = QImage(w, h, QImage.Format_ARGB32); out.fill(Qt.transparent)
+            p = QPainter(out); p.drawImage(0, 0, im); p.end(); return out
+        self._map_layers(grow)
 
     def rotate(self, deg):
         from PySide6.QtGui import QTransform
-        self.snapshot(); self.img = self.img.transformed(QTransform().rotate(deg), Qt.SmoothTransformation)
-        self.sel = None; self._fit()
+        self._map_layers(lambda im: im.transformed(QTransform().rotate(deg), Qt.SmoothTransformation))
 
     def flip(self, horizontal):
-        self.snapshot(); self.img = self.img.mirrored(horizontal, not horizontal); self.sel = None; self._fit()
+        self._map_layers(lambda im: im.mirrored(horizontal, not horizontal))
 
     def flood_fill(self, pos, new):
         if not self.img.rect().contains(pos): return
@@ -371,10 +492,16 @@ class Canvas(QWidget):
         self.img = out; self._fit()
 
     def new_image(self, w, h, bg):
-        self.snapshot(); self.img = QImage(w, h, QImage.Format_ARGB32); self.img.fill(bg); self._fit()
+        self.snapshot_full()
+        base = QImage(w, h, QImage.Format_ARGB32); base.fill(bg)
+        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None
+        self._fit(); self.win.refresh_layers()
 
     def load(self, img):
-        self.snapshot(); self.img = img.convertToFormat(QImage.Format_ARGB32); self._fit()
+        self.snapshot_full()
+        base = img.convertToFormat(QImage.Format_ARGB32)
+        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None
+        self._fit(); self.win.refresh_layers()
 
 
 class AdjustDialog(QDialog):
@@ -384,6 +511,7 @@ class AdjustDialog(QDialog):
         super().__init__(win)
         self.win = win; self.canvas = win.canvas; self.build = build
         self.setWindowTitle(title); self.setMinimumWidth(340)
+        self.active_idx = self.canvas.active
         self.base = self.canvas.img.copy()
         v = QVBoxLayout(self); form = QFormLayout(); v.addLayout(form)
         self.rows = {}
@@ -411,9 +539,7 @@ class AdjustDialog(QDialog):
         self.canvas.update()
 
     def accept(self):
-        self.canvas.undo.append(self.base)
-        if len(self.canvas.undo) > 40: self.canvas.undo.pop(0)
-        self.canvas.redo.clear(); self.win.update_title()
+        self.canvas.push_undo_layer(self.active_idx, self.base)
         super().accept()
 
     def reject(self):
@@ -435,10 +561,72 @@ class Main(QMainWindow):
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
         sa.setStyleSheet('QScrollArea{background:#20242a;border:none}')
         self.setCentralWidget(sa)
-        self.build_menu(); self.build_tools()
+        self._layer_sync = False
+        self.build_menu(); self.build_tools(); self.build_layers_dock()
         self.setWindowTitle(APP); self.resize(1180, 820)
         self.status = self.statusBar(); self.pos_lbl = QLabel('  '); self.status.addPermanentWidget(self.pos_lbl)
         self.set_color(self.canvas.color)
+        self.refresh_layers()
+
+    def build_layers_dock(self):
+        dock = QDockWidget('Layers', self); dock.setObjectName('layersdock')
+        dock.setAllowedAreas(Qt.RightDockWidgetArea | Qt.LeftDockWidgetArea)
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(6, 6, 6, 6); v.setSpacing(6)
+        self.blend_cb = QComboBox(); self.blend_cb.addItems([n.capitalize() for n in BLEND_NAMES])
+        self.blend_cb.activated.connect(lambda i: self.canvas.set_layer_prop(blend=BLEND_NAMES[i]))
+        v.addWidget(self.blend_cb)
+        orow = QHBoxLayout(); orow.addWidget(QLabel('Opacity'))
+        self.opacity_sl = QSlider(Qt.Horizontal); self.opacity_sl.setRange(0, 100); self.opacity_sl.setValue(100)
+        self.opacity_sl.valueChanged.connect(lambda val: self.canvas.set_layer_prop(opacity=val / 100.0))
+        orow.addWidget(self.opacity_sl, 1); v.addLayout(orow)
+        self.layer_list = QListWidget()
+        self.layer_list.currentRowChanged.connect(self._layer_row_changed)
+        self.layer_list.itemChanged.connect(self._layer_item_changed)
+        self.layer_list.itemDoubleClicked.connect(self._rename_layer)
+        v.addWidget(self.layer_list, 1)
+        btns = QHBoxLayout()
+        for glyph, tip, slot in (('＋', 'Add layer', lambda: self.canvas.add_layer()),
+                                 ('⧉', 'Duplicate layer', lambda: self.canvas.duplicate_layer()),
+                                 ('⌄', 'Merge down', lambda: self.canvas.merge_down()),
+                                 ('↑', 'Move up', lambda: self.canvas.move_layer(1)),
+                                 ('↓', 'Move down', lambda: self.canvas.move_layer(-1)),
+                                 ('🗑', 'Delete layer', lambda: self.canvas.delete_layer())):
+            b = QPushButton(glyph); b.setToolTip(tip); b.setFixedWidth(34); b.clicked.connect(slot); btns.addWidget(b)
+        v.addLayout(btns)
+        dock.setWidget(w); self.addDockWidget(Qt.RightDockWidgetArea, dock)
+        self.layers_dock = dock
+
+    def refresh_layers(self):
+        if not hasattr(self, 'layer_list'): return
+        self._layer_sync = True
+        self.layer_list.clear()
+        for l in reversed(self.canvas.layers):
+            it = QListWidgetItem(l.name)
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if l.visible else Qt.Unchecked)
+            self.layer_list.addItem(it)
+        n = len(self.canvas.layers)
+        self.layer_list.setCurrentRow(n - 1 - self.canvas.active)
+        al = self.canvas.layers[self.canvas.active]
+        self.opacity_sl.setValue(int(al.opacity * 100))
+        self.blend_cb.setCurrentIndex(BLEND_NAMES.index(al.blend) if al.blend in BLEND_NAMES else 0)
+        self._layer_sync = False
+
+    def _layer_row_changed(self, row):
+        if self._layer_sync or row < 0: return
+        self.canvas.set_active(len(self.canvas.layers) - 1 - row)
+
+    def _layer_item_changed(self, item):
+        if self._layer_sync: return
+        idx = len(self.canvas.layers) - 1 - self.layer_list.row(item)
+        if 0 <= idx < len(self.canvas.layers):
+            self.canvas.layers[idx].visible = (item.checkState() == Qt.Checked); self.canvas.update()
+
+    def _rename_layer(self, item):
+        idx = len(self.canvas.layers) - 1 - self.layer_list.row(item)
+        name, ok = QInputDialog.getText(self, 'Rename Layer', 'Layer name:', text=self.canvas.layers[idx].name)
+        if ok and name.strip():
+            self.canvas.layers[idx].name = name.strip(); self.refresh_layers()
 
     # ---- toolbars ----
     def build_tools(self):
@@ -513,6 +701,12 @@ class Main(QMainWindow):
         sel = m.addMenu('&Select')
         sel.addAction(self.act('Select &All', lambda: self.canvas.select_all(), QKeySequence.SelectAll))
         sel.addAction(self.act('&Deselect', lambda: self.canvas.select_none(), QKeySequence.Deselect))
+
+        lay = m.addMenu('&Layer')
+        lay.addAction(self.act('&New Layer', lambda: self.canvas.add_layer()))
+        lay.addAction(self.act('&Duplicate Layer', lambda: self.canvas.duplicate_layer()))
+        lay.addAction(self.act('&Merge Down', lambda: self.canvas.merge_down()))
+        lay.addAction(self.act('De&lete Layer', lambda: self.canvas.delete_layer()))
 
         fx = m.addMenu('Effe&cts')
         fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
@@ -689,7 +883,7 @@ class Main(QMainWindow):
         self._write(path); self.path = path; self.update_title()
 
     def _write(self, path):
-        img = self.canvas.img
+        img = self.canvas.composited()          # flatten all layers for export
         if path.lower().endswith(('.jpg', '.jpeg')):
             flat = QImage(img.size(), QImage.Format_RGB32); flat.fill(QColor('#ffffff'))
             p = QPainter(flat); p.drawImage(0, 0, img); p.end(); img = flat
