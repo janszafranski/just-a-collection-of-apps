@@ -930,12 +930,66 @@ def qfont(o):
     f.setBold(bool(o.get('bold'))); f.setItalic(bool(o.get('italic'))); f.setUnderline(bool(o.get('underline')))
     return f
 
+# ---------------------------------------------------------------- Drop cap
+def _first_letter_pos(html_src):
+    """Index of the first visible text character of an HTML fragment (outside tags)."""
+    i = 0; intag = False
+    while i < len(html_src):
+        c = html_src[i]
+        if c == '<': intag = True
+        elif c == '>': intag = False
+        elif not intag and not c.isspace():
+            return i
+        i += 1
+    return -1
+
+def _lh_mult(o):
+    lh = o.get('lh', 1.4)
+    return 1.4 if lh == 'normal' else float(lh)
+
+def _dropcap_image(o, lines=3):
+    """(QImage of the first letter sized to ~`lines` lines, html with that letter
+    replaced by a left-floated <img> placeholder). (None, original html) on failure."""
+    html_src = o.get('html', '')
+    pos = _first_letter_pos(html_src)
+    if pos < 0 or html_src[pos] in '&<': return None, html_src
+    letter = html_src[pos]
+    try:
+        base = o.get('size', 16) * _lh_mult(o); cap = max(12, int(base * lines))
+        f = qfont(o); f.setBold(True); f.setPixelSize(cap)
+        fm = QFontMetrics(f); gw = fm.horizontalAdvance(letter)
+        img = QImage(gw + 8, int(base * lines) + 2, QImage.Format_ARGB32); img.fill(Qt.transparent)
+        q = QPainter(img); q.setRenderHint(QPainter.Antialiasing | QPainter.TextAntialiasing)
+        q.setFont(f); q.setPen(QColor(o.get('color', '#222222')))
+        q.drawText(QPointF(2, fm.capHeight()), letter)   # cap-top aligned to the frame top
+        q.end()
+    except Exception:
+        return None, html_src
+    new = html_src[:pos] + '<img src="dropcap://cap" align="left">' + html_src[pos + 1:]
+    return img, new
+
+def _dropcap_web(inner, o):
+    """Wrap the first letter of a published text fragment in a floated drop-cap span."""
+    pos = _first_letter_pos(inner)
+    if pos < 0 or inner[pos] in '&<': return inner
+    size = round(o.get('size', 16) * _lh_mult(o) * 2.6)
+    style = f"float:left;font-size:{size}px;line-height:.72;padding:4px 7px 0 0;font-weight:700"
+    return inner[:pos] + f'<span style="{style}">{inner[pos]}</span>' + inner[pos + 1:]
+
 def make_doc(o):
     doc = QTextDocument(); doc.setDocumentMargin(0); doc.setDefaultFont(qfont(o))
     opt = QTextOption(); opt.setAlignment(ALIGN.get(o.get('align', 'left'), Qt.AlignLeft))
     if o['type'] == 'artistic': opt.setWrapMode(QTextOption.NoWrap)
     doc.setDefaultTextOption(opt)
-    doc.setHtml(o.get('html', ''))
+    if o.get('dropcap') and o['type'] == 'text':
+        cap_img, dhtml = _dropcap_image(o)
+        if cap_img is not None:
+            doc.addResource(QTextDocument.ImageResource, QUrl('dropcap://cap'), cap_img)
+            doc.setHtml(dhtml)
+        else:
+            doc.setHtml(o.get('html', ''))
+    else:
+        doc.setHtml(o.get('html', ''))
     cur = QTextCursor(doc); blk = doc.begin(); gap = round(o.get('size', 16) * o.get('pgap', .6))
     while blk.isValid():
         cur.setPosition(blk.position())
@@ -1936,6 +1990,7 @@ def obj_html(o, site, page, img):
         st += text_css(o) + box_css(o)
         if t == 'text': st += f"padding:{o.get('pad', 8)}px;--pg:{o.get('pgap', .6)};"
         inner = clean_html(o.get('html', ''), site, img)
+        if o.get('dropcap') and t == 'text': inner = _dropcap_web(inner, o)
     elif t == 'shape':
         sh = o.get('shape', 'rect')
         if sh in ('rect', 'ellipse'):
@@ -6337,6 +6392,9 @@ class MainWindow(QMainWindow):
             if t in ('shape', 'button', 'picture', 'text'):
                 rd = QSpinBox(); rd.setRange(0, 400); rd.setValue(int(o.get('radius', 0))); rd.setPrefix('Corners '); rd.setSuffix(' px')
                 rd.editingFinished.connect(lambda: self.set_prop('radius', rd.value())); add(rd)
+            if t == 'text':
+                btn(['format-text-dropcap', 'format-text-direction-ltr'], 'Drop cap — large first letter',
+                    lambda: self.set_prop('dropcap', not o.get('dropcap')), checked=bool(o.get('dropcap')), glyph='¶')
             if t == 'picture':
                 btn(['insert-image', 'document-open'], 'Replace Picture…', lambda: self.pick_picture(o))
                 cb = QComboBox(); cb.addItems(['Fill frame (crop)', 'Fit inside frame', 'Stretch'])
