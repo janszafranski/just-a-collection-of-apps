@@ -1315,6 +1315,25 @@ def fx_css(o):
         parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
     return ('filter:' + ' '.join(parts) + ';') if parts else ''
 
+# ---------------------------------------------------------------- Lines & arrowheads
+def _line_ends(o):
+    """The two endpoints (x1,y1,x2,y2) of a line object within its box."""
+    pw = max(1, o.get('strokeW', 2)); w, h = o['w'], o['h']
+    if h <= pw + 2: return (0, h / 2, w, h / 2)
+    if w <= pw + 2: return (w / 2, 0, w / 2, h)
+    if o.get('flip'): return (0, h, w, 0)
+    return (0, 0, w, h)
+
+def _arrowhead_pts(fx, fy, tx, ty, pw):
+    """Triangle points for an arrowhead at (tx,ty) pointing away from (fx,fy)."""
+    ang = math.atan2(ty - fy, tx - fx); size = 7 + pw * 2.2
+    a1, a2 = ang + math.radians(152), ang - math.radians(152)
+    return [(tx, ty), (tx + size * math.cos(a1), ty + size * math.sin(a1)),
+            (tx + size * math.cos(a2), ty + size * math.sin(a2))]
+
+def _svg_poly(pts, color):
+    return f'<polygon points="{" ".join(f"{a:g},{b:g}" for a, b in pts)}" fill="{color}"/>'
+
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
@@ -1340,10 +1359,16 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         pw = max(1, o.get('strokeW', 2))
         pn = QPen(QColor(o.get('stroke', '#000')), pw); pn.setStyle(DASH.get(o.get('dash', 'solid'))); pn.setCapStyle(Qt.FlatCap)
         p.setPen(pn)
-        if h <= pw + 2: p.drawLine(QPointF(0, h / 2), QPointF(w, h / 2))
-        elif w <= pw + 2: p.drawLine(QPointF(w / 2, 0), QPointF(w / 2, h))
-        elif o.get('flip'): p.drawLine(QPointF(0, h), QPointF(w, 0))
-        else: p.drawLine(QPointF(0, 0), QPointF(w, h))
+        x1, y1, x2, y2 = _line_ends(o)
+        p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+        arr = o.get('arrow', 'none')
+        if arr != 'none':
+            p.save(); p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('stroke', '#000')))
+            if arr in ('end', 'both'):
+                p.drawPolygon(QPolygonF([QPointF(a, b) for a, b in _arrowhead_pts(x1, y1, x2, y2, pw)]))
+            if arr in ('start', 'both'):
+                p.drawPolygon(QPolygonF([QPointF(a, b) for a, b in _arrowhead_pts(x2, y2, x1, y1, pw)]))
+            p.restore()
     elif t == 'picture':
         path = QPainterPath(); path.addRoundedRect(r, rad, rad)
         p.save(); p.setClipPath(path)
@@ -1951,14 +1976,15 @@ def obj_html(o, site, page, img):
         else:
             inner = shape_svg(o)
     elif t == 'line':
-        pw = max(1, o.get('strokeW', 2)); w, h = o['w'], o['h']
-        if h <= pw + 2: x1, y1, x2, y2 = 0, h / 2, w, h / 2
-        elif w <= pw + 2: x1, y1, x2, y2 = w / 2, 0, w / 2, h
-        elif o.get('flip'): x1, y1, x2, y2 = 0, h, w, 0
-        else: x1, y1, x2, y2 = 0, 0, w, h
+        pw = max(1, o.get('strokeW', 2)); w, h = o['w'], o['h']; col = o.get('stroke')
+        x1, y1, x2, y2 = _line_ends(o)
         da = {'dashed': f' stroke-dasharray="{pw * 4} {pw * 2}"', 'dotted': f' stroke-dasharray="{pw} {pw}"'}.get(o.get('dash'), '')
-        inner = (f'<svg width="{w:g}" height="{h:g}" style="overflow:visible;display:block"><line x1="{x1:g}" y1="{y1:g}" x2="{x2:g}" y2="{y2:g}" '
-                 f'stroke="{o.get("stroke")}" stroke-width="{pw}"{da}/></svg>')
+        arr = o.get('arrow', 'none'); heads = ''
+        if arr in ('end', 'both'): heads += _svg_poly(_arrowhead_pts(x1, y1, x2, y2, pw), col)
+        if arr in ('start', 'both'): heads += _svg_poly(_arrowhead_pts(x2, y2, x1, y1, pw), col)
+        inner = (f'<svg width="{w:g}" height="{h:g}" style="overflow:visible;display:block">'
+                 f'<line x1="{x1:g}" y1="{y1:g}" x2="{x2:g}" y2="{y2:g}" stroke="{col}" stroke-width="{pw}"{da}/>'
+                 f'{heads}</svg>')
     elif t == 'picture':
         st += box_css(o) + 'overflow:hidden;'
         fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}[o.get('fit', 'cover')]
@@ -4274,6 +4300,8 @@ class ObjItem(QGraphicsItem):
         sh = self.o.get('shadow'); gl = self.o.get('glow')
         if sh: pad = max(pad, abs(sh.get('dx', 6)) + sh.get('blur', 8) + 8, abs(sh.get('dy', 6)) + sh.get('blur', 8) + 8)
         if gl: pad = max(pad, gl.get('blur', 12) + 8)
+        if self.o['type'] == 'line' and self.o.get('arrow', 'none') != 'none':
+            pad = max(pad, 10 + self.o.get('strokeW', 2) * 2.5)
         return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad)
 
     def shape(self):
@@ -6264,6 +6292,9 @@ class MainWindow(QMainWindow):
             label('Line'); add(ColorButton(o.get('stroke'), lambda c: self.set_prop('stroke', c), 'Line colour'))
             lw = QSpinBox(); lw.setRange(0, 60); lw.setValue(int(o.get('strokeW', 0))); lw.setSuffix(' px'); lw.setToolTip('Line width')
             lw.editingFinished.connect(lambda: self.set_prop('strokeW', lw.value())); add(lw)
+            dcb = QComboBox(); dcb.addItems(['Solid', 'Dashed', 'Dotted']); _dashes = ['solid', 'dashed', 'dotted']
+            cur_d = o.get('dash', 'solid'); dcb.setCurrentIndex(_dashes.index(cur_d) if cur_d in _dashes else 0)
+            dcb.setToolTip('Line / border style'); dcb.activated.connect(lambda i: self.set_prop('dash', _dashes[i])); add(dcb)
             tb.addSeparator()
         if types & set(self.FX_OBJ):
             btn(['tools-wizard', 'adjustlevels', 'image-adjust'], 'Effects — drop shadow & glow…', self.effects_dialog, glyph='✦')
@@ -6286,6 +6317,10 @@ class MainWindow(QMainWindow):
                 cb.activated.connect(lambda i: self.set_prop('fit', ['cover', 'contain', 'stretch'][i])); add(cb)
             if t == 'line':
                 btn(['object-flip-vertical'], 'Flip line', lambda: self.set_prop('flip', not o.get('flip')), glyph='⇅')
+                acb = QComboBox(); acb.addItems(['No arrows', 'Arrow at end', 'Arrow at start', 'Arrows both ends'])
+                _arrows = ['none', 'end', 'start', 'both']; cur_a = o.get('arrow', 'none')
+                acb.setCurrentIndex(_arrows.index(cur_a) if cur_a in _arrows else 0)
+                acb.setToolTip('Arrowheads'); acb.activated.connect(lambda i: self.set_prop('arrow', _arrows[i])); add(acb)
             if t == 'nav':
                 cb = QComboBox(); cb.addItems(['Pills', 'Underline', 'Tabs', 'Plain']); styles = ['pills', 'underline', 'tabs', 'plain']
                 cb.setCurrentIndex(styles.index(o.get('style', 'pills'))); cb.activated.connect(lambda i: self.set_prop('style', styles[i])); add(cb)
