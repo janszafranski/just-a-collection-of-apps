@@ -42,6 +42,12 @@ install -Dm644 "$SELF/banner.png" "$DATA/webcreator/banner.png"
 [[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$DATA/webcreator/quickstart.html"
 install -Dm644 "$SELF/guide_example_site.png" "$DATA/webcreator/guide_example_site.png"
 
+log "Installing the icon"
+for sz in 32 48 64 128 256; do
+  [[ -f "$SELF/icon-$sz.png" ]] && install -Dm644 "$SELF/icon-$sz.png" "$DATA/icons/hicolor/${sz}x${sz}/apps/webcreator.png"
+done
+command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$DATA/icons/hicolor" 2>/dev/null || true
+
 log "Installing the launcher"
 install -d "$BIN"
 cat > "$BIN/webcreator" <<'LAUNCH'

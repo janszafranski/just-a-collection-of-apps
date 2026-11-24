@@ -1032,6 +1032,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName('PAINTcanvas'); app.setApplicationDisplayName(APP)
     app.setOrganizationName(ORG); app.setApplicationVersion(VERSION)
+    app.setWindowIcon(QIcon.fromTheme('paint'))
     w = Main()
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     if args and os.path.isfile(args[0]):

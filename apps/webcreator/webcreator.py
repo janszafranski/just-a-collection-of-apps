@@ -5521,7 +5521,7 @@ class MainWindow(QMainWindow):
         self.preview_dir = tempfile.mkdtemp(prefix='webcreator-preview-')
         self.startup_dlg = None
 
-        self.setWindowIcon(ticon(['applications-development-web', 'text-html', 'applications-internet'], 'W'))
+        self.setWindowIcon(ticon(['webcreator', 'applications-development-web', 'text-html'], 'W'))
         self.resize(1360, 860)
         self.build_canvas_area()
         self.build_actions()
@@ -10317,6 +10317,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName('WEBcreator'); app.setApplicationDisplayName(APP); app.setOrganizationName(ORG)
     app.setApplicationVersion(VERSION)
+    app.setWindowIcon(QIcon.fromTheme('webcreator'))
     w = MainWindow(); w.show()
     _args = [a for a in sys.argv[1:] if not a.startswith('-')]
     if _args and os.path.isfile(_args[0]):

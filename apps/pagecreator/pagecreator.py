@@ -5463,7 +5463,7 @@ class MainWindow(QMainWindow):
         self.preview_dir = tempfile.mkdtemp(prefix='webcreator-preview-')
         self.startup_dlg = None
 
-        self.setWindowIcon(ticon(['applications-development-web', 'text-html', 'applications-internet'], 'W'))
+        self.setWindowIcon(ticon(['pagecreator', 'x-office-document', 'application-pdf'], 'P'))
         self.resize(1360, 860)
         self.build_canvas_area()
         self.build_actions()

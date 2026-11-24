@@ -593,6 +593,7 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName('DRAWmaster'); app.setApplicationDisplayName(APP)
     app.setOrganizationName(ORG); app.setApplicationVersion(VERSION)
+    app.setWindowIcon(QIcon.fromTheme('draw'))
     w = Main(); w.show()
     args = [a for a in sys.argv[1:] if not a.startswith('-')]
     if args and os.path.isfile(args[0]): w._open_path(args[0])
