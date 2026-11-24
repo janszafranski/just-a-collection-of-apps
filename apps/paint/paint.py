@@ -7,7 +7,8 @@ import sys, os
 try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QToolBar, QColorDialog,
                                    QFileDialog, QMessageBox, QSpinBox, QLabel, QInputDialog,
-                                   QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox)
+                                   QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
+                                   QSlider, QCheckBox, QFormLayout, QDialogButtonBox)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QCursor, QFont, QPainterPath, QActionGroup)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
@@ -18,7 +19,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.1-00"
+VERSION = "1.2-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -58,6 +59,85 @@ def checker():
     return CHECK
 
 
+# ---------------------------------------------------------------- image engine (Pillow)
+# PhotoPlus-style adjustments and filters run through Pillow; QImage <-> PIL below.
+try:
+    from PIL import Image, ImageEnhance, ImageOps, ImageFilter
+    import numpy as _np
+    HAS_PIL = True
+except Exception:
+    HAS_PIL = False
+
+
+def q2pil(img):
+    im = img.convertToFormat(QImage.Format_RGBA8888)
+    return Image.frombytes('RGBA', (im.width(), im.height()), im.constBits().tobytes())
+
+
+def pil2q(pil):
+    if pil.mode != 'RGBA':
+        pil = pil.convert('RGBA')
+    data = pil.tobytes('raw', 'RGBA')
+    return QImage(data, pil.width, pil.height, QImage.Format_RGBA8888).convertToFormat(QImage.Format_ARGB32).copy()
+
+
+def _merge_a(src, rgb):
+    """Put an RGB result back together with the source's alpha channel."""
+    return Image.merge('RGBA', rgb.convert('RGB').split() + (src.split()[3],))
+
+
+# ---- one-shot adjustments: pil(RGBA) -> pil(RGBA) ----
+def adj_invert(p):       return _merge_a(p, ImageOps.invert(p.convert('RGB')))
+def adj_grayscale(p):    return _merge_a(p, ImageOps.grayscale(p).convert('RGB'))
+def adj_autocontrast(p): return _merge_a(p, ImageOps.autocontrast(p.convert('RGB'), cutoff=1))
+def adj_equalize(p):     return _merge_a(p, ImageOps.equalize(p.convert('RGB')))
+def adj_sepia(p):        return _merge_a(p, ImageOps.colorize(ImageOps.grayscale(p),
+                                          black=(30, 16, 8), white=(255, 240, 200), mid=(150, 110, 70)))
+
+# ---- parametric adjustments: build a closure from the slider values ----
+def adj_brightness(f):  return lambda p: _merge_a(p, ImageEnhance.Brightness(p.convert('RGB')).enhance(f))
+def adj_contrast(f):    return lambda p: _merge_a(p, ImageEnhance.Contrast(p.convert('RGB')).enhance(f))
+def adj_saturation(f):  return lambda p: _merge_a(p, ImageEnhance.Color(p.convert('RGB')).enhance(f))
+def adj_posterize(b):   return lambda p: _merge_a(p, ImageOps.posterize(p.convert('RGB'), max(1, min(8, int(b)))))
+
+def adj_threshold(t):
+    return lambda p: _merge_a(p, p.convert('L').point(lambda v: 255 if v > t else 0).convert('RGB'))
+
+def adj_hue(shift):
+    def f(p):
+        hsv = _np.asarray(p.convert('HSV')).astype(_np.int16)
+        hsv[..., 0] = (hsv[..., 0] + int(shift / 360.0 * 255)) % 256
+        return _merge_a(p, Image.fromarray(hsv.astype('uint8'), 'HSV').convert('RGB'))
+    return f
+
+def adj_levels(black, white, gamma):
+    def f(p):
+        a = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        w = max(black + 1, white)
+        a = _np.clip((a - black) / (w - black), 0, 1) ** (1.0 / max(0.05, gamma))
+        return _merge_a(p, Image.fromarray((a * 255).astype('uint8'), 'RGB'))
+    return f
+
+def adj_temperature(k):
+    def f(p):
+        a = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        a[..., 0] = _np.clip(a[..., 0] + k * 0.6, 0, 255)
+        a[..., 2] = _np.clip(a[..., 2] - k * 0.6, 0, 255)
+        return _merge_a(p, Image.fromarray(a.astype('uint8'), 'RGB'))
+    return f
+
+# ---- filters ----
+def flt_gaussian(r):  return lambda p: p.filter(ImageFilter.GaussianBlur(max(0.1, r)))
+def flt_unsharp(r):   return lambda p: p.filter(ImageFilter.UnsharpMask(radius=max(0.1, r), percent=160))
+def flt_median(s):    return lambda p: p.filter(ImageFilter.MedianFilter(size=int(s) if int(s) % 2 else int(s) + 1))
+def flt_sharpen(p):   return p.filter(ImageFilter.SHARPEN)
+def flt_soften(p):    return p.filter(ImageFilter.SMOOTH_MORE)
+def flt_detail(p):    return p.filter(ImageFilter.DETAIL)
+def flt_emboss(p):    return _merge_a(p, p.convert('RGB').filter(ImageFilter.EMBOSS))
+def flt_edges(p):     return _merge_a(p, p.convert('RGB').filter(ImageFilter.FIND_EDGES))
+def flt_contour(p):   return _merge_a(p, p.convert('RGB').filter(ImageFilter.CONTOUR))
+
+
 class Canvas(QWidget):
     def __init__(self, win, w=1000, h=700):
         super().__init__()
@@ -71,6 +151,8 @@ class Canvas(QWidget):
         self.last = None
         self.start = None
         self.preview = None            # (tool, QPoint start, QPoint cur) while dragging a shape
+        self.sel = None                # {'rect': QRect, 'kind': 'rect'|'ellipse'} marquee selection
+        self.sel_drag = None           # (start, cur) while dragging a marquee
         self.undo, self.redo = [], []
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
@@ -116,6 +198,18 @@ class Canvas(QWidget):
             elif tool == 'rect': p.drawRect(QRectF(a, b).normalized())
             elif tool == 'ellipse': p.drawEllipse(QRectF(a, b).normalized())
             p.restore()
+        if self.sel or self.sel_drag:
+            p.save(); p.scale(self.zoom, self.zoom)
+            if self.sel_drag:
+                a, b = self.sel_drag; r = QRectF(a, b).normalized()
+                kind = 'ellipse' if self.tool == 'mellipse' else 'rect'
+            else:
+                r = QRectF(self.sel['rect']); kind = self.sel['kind']
+            p.setBrush(Qt.NoBrush)
+            for col, style in ((QColor('#ffffff'), Qt.SolidLine), (QColor('#000000'), Qt.DashLine)):
+                pen = QPen(col, 1, style); pen.setCosmetic(True); p.setPen(pen)
+                p.drawEllipse(r) if kind == 'ellipse' else p.drawRect(r)
+            p.restore()
         p.end()
 
     def img_pos(self, e):
@@ -141,6 +235,8 @@ class Canvas(QWidget):
                 f = QFont('Noto Sans'); f.setPixelSize(max(8, self.size * 4)); p.setFont(f)
                 p.drawText(QPointF(pos.x(), pos.y()), txt); p.end(); self.update()
             return
+        if self.tool in ('mrect', 'mellipse'):          # marquee selection — not an image edit
+            self.start = pos; self.sel_drag = (pos, pos); self.update(); return
         self.snapshot()
         if self.tool in ('brush', 'eraser'):
             self.last = pos; self._stroke(pos, pos)
@@ -156,10 +252,17 @@ class Canvas(QWidget):
             self._stroke(self.last, pos); self.last = pos; self.update()
         elif self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
             self.preview = (self.tool, self.start, pos); self.update()
+        elif self.tool in ('mrect', 'mellipse') and self.start is not None:
+            self.sel_drag = (self.start, pos); self.update()
 
     def mouseReleaseEvent(self, e):
         if e.button() != Qt.LeftButton: return
         pos = self.img_pos(e)
+        if self.tool in ('mrect', 'mellipse') and self.start is not None:
+            r = QRect(self.start, pos).normalized()
+            self.sel = ({'rect': r, 'kind': 'ellipse' if self.tool == 'mellipse' else 'rect'}
+                        if r.width() > 2 and r.height() > 2 else None)
+            self.start = self.sel_drag = None; self.update(); return
         if self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
             p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing); p.setPen(self._pen()); p.setBrush(Qt.NoBrush)
             if self.tool == 'line': p.drawLine(self.start, pos)
@@ -177,6 +280,61 @@ class Canvas(QWidget):
         else:
             p.setPen(self._pen())
         p.drawLine(a, b); p.end()
+
+    # ---- selection & the PhotoPlus image engine ----
+    def sel_region(self):
+        if not self.sel: return None
+        r = self.sel['rect'].normalized().intersected(self.img.rect())
+        if r.width() < 2 or r.height() < 2: return None
+        return (r, self.sel['kind'])
+
+    def _apply_to(self, src, func):
+        """Return a NEW QImage: `src` with `func` (a pil->pil op) applied to the
+        selection, or to the whole image if there is none. No undo push."""
+        reg = self.sel_region()
+        if reg is None:
+            return pil2q(func(q2pil(src)))
+        r, kind = reg
+        out = src.copy()
+        res = pil2q(func(q2pil(src.copy(r))))
+        p = QPainter(out)
+        if kind == 'ellipse':
+            path = QPainterPath(); path.addEllipse(QRectF(r)); p.setClipPath(path)
+        p.drawImage(r.topLeft(), res); p.end()
+        return out
+
+    def apply_region(self, func):
+        self.snapshot(); self.img = self._apply_to(self.img, func); self._fit()
+
+    def select_all(self):
+        self.sel = {'rect': self.img.rect(), 'kind': 'rect'}; self.update()
+
+    def select_none(self):
+        self.sel = None; self.update()
+
+    def crop_to_sel(self):
+        reg = self.sel_region()
+        if reg is None: return
+        r, _ = reg; self.snapshot(); self.img = self.img.copy(r); self.sel = None; self._fit()
+
+    def resize_image(self, w, h):
+        self.snapshot()
+        self.img = self.img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32)
+        self.sel = None; self._fit()
+
+    def set_canvas_size(self, w, h):
+        self.snapshot()
+        out = QImage(w, h, QImage.Format_ARGB32); out.fill(Qt.transparent)
+        p = QPainter(out); p.drawImage(0, 0, self.img); p.end()
+        self.img = out; self.sel = None; self._fit()
+
+    def rotate(self, deg):
+        from PySide6.QtGui import QTransform
+        self.snapshot(); self.img = self.img.transformed(QTransform().rotate(deg), Qt.SmoothTransformation)
+        self.sel = None; self._fit()
+
+    def flip(self, horizontal):
+        self.snapshot(); self.img = self.img.mirrored(horizontal, not horizontal); self.sel = None; self._fit()
 
     def flood_fill(self, pos, new):
         if not self.img.rect().contains(pos): return
@@ -219,10 +377,54 @@ class Canvas(QWidget):
         self.snapshot(); self.img = img.convertToFormat(QImage.Format_ARGB32); self._fit()
 
 
+class AdjustDialog(QDialog):
+    """Live-preview dialog for a parametric adjustment or filter. `sliders` is a list of
+    (key, label, min, max, default, scale); `build(values)` returns a pil->pil function."""
+    def __init__(self, win, title, sliders, build):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas; self.build = build
+        self.setWindowTitle(title); self.setMinimumWidth(340)
+        self.base = self.canvas.img.copy()
+        v = QVBoxLayout(self); form = QFormLayout(); v.addLayout(form)
+        self.rows = {}
+        for key, label, lo, hi, default, scale in sliders:
+            s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(default)
+            val = QLabel(); val.setMinimumWidth(46); val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            s.valueChanged.connect(self._apply)
+            rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+            holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250)
+            form.addRow(label, holder); self.rows[key] = (s, scale, val)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._apply()
+
+    def _values(self):
+        return {k: s.value() / sc for k, (s, sc, _) in self.rows.items()}
+
+    def _apply(self):
+        for k, (s, sc, val) in self.rows.items():
+            val.setText(f'{s.value() / sc:g}')
+        try:
+            self.canvas.img = self.canvas._apply_to(self.base, self.build(self._values()))
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+
+    def accept(self):
+        self.canvas.undo.append(self.base)
+        if len(self.canvas.undo) > 40: self.canvas.undo.pop(0)
+        self.canvas.redo.clear(); self.win.update_title()
+        super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
 class Main(QMainWindow):
     TOOLS = [('brush', 'Brush', '🖌'), ('eraser', 'Eraser', '◻'), ('line', 'Line', '╱'),
              ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'), ('fill', 'Fill', '🪣'),
-             ('picker', 'Pick colour', '🎯'), ('text', 'Text', 'A')]
+             ('picker', 'Pick colour', '🎯'), ('text', 'Text', 'A'),
+             ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌')]
 
     def __init__(self):
         super().__init__()
@@ -271,6 +473,47 @@ class Main(QMainWindow):
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
+        img = m.addMenu('&Image')
+        img.addAction(self.act('&Resize Image…', self.resize_image))
+        img.addAction(self.act('&Canvas Size…', self.canvas_size))
+        img.addAction(self.act('Crop to &Selection', lambda: self.canvas.crop_to_sel()))
+        img.addSeparator()
+        img.addAction(self.act('Rotate 90° &Right', lambda: self.canvas.rotate(90)))
+        img.addAction(self.act('Rotate 90° &Left', lambda: self.canvas.rotate(-90)))
+        img.addAction(self.act('Rotate &180°', lambda: self.canvas.rotate(180)))
+        img.addAction(self.act('Flip &Horizontal', lambda: self.canvas.flip(True)))
+        img.addAction(self.act('Flip &Vertical', lambda: self.canvas.flip(False)))
+
+        adj = m.addMenu('&Adjust')
+        adj.addAction(self.act('&Brightness / Contrast…', self.dlg_brightness))
+        adj.addAction(self.act('&Levels…', self.dlg_levels))
+        adj.addAction(self.act('&Hue / Saturation…', self.dlg_huesat))
+        adj.addAction(self.act('Colour &Temperature…', self.dlg_temperature))
+        adj.addAction(self.act('&Threshold…', self.dlg_threshold))
+        adj.addAction(self.act('&Posterize…', self.dlg_posterize))
+        adj.addSeparator()
+        adj.addAction(self.act('Auto &Contrast', lambda: self.canvas.apply_region(adj_autocontrast)))
+        adj.addAction(self.act('&Equalize', lambda: self.canvas.apply_region(adj_equalize)))
+        adj.addAction(self.act('&Greyscale', lambda: self.canvas.apply_region(adj_grayscale)))
+        adj.addAction(self.act('&Invert (Negative)', lambda: self.canvas.apply_region(adj_invert)))
+        adj.addAction(self.act('Se&pia', lambda: self.canvas.apply_region(adj_sepia)))
+
+        flt = m.addMenu('Fil&ter')
+        flt.addAction(self.act('&Gaussian Blur…', self.dlg_blur))
+        flt.addAction(self.act('&Unsharp Mask…', self.dlg_unsharp))
+        flt.addAction(self.act('&Median (Despeckle)…', self.dlg_median))
+        flt.addSeparator()
+        flt.addAction(self.act('&Sharpen', lambda: self.canvas.apply_region(flt_sharpen)))
+        flt.addAction(self.act('S&often', lambda: self.canvas.apply_region(flt_soften)))
+        flt.addAction(self.act('&Detail', lambda: self.canvas.apply_region(flt_detail)))
+        flt.addAction(self.act('&Emboss', lambda: self.canvas.apply_region(flt_emboss)))
+        flt.addAction(self.act('Find &Edges', lambda: self.canvas.apply_region(flt_edges)))
+        flt.addAction(self.act('&Contour', lambda: self.canvas.apply_region(flt_contour)))
+
+        sel = m.addMenu('&Select')
+        sel.addAction(self.act('Select &All', lambda: self.canvas.select_all(), QKeySequence.SelectAll))
+        sel.addAction(self.act('&Deselect', lambda: self.canvas.select_none(), QKeySequence.Deselect))
+
         fx = m.addMenu('Effe&cts')
         fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
         fx.addAction(self.act('Outer &Glow…', lambda: self._fx_dialog('glow')))
@@ -324,6 +567,78 @@ class Main(QMainWindow):
         if not dlg.exec(): return
         if glow: self.canvas.apply_fx(col[0], bl.value(), 0, 0, op.value(), twice=True)
         else: self.canvas.apply_fx(col[0], bl.value(), dx.value(), dy.value(), op.value())
+
+    # ---- PhotoPlus-style adjustments, filters, image ops ----
+    def _need_pil(self):
+        if not HAS_PIL:
+            QMessageBox.information(self, APP, 'Adjustments and filters need the Pillow and NumPy libraries.\n\n'
+                                   'Install them with your package manager, for example:\n'
+                                   '    sudo pacman -S python-pillow python-numpy')
+            return False
+        return True
+
+    def dlg_brightness(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Brightness / Contrast',
+                         [('b', 'Brightness:', 0, 200, 100, 100.0), ('c', 'Contrast:', 0, 200, 100, 100.0)],
+                         lambda v: (lambda p: adj_contrast(v['c'])(adj_brightness(v['b'])(p)))).exec()
+
+    def dlg_levels(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Levels',
+                         [('bl', 'Black point:', 0, 254, 0, 1.0), ('wh', 'White point:', 1, 255, 255, 1.0),
+                          ('g', 'Gamma:', 10, 300, 100, 100.0)],
+                         lambda v: adj_levels(v['bl'], v['wh'], v['g'])).exec()
+
+    def dlg_huesat(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Hue / Saturation',
+                         [('h', 'Hue shift:', -180, 180, 0, 1.0), ('s', 'Saturation:', 0, 200, 100, 100.0)],
+                         lambda v: (lambda p: adj_saturation(v['s'])(adj_hue(v['h'])(p)))).exec()
+
+    def dlg_temperature(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Colour Temperature', [('k', 'Warm ↔ Cool:', -100, 100, 0, 1.0)],
+                         lambda v: adj_temperature(v['k'])).exec()
+
+    def dlg_threshold(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Threshold', [('t', 'Level:', 0, 255, 128, 1.0)],
+                         lambda v: adj_threshold(v['t'])).exec()
+
+    def dlg_posterize(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Posterize', [('b', 'Levels:', 1, 8, 4, 1.0)],
+                         lambda v: adj_posterize(v['b'])).exec()
+
+    def dlg_blur(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Gaussian Blur', [('r', 'Radius:', 0, 400, 30, 10.0)],
+                         lambda v: flt_gaussian(v['r'])).exec()
+
+    def dlg_unsharp(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Unsharp Mask', [('r', 'Radius:', 1, 200, 30, 10.0)],
+                         lambda v: flt_unsharp(v['r'])).exec()
+
+    def dlg_median(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Median (Despeckle)', [('s', 'Size:', 1, 9, 3, 1.0)],
+                         lambda v: flt_median(v['s'])).exec()
+
+    def resize_image(self):
+        w, h = self.canvas.img.width(), self.canvas.img.height()
+        nw, ok = QInputDialog.getInt(self, 'Resize Image', 'New width (px):', w, 1, 20000)
+        if not ok: return
+        nh, ok = QInputDialog.getInt(self, 'Resize Image', 'New height (px):', round(h * nw / w), 1, 20000)
+        if ok: self.canvas.resize_image(nw, nh)
+
+    def canvas_size(self):
+        w, h = self.canvas.img.width(), self.canvas.img.height()
+        nw, ok = QInputDialog.getInt(self, 'Canvas Size', 'Canvas width (px):', w, 1, 20000)
+        if not ok: return
+        nh, ok = QInputDialog.getInt(self, 'Canvas Size', 'Canvas height (px):', h, 1, 20000)
+        if ok: self.canvas.set_canvas_size(nw, nh)
 
     def update_title(self):
         self.setWindowTitle(f'{os.path.basename(self.path) if self.path else "Untitled"} — {APP}')
