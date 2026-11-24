@@ -38,10 +38,12 @@ TARBALL = f"https://github.com/{UPDATE_REPO}/archive/refs/heads/{UPDATE_BRANCH}.
 APPS = [
     dict(key='webcreator',  dir='apps/webcreator',  name='just a... WEBcreator',
          desc='Design a website by laying pages out, then publish it as plain HTML.'),
-    dict(key='pagecreator', dir='apps/pagecreator', name='just a... PAGEcreator',
+    dict(key='pagecreator', dir='apps/pagecreator', name='just a... PAGEdesigner',
          desc='Design print documents page by page, then export them as PDF.'),
-    dict(key='paint', dir='apps/paint', name='just a... PAINT',
+    dict(key='paint', dir='apps/paint', name='just a... PAINTcanvas',
          desc='Edit and paint images — brush, shapes, fill and text — then save a PNG or JPG.'),
+    dict(key='draw', dir='apps/draw', name='just a... DRAWmaster',
+         desc='Draw with vectors — shapes, lines and paths — and save a scalable SVG.'),
     # add more apps here
 ]
 

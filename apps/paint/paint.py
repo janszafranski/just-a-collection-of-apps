@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# just a... PAINT — a tiny raster (bitmap) image editor: paint, erase, draw shapes,
+# just a... PAINTcanvas — a tiny raster (bitmap) image editor: paint, erase, draw shapes,
 # fill, pick colours, add text, and save a PNG/JPG. The photo-editing companion to
 # just a... PAGEcreator / WEBcreator (and the vector sibling of just a... DRAW).
 import sys, os
@@ -12,11 +12,11 @@ try:
                                QKeySequence, QCursor, QFont, QPainterPath, QActionGroup)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
 except ImportError:
-    sys.stderr.write("just a... PAINT needs PySide6 (use your distro package, not pip):\n"
+    sys.stderr.write("just a... PAINTcanvas needs PySide6 (use your distro package, not pip):\n"
                      "    sudo pacman -S --needed pyside6\n")
     sys.exit(1)
 
-APP = "just a... PAINT"
+APP = "just a... PAINTcanvas"
 ORG = "justapaint"
 VERSION = "1.0-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -315,7 +315,7 @@ class Main(QMainWindow):
     def about(self):
         QMessageBox.about(self, f'About {APP}',
                           f'<b>{APP}</b><br>Version {VERSION}<br><br>A tiny raster image editor — paint, '
-                          'shapes, fill, text and save a PNG/JPG.<br>The companion to just a… PAGEcreator '
+                          'shapes, fill, text and save a PNG/JPG.<br>The companion to just a… PAGEdesigner '
                           'and WEBcreator.')
 
 
@@ -330,7 +330,7 @@ def letter_icon(glyph, size=22):
 def main():
     QApplication.setDesktopFileName('paint')
     app = QApplication(sys.argv)
-    app.setApplicationName('PAINT'); app.setApplicationDisplayName(APP)
+    app.setApplicationName('PAINTcanvas'); app.setApplicationDisplayName(APP)
     app.setOrganizationName(ORG); app.setApplicationVersion(VERSION)
     w = Main()
     args = [a for a in sys.argv[1:] if not a.startswith('-')]

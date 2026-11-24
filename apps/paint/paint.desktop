@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=just a... PAINT
+Name=just a... PAINTcanvas
 Comment=A tiny image editor — paint, shapes, fill and text
 Exec=paint %f
 Icon=paint

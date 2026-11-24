@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# just a... PAGEcreator
+# just a... PAGEdesigner
 # A desktop website designer for Linux, built on Qt 6 (PySide6).
 # It follows your desktop theme: colours, accent, fonts and icons all come
 # from the system (KDE Plasma colour scheme, Breeze/your icon theme, etc).
@@ -28,14 +28,14 @@ try:
                                    QTableWidget, QTableWidgetItem, QMenu, QFrame, QSizePolicy,
                                    QGroupBox, QAbstractItemView, QStyle, QInputDialog)
 except ImportError:
-    print("just a... PAGEcreator needs PySide6 (use your distro package, not pip, so it follows your theme):\n"
+    print("just a... PAGEdesigner needs PySide6 (use your distro package, not pip, so it follows your theme):\n"
           "  Arch/CachyOS:        sudo pacman -S --needed pyside6\n"
           "  Debian/Ubuntu/Mint:  sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtwebenginewidgets\n"
           "  Fedora:              sudo dnf install python3-pyside6\n"
           "  openSUSE:            sudo zypper install python3-PySide6")
     sys.exit(1)
 
-APP = "just a... PAGEcreator"
+APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
 VERSION = "1.12-01"
@@ -891,7 +891,7 @@ def serif_site(row, scheme=None):
                accent=C['accent'], accentInk=C['accentInk']),
             mk('line', M, fy, CW, 2, stroke=C['rule'], strokeW=2),
             mk('text', M, fy + 16, CW, 54, pad=0, size=12, color=C['mute'],
-               html=f'<p>© {H.escape(brand)}. Made with just a... PAGEcreator.</p>'),
+               html=f'<p>© {H.escape(brand)}. Made with just a... PAGEdesigner.</p>'),
         ]
     else:
         m['objects'] = [
@@ -4797,7 +4797,7 @@ class StartupAssistant(QDialog):
         bottom = QHBoxLayout(); root.addLayout(bottom)
         qs = QPushButton(ticon(['help-contents', 'system-help', 'help-browser'], ''), 'Quick Start')
         qs.clicked.connect(win.open_quickstart); bottom.addWidget(qs)
-        self.show_cb = QCheckBox('Show this when PAGEcreator opens')
+        self.show_cb = QCheckBox('Show this when PAGEdesigner opens')
         self.show_cb.setChecked(win.settings.value('showStartup', True, type=bool)); bottom.addWidget(self.show_cb)
         bottom.addStretch()
         close = QPushButton('Close'); close.clicked.connect(self.reject); bottom.addWidget(close)
@@ -4835,7 +4835,7 @@ class StartupAssistant(QDialog):
 
     def browse(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', os.path.expanduser('~'),
-                                              f'PAGEcreator publications (*{EXT});;All files (*)')
+                                              f'PAGEdesigner publications (*{EXT});;All files (*)')
         if path: self.result_path = path; self.accept()
 
     def open_ppp(self):
@@ -4960,7 +4960,7 @@ STANDARD = ['#000000', '#3a3a3a', '#757575', '#b0b0b0', '#e0e0e0', '#ffffff', '#
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.settings = QSettings(ORG, 'PAGEcreator')
+        self.settings = QSettings(ORG, 'PAGEdesigner')
         self.site = tpl_blank()
         self.path = None; self.dirty = False
         self.undo, self.redo = [], []
@@ -5267,7 +5267,7 @@ class MainWindow(QMainWindow):
         self.a['updatesettings'] = self.act('&Settings…', self.update_settings, None, ['configure', 'preferences-system'])
         self.a['donate'] = self.act('&Buy Me a Coffee  ☕', lambda: open_external('https://buymeacoffee.com/janszafranski'),
                                     None, ['help-donate', 'emblem-favorite', 'face-smile-big'])
-        self.a['donate'].setToolTip('Enjoying PAGEcreator? Buy its maker a coffee — opens buymeacoffee.com in your browser')
+        self.a['donate'].setToolTip('Enjoying PAGEdesigner? Buy its maker a coffee — opens buymeacoffee.com in your browser')
         menu('&Help', [self.a['userguide'], self.a['quickstart'], None, self.a['update'], self.a['checkupdate'], self.a['updatesettings'], None, a['about'], None, self.a['donate']])
 
     def recent_menu_action(self):
@@ -5331,9 +5331,9 @@ class MainWindow(QMainWindow):
         # Companion "just a…" apps — the family's image editor (PAINT) and website maker.
         photo = QToolBar('Apps'); photo.setObjectName('apps'); photo.setIconSize(QSize(20, 20))
         for label, cmd, icons, glyph in (
-                ('Edit in PAINT', 'paint', ['draw-brush', 'krita', 'applications-graphics'], '🖌'),
+                ('Edit in PAINTcanvas', 'paint', ['draw-brush', 'krita', 'applications-graphics'], '🖌'),
                 ('WEBcreator', 'webcreator', ['applications-internet', 'internet-web-browser'], '🌐')):
-            nm = 'PAINT' if cmd == 'paint' else 'WEBcreator'
+            nm = 'PAINTcanvas' if cmd == 'paint' else 'WEBcreator'
             pa = QAction(ticon(icons, glyph), label, self); pa.setToolTip(f'Open just a… {nm}')
             pa.triggered.connect(lambda _=False, c=cmd, n=nm: self.launch_app(c, n)); photo.addAction(pa)
             w = photo.widgetForAction(pa)
@@ -8539,7 +8539,7 @@ class MainWindow(QMainWindow):
     def open_dialog(self):
         if not self.maybe_save(): return
         start = os.path.dirname(self.path) if self.path else os.path.expanduser('~')
-        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', start, f'PAGEcreator publications (*{EXT});;All files (*)')
+        path, _ = QFileDialog.getOpenFileName(self, 'Open Publication', start, f'PAGEdesigner publications (*{EXT});;All files (*)')
         if path: self.load_path(path)
 
     # ------------------------------------------------- Serif WebPlus (.wpp)
@@ -8646,7 +8646,7 @@ class MainWindow(QMainWindow):
     def save_as(self):
         if self.editor: self.finish_edit()
         start = self.path or os.path.join(os.path.expanduser('~'), re.sub(r'[^\w -]+', '', self.site['name']).strip() + EXT)
-        path, _ = QFileDialog.getSaveFileName(self, 'Save Publication As', start, f'PAGEcreator publications (*{EXT})')
+        path, _ = QFileDialog.getSaveFileName(self, 'Save Publication As', start, f'PAGEdesigner publications (*{EXT})')
         if not path: return False
         if not path.endswith(EXT): path += EXT
         return self.write(path)
@@ -9596,7 +9596,7 @@ class MainWindow(QMainWindow):
 def main():
     QApplication.setDesktopFileName('pagecreator')
     app = QApplication(sys.argv)
-    app.setApplicationName('PAGEcreator'); app.setApplicationDisplayName(APP); app.setOrganizationName(ORG)
+    app.setApplicationName('PAGEdesigner'); app.setApplicationDisplayName(APP); app.setOrganizationName(ORG)
     app.setApplicationVersion(VERSION)
     w = MainWindow(); w.show()
     sys.exit(app.exec())

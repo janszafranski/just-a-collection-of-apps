@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=just a... DRAWmaster
+Comment=A tiny vector drawing app — shapes, paths, SVG export
+Exec=draw %f
+Icon=draw
+Terminal=false
+Categories=Graphics;2DGraphics;VectorGraphics;

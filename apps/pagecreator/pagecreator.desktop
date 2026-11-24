@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=just a... PAGEcreator
+Name=just a... PAGEdesigner
 Comment=Design print documents, then export them as PDF
 Exec=pagecreator %f
 Icon=pagecreator

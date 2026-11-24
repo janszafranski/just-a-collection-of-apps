@@ -5373,18 +5373,18 @@ class MainWindow(QMainWindow):
         cw = ins.widgetForAction(coffee)
         if cw: cw.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         self.addToolBar(Qt.TopToolBarArea, ins)
-        # Companion "just a…" apps: edit images in PAINT, make documents/PDFs in PAGEcreator.
+        # Companion "just a…" apps: edit images in PAINT, make documents/PDFs in PAGEdesigner.
         from PySide6.QtWidgets import QToolButton as _QTB, QMenu as _QM
         apps = QToolBar('Apps'); apps.setObjectName('apps'); apps.setIconSize(QSize(20, 20))
-        paint_a = QAction(ticon(['draw-brush', 'krita', 'applications-graphics'], '🖌'), 'Edit in PAINT', self)
+        paint_a = QAction(ticon(['draw-brush', 'krita', 'applications-graphics'], '🖌'), 'Edit in PAINTcanvas', self)
         paint_a.setToolTip('Open just a… PAINT to edit images')
-        paint_a.triggered.connect(lambda: self.launch_app('paint', 'PAINT'))
+        paint_a.triggered.connect(lambda: self.launch_app('paint', 'PAINTcanvas'))
         apps.addAction(paint_a); apps.widgetForAction(paint_a).setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         docs_btn = _QTB(); docs_btn.setText('Documents'); docs_btn.setIcon(ticon(['x-office-document', 'application-pdf'], '📄'))
         docs_btn.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); docs_btn.setPopupMode(_QTB.InstantPopup)
-        docs_btn.setToolTip('just a… PAGEcreator — make print documents and PDFs')
+        docs_btn.setToolTip('just a… PAGEdesigner — make print documents and PDFs')
         _dm = _QM(docs_btn)
-        _dm.addAction('Open PAGEcreator (documents / PDF)', lambda: self.launch_app('pagecreator', 'PAGEcreator'))
+        _dm.addAction('Open PAGEdesigner (documents / PDF)', lambda: self.launch_app('pagecreator', 'PAGEdesigner'))
         docs_btn.setMenu(_dm); apps.addWidget(docs_btn)
         self.addToolBar(Qt.TopToolBarArea, apps)
         # Context toolbar — same row; all top toolbars wrap onto more rows only when
