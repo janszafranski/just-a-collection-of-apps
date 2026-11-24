@@ -4719,7 +4719,7 @@ class StartupAssistant(QDialog):
         super().__init__(win)
         from PySide6.QtWidgets import (QGridLayout, QToolButton, QScrollArea, QDoubleSpinBox)
         self.win = win
-        self.result_site = None; self.result_path = None; self.result_pageplus = False
+        self.result_site = None; self.result_path = None; self.result_pageplus = False; self.result_importfile = None
         self.result_update = False; self.result_import = False; self.result_webplus = None
         self.setWindowTitle(f'{APP} — Startup Assistant'); self.resize(900, 640)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
@@ -4795,6 +4795,9 @@ class StartupAssistant(QDialog):
         self.stack.addWidget(op)
 
         bottom = QHBoxLayout(); root.addLayout(bottom)
+        imp = QPushButton(ticon(['document-import', 'document-open'], ''), 'Import…')
+        imp.setToolTip('Import a Serif PagePlus (.ppp) publication or a PDF document'); imp.clicked.connect(self.do_import)
+        bottom.addWidget(imp)
         qs = QPushButton(ticon(['help-contents', 'system-help', 'help-browser'], ''), 'Quick Start')
         qs.clicked.connect(win.open_quickstart); bottom.addWidget(qs)
         self.show_cb = QCheckBox('Show this when PAGEdesigner opens')
@@ -4840,6 +4843,12 @@ class StartupAssistant(QDialog):
 
     def open_ppp(self):
         self.result_pageplus = True; self.accept()
+
+    def do_import(self):
+        path, _ = QFileDialog.getOpenFileName(self, 'Import', os.path.expanduser('~'),
+                                              'PagePlus publication (*.ppp);;PDF document (*.pdf);;All files (*)')
+        if path:
+            self.result_importfile = path; self.accept()
 
     def show_update(self, version):
         self.upd_label.setText(f'<b>A new version is available.</b> You have {VERSION}; version {version} is ready to install.')
@@ -8501,6 +8510,7 @@ class MainWindow(QMainWindow):
             if dlg.result_site: self.set_site(dlg.result_site)
             elif dlg.result_path: self.load_path(dlg.result_path)
             elif dlg.result_pageplus: self.open_pageplus()
+            elif dlg.result_importfile: self.import_startup_file(dlg.result_importfile)
             elif dlg.result_webplus: self.load_webplus(*dlg.result_webplus)
             elif dlg.result_import: self.import_folder(skip_save_check=True)
 
@@ -8598,6 +8608,42 @@ class MainWindow(QMainWindow):
         self.settings.setValue('serifRoot', root)
         QMessageBox.information(self, 'Open WebPlus Site', wpp_summary(site, path, notes))
         return True
+
+    def import_startup_file(self, path):
+        """Route a file chosen from the startup Import button: a PagePlus .ppp opens
+        as a document; a PDF becomes a new document with each page placed."""
+        low = path.lower()
+        if low.endswith('.ppp'):
+            root = self.webplus_root()
+            if not root: return
+            try:
+                self.set_site(import_pageplus_file(path, root)); self.dirty = True; self.update_title()
+            except Exception as ex:
+                QMessageBox.warning(self, APP, f"Couldn't open {os.path.basename(path)}.\n\n{ex}")
+        elif low.endswith('.pdf'):
+            self.open_pdf_as_doc(path)
+
+    def open_pdf_as_doc(self, path):
+        from PySide6.QtPdf import QPdfDocument
+        from PySide6.QtCore import QSize, QByteArray, QBuffer, QIODevice
+        doc = QPdfDocument(self)
+        if doc.load(path) != QPdfDocument.Error.None_ or doc.pageCount() < 1:
+            QMessageBox.warning(self, APP, "Couldn't read that PDF."); return
+        def place(pg):
+            s = doc.pagePointSize(pg); wpx, hpx = round(s.width() * 96 / 72), round(s.height() * 96 / 72)
+            im = doc.render(pg, QSize(max(1, wpx * 2), max(1, hpx * 2)))
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); im.save(buf, 'PNG')
+            return wpx, hpx, 'data:image/png;base64,' + bytes(ba.toBase64()).decode()
+        w0, h0, uri0 = place(0)
+        site = tpl_blank(os.path.splitext(os.path.basename(path))[0], max(50, w0), max(50, h0))
+        k0 = add_asset(site, uri0); site.setdefault('assetnames', {})[k0] = 'pdf-page-1.png'
+        site['pages'][0]['objects'] = [mk('picture', 0, 0, max(50, w0), max(50, h0), src=k0, fit='stretch')]
+        for pg in range(1, doc.pageCount()):
+            w2, h2, uri = place(pg); k = add_asset(site, uri)
+            p = add_page(site, f'Page {pg + 1}'); p['height'] = max(50, h2)
+            p['objects'] = [mk('picture', 0, 0, max(50, w2), max(50, h2), src=k, fit='stretch')]
+        self.set_site(site); self.dirty = True; self.update_title()
+        self.hint(f'Imported {doc.pageCount()} page(s) from {os.path.basename(path)}.')
 
     def open_pageplus(self):
         if not self.maybe_save(): return

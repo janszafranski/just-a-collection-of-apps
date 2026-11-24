@@ -4585,7 +4585,7 @@ class StartupAssistant(QDialog):
     def __init__(self, win):
         super().__init__(win)
         self.win = win; self.result_site = None; self.result_path = None; self.result_import = False; self.result_update = False
-        self.result_webplus = None
+        self.result_webplus = None; self.result_url = None
         self.setWindowTitle(f'{APP} — Startup Assistant'); self.resize(1040, 660)
         root = QVBoxLayout(self); root.setContentsMargins(0, 0, 0, 0); root.setSpacing(0)
         # App banner across the very top of the welcome screen.
@@ -4689,10 +4689,15 @@ class StartupAssistant(QDialog):
         self.rlist.itemDoubleClicked.connect(self.open_recent)
         bh = QHBoxLayout(); ol.addLayout(bh)
         b2 = QPushButton(ticon(['document-open-folder', 'folder-open'], ''), 'Browse…'); b2.clicked.connect(self.browse); bh.addWidget(b2)
-        b3 = QPushButton(ticon(['document-import'], ''), 'Import Website Folder…'); b3.clicked.connect(self.import_site); bh.addWidget(b3)
-        b4 = QPushButton(ticon(['document-open', 'document-import'], ''), 'Open WebPlus Site…')
-        b4.setToolTip('Open a WebPlus .wpp publication as an editable site'); b4.clicked.connect(self.open_wpp)
-        bh.addWidget(b4); bh.addStretch()
+        from PySide6.QtWidgets import QToolButton as _ITB, QMenu as _IM
+        imp = _ITB(); imp.setText('Import…'); imp.setIcon(ticon(['document-import'], ''))
+        imp.setToolButtonStyle(Qt.ToolButtonTextBesideIcon); imp.setPopupMode(_ITB.InstantPopup)
+        imp.setToolTip('Import a Serif WebPlus site, a website folder, or a web page from its URL')
+        _im = _IM(imp)
+        _im.addAction('WebPlus publication (.wpp)…', self.open_wpp)
+        _im.addAction('Website folder…', self.import_site)
+        _im.addAction('Web page from a URL…', self.import_url)
+        imp.setMenu(_im); bh.addWidget(imp); bh.addStretch()
         self.stack.addWidget(op)
 
         bottom = QHBoxLayout(); root.addLayout(bottom)
@@ -4904,6 +4909,12 @@ class StartupAssistant(QDialog):
 
     def import_site(self):
         self.result_import = True; self.accept()
+
+    def import_url(self):
+        from PySide6.QtWidgets import QInputDialog
+        url, ok = QInputDialog.getText(self, 'Import web page', 'Web page address (URL):')
+        if ok and url.strip():
+            self.result_url = url.strip(); self.accept()
 
     def open_wpp(self):
         root = self.win.webplus_root()
@@ -8470,6 +8481,7 @@ class MainWindow(QMainWindow):
             if dlg.result_site: self.set_site(dlg.result_site)
             elif dlg.result_path: self.load_path(dlg.result_path)
             elif dlg.result_webplus: self.load_webplus(*dlg.result_webplus)
+            elif dlg.result_url: self.open_url_as_site(dlg.result_url)
             elif dlg.result_import: self.import_folder(skip_save_check=True)
 
     def import_text(self):
@@ -8561,6 +8573,24 @@ class MainWindow(QMainWindow):
         s = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', s)
         s = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'<i>\1</i>', s)
         return s
+
+    def open_url_as_site(self, url):
+        """Import a single web page from its URL as a new one-page site."""
+        if not re.match(r'https?://', url, re.I): url = 'https://' + url
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try: data = self._download(url)
+        finally: QApplication.restoreOverrideCursor()
+        if not data:
+            QMessageBox.warning(self, APP, 'Could not fetch that web address.\n\nCheck the link and your internet connection.'); return
+        art = parse_article(data, url)
+        site = tpl_blank(art['title'] or 'Imported page')
+        W = site['width']
+        head = mk('text', 28, 60, W - 56, 70, html=f'<h1>{esc(art["title"])}</h1>')
+        body = mk('text', 28, 150, W - 56, 500, html=art.get('body_html') or f'<p>{esc(art.get("excerpt", ""))}</p>')
+        site['pages'][0]['objects'] = [head, body]
+        site['pages'][0]['height'] = max(site['height'], 760)
+        self.set_site(site); self.dirty = True; self.update_title()
+        self.hint(f'Imported “{art["title"]}” from the web — edit and lay it out as you like.')
 
     def import_folder(self, skip_save_check=False):
         if not skip_save_check and not self.maybe_save(): return
