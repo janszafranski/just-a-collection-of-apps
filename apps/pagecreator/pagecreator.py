@@ -1057,6 +1057,13 @@ def spell():
     if _SPELL is None: _SPELL = SpellChecker()
     return _SPELL
 
+def _merge_tokens(s, rec):
+    """Replace {{field}} tokens in a string with CSV record values (unknown tokens kept)."""
+    def repl(m):
+        key = m.group(1).strip()
+        return H.escape(str(rec.get(key, ''))) if key in rec else m.group(0)
+    return re.sub(r'\{\{\s*([^}]+?)\s*\}\}', repl, s)
+
 def _replace_word_in_html(html_src, old, new):
     """Replace whole-word `old` with `new` only in text (never inside tags)."""
     out = []
@@ -5649,7 +5656,9 @@ class MainWindow(QMainWindow):
         contact_acts = [self.act(lbl, lambda _=False, fk=fld: self.insert_contact(fk), None, None)
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
-        menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'], None] + ins)
+        menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'], None] + ins + [None,
+                         self.act('Calendar…', lambda: self.calendar_wizard(), None, ['view-calendar', 'office-calendar', 'x-office-calendar']),
+                         self.act('Mail Merge…', lambda: self.mail_merge(), None, ['mail-send', 'document-send', 'mail-message-new'])])
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
@@ -8128,6 +8137,64 @@ class MainWindow(QMainWindow):
     def goto_master(self, mid):
         if self.editor: self.finish_edit()
         self.edit_master = mid; self.sel = []; self.refresh()
+
+    def calendar_wizard(self):
+        """Insert a month calendar as a table."""
+        import calendar, datetime
+        from PySide6.QtWidgets import QComboBox, QSpinBox
+        today = datetime.date.today()
+        mcb = QComboBox(); mcb.addItems([calendar.month_name[i] for i in range(1, 13)]); mcb.setCurrentIndex(today.month - 1)
+        ycb = QSpinBox(); ycb.setRange(1900, 2200); ycb.setValue(today.year)
+        start = QComboBox(); start.addItems(['Monday', 'Sunday'])
+        dlg = form_dialog(self, 'Calendar', [('Month:', mcb), ('Year:', ycb), ('Week starts on:', start)],
+                          QLabel('Inserts a month calendar as a table you can restyle and edit.'))
+        if not dlg.exec(): return
+        fwd = 0 if start.currentIndex() == 0 else 6
+        cal = calendar.Calendar(fwd); mon = mcb.currentIndex() + 1; yr = ycb.value()
+        names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+        head = names[fwd:] + names[:fwd]
+        cells = [head] + [[str(d) if d else '' for d in wk] for wk in cal.monthdayscalendar(yr, mon)]
+        c = self.view.mapToScene(self.view.viewport().rect().center())
+        t = mk('table', 0, 0, 430, 0); t['cells'] = cells
+        t['x'] = self.view.snap(max(0, c.x() - 215)); t['y'] = self.view.snap(max(0, c.y() - 120))
+        t['h'] = max(120, len(cells) * 34 + 8)
+        self.add_object(t)
+
+    def mail_merge(self):
+        """Duplicate the current page once per CSV record, replacing {{field}} tokens."""
+        import csv, copy
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose a CSV data file', '', 'CSV files (*.csv);;All files (*)')
+        if not path: return
+        try:
+            with open(path, newline='', encoding='utf-8-sig') as fh:
+                data = list(csv.DictReader(fh))
+        except Exception as e:
+            QMessageBox.warning(self, APP, f'Could not read that CSV file:\n{e}'); return
+        data = [r for r in data if any((v or '').strip() for v in r.values())]
+        if not data:
+            QMessageBox.information(self, APP, 'That CSV has no data rows.'); return
+        fields = [f for f in data[0].keys() if f]
+        if QMessageBox.question(self, 'Mail Merge',
+                f'Found {len(data)} record(s).\n\nFields you can use as {{{{tokens}}}} in text and table cells:\n  '
+                + ', '.join(fields) + '\n\nThis duplicates the CURRENT page once per record. Continue?',
+                QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+        base = self.page(); self.commit()
+        idx = self.site['pages'].index(base) + 1; first_new = None
+        for n, rec in enumerate(data):
+            label = (rec.get(fields[0], '') or f'Record {n + 1}').strip() if fields else f'Record {n + 1}'
+            np = add_page(self.site, f'{base["title"]} — {label}', level=base.get('level', 0),
+                          index=idx + n, master=base.get('master'))
+            objs = []
+            for o in base['objects']:
+                no = copy.deepcopy(o); no['id'] = uid()
+                if no.get('html'): no['html'] = _merge_tokens(no['html'], rec)
+                if no.get('cells'): no['cells'] = [[_merge_tokens(cl, rec) for cl in row] for row in no['cells']]
+                objs.append(no)
+            np['objects'] = objs
+            if first_new is None: first_new = np['id']
+        self.goto_page(first_new)
+        QMessageBox.information(self, APP, f'Created {len(data)} merged page(s). Review them before printing or exporting.')
 
     def insert_page_dialog(self):
         title = QLineEdit('New Page')
