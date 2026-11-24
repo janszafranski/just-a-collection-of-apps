@@ -14,6 +14,7 @@ log "Installing the app"
 install -Dm755 "$SELF/paint.py" "$DATA/paint/paint.py"
 install -Dm644 "$SELF/banner.png" "$DATA/paint/banner.png"
 [[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$DATA/paint/manual.html"
+[[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$DATA/paint/quickstart.html"
 log "Installing the icon"
 for sz in 32 48 64 128 256; do
   [[ -f "$SELF/icon-$sz.png" ]] && install -Dm644 "$SELF/icon-$sz.png" "$DATA/icons/hicolor/${sz}x${sz}/apps/paint.png"

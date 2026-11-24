@@ -25,6 +25,7 @@ VERSION = "1.4-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
+QUICKSTART = os.path.join(HERE, 'quickstart.html')
 
 
 def _just_dir(kind):
@@ -805,6 +806,7 @@ class Main(QMainWindow):
         fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
         fx.addAction(self.act('Outer &Glow…', lambda: self._fx_dialog('glow')))
         h = m.addMenu('&Help')
+        h.addAction(self.act('&Quick Start', self.open_quickstart))
         h.addAction(self.act('&User Guide', self.open_manual))
         h.addAction(self.act('&About', self.about))
 
@@ -997,10 +999,16 @@ class Main(QMainWindow):
             QMessageBox.warning(self, APP, "Couldn't save the image.")
 
     def open_manual(self):
+        self._open_help(MANUAL)
+
+    def open_quickstart(self):
+        self._open_help(QUICKSTART)
+
+    def _open_help(self, path):
         from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
-        if os.path.isfile(MANUAL):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(MANUAL))
+        if os.path.isfile(path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
         else:
             QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
 
