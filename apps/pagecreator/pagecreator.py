@@ -6354,6 +6354,9 @@ class MainWindow(QMainWindow):
         if types & set(self.FX_OBJ):
             btn(['tools-wizard', 'adjustlevels', 'image-adjust'], 'Effects — drop shadow & glow…', self.effects_dialog, glyph='✦')
             tb.addSeparator()
+        if objs:
+            btn(['transform-move', 'transform-scale', 'object-rotate-right'], 'Transform — exact position, size & rotation…', self.transform_dialog, glyph='⤢')
+            tb.addSeparator()
         if len(objs) == 1:
             t = o['type']
             if t == 'shape':
@@ -8219,6 +8222,31 @@ class MainWindow(QMainWindow):
             else: o.pop('glow', None)
         self.refresh()
 
+    def transform_dialog(self):
+        """Type an exact position, size and rotation for the selection."""
+        from PySide6.QtWidgets import QDoubleSpinBox
+        objs = self.sel_objs()
+        if not objs: return
+        o0 = objs[0]
+        bx = min(o['x'] for o in objs); by = min(o['y'] for o in objs)
+        def spin(val, lo, hi, suf='px'):
+            s = QDoubleSpinBox(); s.setRange(lo, hi); s.setDecimals(1); s.setSuffix(' ' + suf); s.setValue(float(val)); return s
+        sx = spin(bx, -20000, 100000); sy = spin(by, -20000, 100000)
+        sw = spin(o0['w'], 1, 100000); sh = spin(o0['h'], 1, 100000)
+        sr = spin(o0.get('rot', 0), -360, 360, '°')
+        many = len(objs) > 1
+        note = ('Position moves the whole selection; size applies to the first object; '
+                'rotation applies to each.') if many else 'Exact position, size and rotation of the object.'
+        rows = [('X (left):', sx), ('Y (top):', sy), ('Width:', sw), ('Height:', sh), ('Rotation:', sr)]
+        dlg = form_dialog(self, 'Transform', rows, QLabel(note))
+        if not dlg.exec(): return
+        self.commit()
+        dx = sx.value() - bx; dy = sy.value() - by
+        for o in objs:
+            o['x'] += dx; o['y'] += dy; o['rot'] = sr.value()
+        o0['w'] = max(1, sw.value()); o0['h'] = max(1, sh.value())
+        self.refresh()
+
     def gradient_dialog(self, kind='linear'):
         from PySide6.QtWidgets import QSpinBox
         if not isinstance(kind, str): kind = 'linear'          # guard against QAction's checked bool
@@ -8820,6 +8848,7 @@ class MainWindow(QMainWindow):
                 if o.get('grad'): m.addAction('Remove Gradient', self.remove_gradient)
             if o['type'] in self.FX_OBJ:
                 m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
+            m.addAction('Transform — Position & Size…', self.transform_dialog)
             if o['type'] in ('picture', 'shape'):
                 m.addAction('Stop Wrapping Text' if o.get('wrap') else 'Wrap Text Around This', self.toggle_wrap)
             if o['type'] == 'picture': m.addAction('Replace Picture…', lambda: self.pick_picture(o))
