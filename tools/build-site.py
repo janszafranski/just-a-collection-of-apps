@@ -359,7 +359,13 @@ def build_index(counts):
   <p class="small"><a href="{m['slug']}">Features &amp; install &rsaquo;</a></p>
 </div>""")
     hub = HUB_META
-    body = INTRO + f"""
+    callout = """
+<p class="lede" style="border:1px solid var(--line);border-left:4px solid var(--accent);
+border-radius:10px;background:var(--card);padding:16px 18px;margin:1.6em 0">
+Want the quick tour? <a href="welcome.html"><b>See the whole family &mdash; creative apps and
+desktop tools &mdash; on one page &rsaquo;</b></a>
+</p>"""
+    body = INTRO + callout + f"""
 <h2>The apps</h2>
 <div class="apps">
 {''.join(cards)}
