@@ -20,7 +20,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.1-00"
+VERSION = "1.2-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -471,6 +471,7 @@ class Main(QMainWindow):
         f.addAction(self.act('&Open SVG…', self.open_svg, QKeySequence.Open))
         f.addAction(self.act('&Save as SVG…', self.save_svg, QKeySequence.Save))
         f.addAction(self.act('&Export PNG…', self.export_png))
+        f.addAction(self.act('Edit in &PAINTcanvas…', self.edit_in_paint))
         f.addSeparator(); f.addAction(self.act('&Quit', self.close, QKeySequence.Quit))
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
@@ -482,6 +483,24 @@ class Main(QMainWindow):
         a = QAction(t, self); a.triggered.connect(slot)
         if sc: a.setShortcut(sc)
         return a
+
+    def edit_in_paint(self):
+        """Rasterise the drawing to a PNG and open it in just a… PAINTcanvas for raster
+        touch-ups. One-way: a vector drawing can't re-absorb an edited bitmap."""
+        import shutil, subprocess
+        exe = shutil.which('paint') or os.path.expanduser('~/.local/bin/paint')
+        if not os.path.exists(exe):
+            QMessageBox.information(self, APP, 'just a… PAINTcanvas isn’t installed yet.\n\n'
+                                   'Install it from the “just a… COLLECTION of apps” launcher.')
+            return
+        base = os.path.splitext(os.path.basename(self.path))[0] if self.path else 'drawing'
+        path = os.path.join(_just_dir('pics'), base + '.png')
+        if not self.canvas.export_png(path):
+            QMessageBox.warning(self, APP, 'Could not export the drawing.'); return
+        _justapps_recent('paint', path)
+        subprocess.Popen([exe, path], start_new_session=True,
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        self.statusBar().showMessage(f'Opened {os.path.basename(path)} in PAINTcanvas for raster editing.', 5000)
 
     def set_pos(self, p): self.pos_lbl.setText(f'{int(p[0])}, {int(p[1])}   ')
     def set_sw(self, v): self.canvas.sw = v; self.canvas.apply_to_sel(sw=v)
