@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... CREATORsuite"
 ORG = "justacollectionofapps"
-VERSION = "1.2-00"
+VERSION = "1.2-01"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
@@ -483,20 +483,26 @@ class Launcher(QMainWindow):
         self.selected_key = None
 
         central = QWidget(); self.setCentralWidget(central)
-        body = QHBoxLayout(central); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
+        outer = QVBoxLayout(central); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
 
-        # LEFT column — the title banner and a scrollable stack of app rows
+        # TOP — the title banner, spanning the full width over both panes
+        self.header = QLabel(); self.header.setObjectName('headerbanner'); self.header.setAlignment(Qt.AlignCenter)
+        self.header.setMinimumWidth(0)
+        self._header_pm = QPixmap(BANNER_IMG) if os.path.isfile(BANNER_IMG) else None
+        if self._header_pm is None or self._header_pm.isNull():
+            self._header_pm = None
+            self.header.setText(APP)
+            self.header.setStyleSheet('font-size:22px;font-weight:bold;padding:30px;background:#2b2f36;color:#f4f4f4;')
+        outer.addWidget(self.header)
+
+        # BODY — the apps column beside the file hub
+        body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
+        outer.addLayout(body, 1)
+
+        # LEFT column — a scrollable stack of app rows
         self.SBW = 16                                   # room for the vertical scrollbar
         leftw = QWidget(); leftw.setObjectName('leftcol'); leftw.setFixedWidth(self.BANNER_W + self.SBW)
         left = QVBoxLayout(leftw); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(0)
-        self.header = QLabel(); self.header.setAlignment(Qt.AlignCenter)
-        self._header_pm = QPixmap(BANNER_IMG) if os.path.isfile(BANNER_IMG) else None
-        if self._header_pm is None or self._header_pm.isNull():
-            self.header.setText(APP)
-            self.header.setStyleSheet('font-size:22px;font-weight:bold;padding:30px;background:#2b2f36;color:#f4f4f4;')
-        else:
-            self.header.setPixmap(self._header_pm.scaledToWidth(self.BANNER_W + self.SBW, Qt.SmoothTransformation))
-        left.addWidget(self.header)
         rowholder = QWidget()
         self.rows_layout = QVBoxLayout(rowholder)
         self.rows_layout.setContentsMargins(0, 0, 0, 0); self.rows_layout.setSpacing(0)
@@ -512,6 +518,7 @@ class Launcher(QMainWindow):
         # RIGHT — the file hub
         self.filepane = FilePane(self)
         body.addWidget(self.filepane, 1)
+        self._scale_header()
 
         help_menu = self.menuBar().addMenu('&Help')
         a_guide = QAction('&User Guide', self); a_guide.triggered.connect(self.open_manual); help_menu.addAction(a_guide)
@@ -644,9 +651,21 @@ class Launcher(QMainWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         fg = self.frameGeometry(); fg.moveCenter(screen.center()); self.move(fg.topLeft())
 
+    def _scale_header(self):
+        """Keep the banner spanning the full window width, over both panes."""
+        if getattr(self, '_header_pm', None) and not self._header_pm.isNull():
+            w = self.centralWidget().width() or self.width()
+            if w > 0:
+                self.header.setPixmap(self._header_pm.scaledToWidth(w, Qt.SmoothTransformation))
+
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        self._scale_header()
+
     def showEvent(self, e):
         super().showEvent(e)
         self._center_on_screen()
+        self._scale_header()
 
     def build_rows(self):
         for info in APPS:
