@@ -169,6 +169,25 @@ class Canvas(QWidget):
             seen.add((x, y)); self.img.setPixel(x, y, nc)
             stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
 
+    def apply_fx(self, color, blur, dx, dy, opacity, twice=False):
+        """Composite a soft drop shadow / glow of the drawing's opaque pixels behind it."""
+        self.snapshot()
+        src = self.img; W, H = src.width(), src.height()
+        # a solid-colour silhouette with the drawing's own alpha
+        sil = QImage(W, H, QImage.Format_ARGB32_Premultiplied); sil.fill(Qt.transparent)
+        q = QPainter(sil); q.drawImage(0, 0, src)
+        q.setCompositionMode(QPainter.CompositionMode_SourceIn); q.fillRect(sil.rect(), QColor(color)); q.end()
+        if blur > 0:
+            f = max(2, int(round(blur / 1.5)))
+            sm = sil.scaled(max(1, W // f), max(1, H // f), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+            sil = sm.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        out = QImage(W, H, QImage.Format_ARGB32); out.fill(Qt.transparent)
+        q = QPainter(out); q.setOpacity(opacity / 100.0)
+        q.drawImage(QPointF(dx, dy), sil)
+        if twice: q.drawImage(QPointF(dx, dy), sil)
+        q.setOpacity(1.0); q.drawImage(0, 0, src); q.end()
+        self.img = out; self._fit()
+
     def new_image(self, w, h, bg):
         self.snapshot(); self.img = QImage(w, h, QImage.Format_ARGB32); self.img.fill(bg); self._fit()
 
@@ -228,6 +247,9 @@ class Main(QMainWindow):
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
+        fx = m.addMenu('Effe&cts')
+        fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
+        fx.addAction(self.act('Outer &Glow…', lambda: self._fx_dialog('glow')))
         h = m.addMenu('&Help')
         h.addAction(self.act('&User Guide', self.open_manual))
         h.addAction(self.act('&About', self.about))
@@ -250,6 +272,35 @@ class Main(QMainWindow):
         c = QColorDialog.getColor(self.canvas.color, self, 'Colour')
         if c.isValid(): self.set_color(c)
 
+    def _fx_dialog(self, kind):
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        glow = kind == 'glow'
+        dlg = QDialog(self); dlg.setWindowTitle('Outer Glow' if glow else 'Drop Shadow'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        dx = QSpinBox(); dx.setRange(-300, 300); dx.setSuffix(' px'); dx.setValue(8)
+        dy = QSpinBox(); dy.setRange(-300, 300); dy.setSuffix(' px'); dy.setValue(8)
+        bl = QSpinBox(); bl.setRange(0, 150); bl.setSuffix(' px'); bl.setValue(18 if glow else 10)
+        op = QSpinBox(); op.setRange(0, 100); op.setSuffix(' %'); op.setValue(75 if glow else 55)
+        col = ['#ffd54a' if glow else '#000000']; cb = QPushButton('Colour')
+        def tint():
+            c = QColor(col[0]); cb.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"}')
+        def pick():
+            c = QColorDialog.getColor(QColor(col[0]), self, 'Colour')
+            if c.isValid(): col[0] = c.name(); tint()
+        cb.clicked.connect(pick); tint()
+        rows = ([('Blur:', bl), ('Strength:', op), ('Colour:', cb)] if glow
+                else [('Offset across:', dx), ('Offset down:', dy), ('Blur:', bl), ('Strength:', op), ('Colour:', cb)])
+        for lbl, w in rows: form.addRow(lbl, w)
+        note = QLabel('Adds a soft ' + ('glow around' if glow else 'shadow behind') + ' everything you have drawn. '
+                      'It shows through transparent areas, so start from a transparent background (File ▸ New ▸ '
+                      'Transparent) or erase the backdrop first.')
+        note.setWordWrap(True); lay.addWidget(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        if glow: self.canvas.apply_fx(col[0], bl.value(), 0, 0, op.value(), twice=True)
+        else: self.canvas.apply_fx(col[0], bl.value(), dx.value(), dy.value(), op.value())
+
     def update_title(self):
         self.setWindowTitle(f'{os.path.basename(self.path) if self.path else "Untitled"} — {APP}')
 
@@ -261,17 +312,21 @@ class Main(QMainWindow):
                ('A4 @150dpi (1240 × 1754)', 1240, 1754), ('1080 × 1080 (social)', 1080, 1080)]
         for n, _, _ in PRE: preset.addItem(n)
         v.addWidget(QLabel('Size:')); v.addWidget(preset)
+        from PySide6.QtWidgets import QCheckBox
         bg = [QColor('#ffffff')]
-        bgb = QPushButton('Background: white');
+        bgb = QPushButton('Background: white')
         def pb():
-            c = QColorDialog.getColor(bg[0], dlg, 'Background');
-            if c.isValid(): bg[0] = c; bgb.setText(f'Background: {c.name()}')
+            c = QColorDialog.getColor(bg[0], dlg, 'Background')
+            if c.isValid(): bg[0] = c; bgb.setText(f'Background: {c.name()}'); trans.setChecked(False)
         bgb.clicked.connect(pb); v.addWidget(bgb)
+        trans = QCheckBox('Transparent background (for shadows, logos and cut-outs)')
+        trans.toggled.connect(lambda on: bgb.setEnabled(not on)); v.addWidget(trans)
         row = QHBoxLayout(); ok = QPushButton('Create'); cancel = QPushButton('Cancel')
         ok.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject); row.addWidget(cancel); row.addWidget(ok); v.addLayout(row)
         if dlg.exec():
             _, w, h = PRE[preset.currentIndex()]
-            self.canvas.new_image(w, h, bg[0]); self.path = None; self.update_title()
+            self.canvas.new_image(w, h, Qt.transparent if trans.isChecked() else bg[0])
+            self.path = None; self.update_title()
 
     def open(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open image', os.path.expanduser('~'),
