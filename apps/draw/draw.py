@@ -20,10 +20,11 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.2-01"
+VERSION = "1.2-02"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
+QUICKSTART = os.path.join(HERE, 'quickstart.html')
 
 
 def _just_dir(kind):
@@ -477,7 +478,8 @@ class Main(QMainWindow):
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
         h = m.addMenu('&Help')
-        h.addAction(self.act('&User Guide', self.open_manual)); h.addAction(self.act('&About', self.about))
+        h.addAction(self.act('&User Guide', self.open_manual)); h.addAction(self.act('&Quick Start Guide', self.open_quickstart))
+        h.addSeparator(); h.addAction(self.act('&About', self.about))
 
     def act(self, t, slot, sc=None):
         a = QAction(t, self); a.triggered.connect(slot)
@@ -570,11 +572,11 @@ class Main(QMainWindow):
         else:
             QMessageBox.warning(self, APP, 'Could not open that drawing.')
 
-    def open_manual(self):
+    def _open_doc(self, path):
         # xdg-open honours the user's browser default and works on Wayland, where
         # QDesktopServices.openUrl silently fails. Qt is only the last resort.
         import shutil, subprocess
-        target = MANUAL if os.path.isfile(MANUAL) else 'https://janszafranski.github.io/just-a-collection-of-apps/'
+        target = path if os.path.isfile(path) else 'https://janszafranski.github.io/just-a-collection-of-apps/'
         opener = shutil.which('xdg-open')
         if opener:
             try:
@@ -586,6 +588,12 @@ class Main(QMainWindow):
         from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
         QDesktopServices.openUrl(QUrl.fromLocalFile(target) if os.path.isfile(target) else QUrl(target))
+
+    def open_manual(self):
+        self._open_doc(MANUAL)
+
+    def open_quickstart(self):
+        self._open_doc(QUICKSTART)
 
     def about(self):
         QMessageBox.about(self, f'About {APP}', f'<b>{APP}</b><br>Version {VERSION}<br><br>A tiny vector '
