@@ -55,6 +55,7 @@ fi
 
 log "Installing the app"
 install -Dm755 "$SELF/pagecreator.py" "$APPDIR/pagecreator.py"
+install -Dm644 "$SELF/page_templates.py" "$APPDIR/page_templates.py"
 install -Dm644 "$SELF/banner.png" "$APPDIR/banner.png"
 [[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$APPDIR/manual.html"
 [[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$APPDIR/quickstart.html"

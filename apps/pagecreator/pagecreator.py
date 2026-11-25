@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.15-02"
+VERSION = "1.16-00"
 
 
 def _just_dir(kind):
@@ -5579,7 +5579,8 @@ class StartupAssistant(QDialog):
 
         top = QHBoxLayout(); root.addLayout(top, 1)
         self.nav = QListWidget(); self.nav.setFixedWidth(170); self.nav.setIconSize(QSize(28, 28)); self.nav.setSpacing(4)
-        for icon, text in ((ticon(['document-new'], '+'), 'New Publication'),
+        for icon, text in ((ticon(['bookmark-new', 'view-preview', 'document-new'], '✦'), 'Design Templates'),
+                           (ticon(['document-new'], '+'), 'New Publication'),
                            (ticon(['document-open'], '↥'), 'Open')):
             self.nav.addItem(QListWidgetItem(icon, text))
         top.addWidget(self.nav)
@@ -5630,6 +5631,9 @@ class StartupAssistant(QDialog):
         bh.addStretch()
         self.stack.addWidget(op)
 
+        # --- Design Templates: a gallery of ready-made layouts (put first) -----
+        self.stack.insertWidget(0, self._templates_page(win))
+
         bottom = QHBoxLayout(); root.addLayout(bottom)
         imp = QPushButton(ticon(['document-import', 'document-open'], ''), 'Import…')
         imp.setToolTip('Import a Serif PagePlus (.ppp) publication or a PDF document'); imp.clicked.connect(self.do_import)
@@ -5659,6 +5663,68 @@ class StartupAssistant(QDialog):
             p.drawLine(QPointF(x + 5, yy), QPointF(x + w - 5, yy)); yy += 5
         p.end()
         return QIcon(pm)
+
+    def _load_templates(self):
+        try:
+            import importlib.util as _I
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'page_templates.py')
+            spec = _I.spec_from_file_location('page_templates', p)
+            mod = _I.module_from_spec(spec); spec.loader.exec_module(mod)
+            return mod.TEMPLATES()
+        except Exception:
+            return []
+
+    def _tpl_thumb(self, tpl, w=150):
+        from PySide6.QtGui import QImage, QPainter, QPixmap
+        pw, ph = tpl['w'], tpl['h']
+        scale = w / pw
+        img = QImage(max(1, int(pw * scale)), max(1, int(ph * scale)), QImage.Format_RGB32)
+        img.fill(Qt.white)
+        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.TextAntialiasing)
+        p.scale(scale, scale)
+        for (ty, x, y, ww, hh, props) in tpl['objs']:
+            o = mk(ty, x, y, ww, hh, **props)
+            p.save(); p.translate(x, y)
+            try: paint_obj(p, o, None, None, edit=False)
+            except Exception: pass
+            p.restore()
+        p.setPen(QPen(QColor('#d6dde2'), 1)); p.setBrush(Qt.NoBrush)
+        p.drawRect(QRectF(0.5, 0.5, pw - 1, ph - 1))
+        p.end()
+        return QPixmap.fromImage(img)
+
+    def _templates_page(self, win):
+        from PySide6.QtWidgets import QScrollArea, QGridLayout, QToolButton
+        tpls = self._load_templates()
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame)
+        inner = QWidget(); area.setWidget(inner); vl = QVBoxLayout(inner)
+        if not tpls:
+            vl.addWidget(QLabel('Design templates are unavailable (page_templates.py not found).'))
+            return area
+        vl.addWidget(QLabel('<b>Start from a design</b> — pick a template, then replace the placeholder '
+                            'text and pictures with your own, and print or export a PDF.'))
+        cats = {}
+        for t in tpls:
+            cats.setdefault(t['cat'], []).append(t)
+        for cat in sorted(cats):
+            lab = QLabel(cat); lab.setStyleSheet('font-weight:600;margin-top:12px;color:#2a7d6b'); vl.addWidget(lab)
+            grid = QGridLayout(); grid.setSpacing(12); grid.setColumnStretch(4, 1); vl.addLayout(grid)
+            for i, t in enumerate(cats[cat]):
+                b = QToolButton(); b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                pm = self._tpl_thumb(t, 150)
+                b.setIcon(pm); b.setIconSize(pm.size())
+                b.setText(t['name']); b.setCursor(Qt.PointingHandCursor); b.setAutoRaise(True)
+                b.setFixedWidth(178); b.setToolTip(f'Create a {t["name"].lower()} from this template')
+                b.clicked.connect(lambda _=0, tt=t: self.make_from_template(tt))
+                grid.addWidget(b, i // 4, i % 4, Qt.AlignLeft | Qt.AlignTop)
+        vl.addStretch()
+        return area
+
+    def make_from_template(self, tpl):
+        s = tpl_blank(tpl['name'], tpl['w'], tpl['h'])
+        s['pages'][0]['title'] = tpl['name']
+        s['pages'][0]['objects'] = [mk(ty, x, y, w, h, **props) for (ty, x, y, w, h, props) in tpl['objs']]
+        self.result_site = s; self.accept()
 
     def make_doc(self, name, wmm, hmm, pages):
         to_px = lambda m: int(round(m / 25.4 * 96))
