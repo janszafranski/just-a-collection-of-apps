@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.15-00"
+VERSION = "1.15-01"
 
 
 def _just_dir(kind):
@@ -6104,6 +6104,7 @@ class MainWindow(QMainWindow):
         menu('&Arrange', [a['front'], a['fwd'], a['back1'], a['back'], None, ('Align', al), None, self.a['lock'], None, self.a['tomaster']])
         # Export to PDF sits on the menu bar as a clickable item (text, no icon).
         mb.addAction(self.act('Export PDF…', self.export_pdf, 'Ctrl+E', None))
+        mb.addAction(self.act('Export eBook…', self.export_ebook, None, None))
         self.a['seo_page'] = self.act('&This Page’s SEO…', self.seo_dialog, None, ['text-html', 'find', 'edit-find'])
         self.a['seo_page'].setToolTip('Search-engine title, description, focus keyword and social preview for this page')
         self.a['seo_site'] = self.act('&Site-wide SEO…', self.site_seo_dialog, None, ['configure', 'preferences-system'])
@@ -10423,6 +10424,73 @@ class MainWindow(QMainWindow):
         finally:
             painter.end()
         self.hint(f'Sent {len(pages)} page(s) to the printer.')
+
+    def export_ebook(self):
+        """Export the document's text as a reflowable EPUB eBook (PagePlus-style)."""
+        import zipfile, html as _html, re, uuid as _uuid
+        start = os.path.splitext(self.path or self.site.get('name') or 'document')[0] + '.epub'
+        path, _ = QFileDialog.getSaveFileName(self, 'Export eBook', start, 'EPUB eBooks (*.epub)')
+        if not path: return
+        if not path.lower().endswith('.epub'): path += '.epub'
+        title = os.path.splitext(os.path.basename(path))[0] or 'Document'
+        chapters = []
+        for pi, pg in enumerate(self.site['pages'], 1):
+            objs = [o for o in pg.get('objects', []) if o.get('type') in ('text', 'artistic') and not o.get('hidden')]
+            objs.sort(key=lambda o: (round(o.get('y', 0)), round(o.get('x', 0))))
+            body = []
+            for o in objs:
+                h = (o.get('html') or '').strip()
+                if not h: continue
+                if o['type'] == 'artistic':
+                    txt = re.sub('<[^>]+>', '', h).strip()
+                    if txt: body.append('<h2>' + _html.escape(txt) + '</h2>')
+                else:
+                    body.append(h)
+            if body:
+                chapters.append((pg.get('title') or f'Page {pi}', '\n'.join(body)))
+        if not chapters:
+            QMessageBox.information(self, APP, 'No text to export — an eBook is built from the text on your pages.'); return
+
+        def xhtml(ttl, inner):
+            return ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+                    '<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en">\n'
+                    f'<head><meta charset="utf-8"/><title>{_html.escape(ttl)}</title>'
+                    '<link rel="stylesheet" href="style.css"/></head>\n'
+                    f'<body>{inner}</body>\n</html>\n')
+        man, spine, nav = [], [], []
+        files = {}
+        for i, (ttl, inner) in enumerate(chapters, 1):
+            fn = f'chap{i}.xhtml'; files['OEBPS/' + fn] = xhtml(ttl, inner)
+            man.append(f'<item id="c{i}" href="{fn}" media-type="application/xhtml+xml"/>')
+            spine.append(f'<itemref idref="c{i}"/>')
+            nav.append(f'<li><a href="{fn}">{_html.escape(ttl)}</a></li>')
+        files['OEBPS/style.css'] = ('body{font-family:Georgia,serif;line-height:1.6;margin:1.2em;}'
+                                    'h1,h2{font-family:sans-serif;} img{max-width:100%;}')
+        files['OEBPS/nav.xhtml'] = ('<?xml version="1.0" encoding="utf-8"?>\n<!DOCTYPE html>\n'
+            '<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" xml:lang="en">\n'
+            '<head><meta charset="utf-8"/><title>Contents</title></head>\n<body>'
+            '<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>' + ''.join(nav) + '</ol></nav></body></html>\n')
+        files['OEBPS/content.opf'] = ('<?xml version="1.0" encoding="utf-8"?>\n'
+            '<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="bookid">\n'
+            '<metadata xmlns:dc="http://purl.org/dc/elements/1.1/">'
+            f'<dc:identifier id="bookid">urn:uuid:{_uuid.uuid4()}</dc:identifier>'
+            f'<dc:title>{_html.escape(title)}</dc:title><dc:language>en</dc:language>'
+            '<meta property="dcterms:modified">2026-01-01T00:00:00Z</meta></metadata>\n'
+            '<manifest><item id="nav" href="nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>'
+            '<item id="css" href="style.css" media-type="text/css"/>' + ''.join(man) + '</manifest>\n'
+            '<spine>' + ''.join(spine) + '</spine>\n</package>\n')
+        files['META-INF/container.xml'] = ('<?xml version="1.0" encoding="utf-8"?>\n'
+            '<container version="1.0" xmlns="urn:oasis:names:tc:opendocument:xmlns:container">'
+            '<rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/>'
+            '</rootfiles></container>\n')
+        try:
+            with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+                z.writestr('mimetype', 'application/epub+zip', compress_type=zipfile.ZIP_STORED)
+                for name, data in files.items():
+                    z.writestr(name, data)
+        except Exception as e:
+            QMessageBox.warning(self, APP, f'Could not write the eBook:\n{e}'); return
+        self.hint(f'Exported eBook: {os.path.basename(path)} ({len(chapters)} chapter' + ('' if len(chapters) == 1 else 's') + ').')
 
     def export_pdf(self):
         """Export to a vector PDF (one page per document page), with optional bleed

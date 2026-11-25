@@ -619,7 +619,12 @@ number of copies, and print.</p>"""),
 <p><b>Export PDF…</b> (Ctrl+E) writes a <b>vector PDF</b> — the standard way to send a document to a
 print shop or to share online. Because the output is vector, text and shapes stay razor-sharp at any
 size, and you can include <b>bleed and crop marks</b> for professional printing.</p>
-{figure(IM['sample'], 'The finished newsletter, ready to export as a crisp vector PDF.')}""")]))
+{figure(IM['sample'], 'The finished newsletter, ready to export as a crisp vector PDF.')}"""),
+      ("Exporting an eBook", """
+<p><b>Export eBook…</b> writes a reflowable <b>EPUB</b> from the text on your pages — each page becomes
+a chapter, with a contents list, ready to read on a phone, tablet or e-reader. Where the PDF preserves
+your exact layout, the eBook lets the reader’s device choose the type size and flow the words to fit
+its screen.</p>""")]))
 
     C.append(("Keyboard Shortcuts and Reference", "<p class='lede'>A quick reference to the "
       "shortcuts and menus you will reach for most.</p>", [
