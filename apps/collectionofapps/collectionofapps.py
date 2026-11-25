@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... CREATORsuite"
 ORG = "justacollectionofapps"
-VERSION = "1.3-00"
+VERSION = "1.3-01"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
@@ -484,7 +484,6 @@ class Launcher(QMainWindow):
 
         # A centred, frameless popup dialog rather than an ordinary window.
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
         central = QWidget(); central.setObjectName('popuproot'); self.setCentralWidget(central)
         outer = QVBoxLayout(central); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
 
@@ -502,20 +501,13 @@ class Launcher(QMainWindow):
         body = QHBoxLayout(); body.setContentsMargins(0, 0, 0, 0); body.setSpacing(0)
         outer.addLayout(body, 1)
 
-        # LEFT column — a scrollable stack of app rows
-        self.SBW = 16                                   # room for the vertical scrollbar
-        leftw = QWidget(); leftw.setObjectName('leftcol'); leftw.setFixedWidth(self.BANNER_W + self.SBW)
+        # LEFT column — every app row, no scroll
+        leftw = QWidget(); leftw.setObjectName('leftcol'); leftw.setFixedWidth(self.BANNER_W)
         left = QVBoxLayout(leftw); left.setContentsMargins(0, 0, 0, 0); left.setSpacing(0)
-        rowholder = QWidget()
-        self.rows_layout = QVBoxLayout(rowholder)
-        self.rows_layout.setContentsMargins(0, 0, 0, 0); self.rows_layout.setSpacing(0)
         self.rows = []
+        self.rows_layout = left
         self.build_rows()
-        self.rows_layout.addStretch(1)
-        rowscroll = QScrollArea(); rowscroll.setWidget(rowholder); rowscroll.setWidgetResizable(True)
-        rowscroll.setObjectName('rowscroll'); rowscroll.setFrameShape(QFrame.NoFrame)
-        rowscroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        left.addWidget(rowscroll, 1)
+        left.addStretch(1)
         body.addWidget(leftw)
 
         # RIGHT — the file hub
@@ -538,14 +530,13 @@ class Launcher(QMainWindow):
 
         self.setStyleSheet('''
             QMainWindow { background: transparent; }
-            #popuproot { background: #1c1f24; border: 1px solid #343b44; border-radius: 16px; }
+            #popuproot { background: #1c1f24; border: 1px solid #343b44; }
             #winbtn, #closebtn { background: rgba(18,21,26,.55); color: #e8eaec; border: none;
                 border-radius: 14px; font-size: 15px; font-weight: 700; }
             #winbtn:hover { background: rgba(70,80,92,.95); }
             #closebtn:hover { background: rgba(192,57,43,.95); color: #ffffff; }
             #winbtn::menu-indicator, #closebtn::menu-indicator { image: none; width: 0; }
-            #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; border-bottom-left-radius: 16px; }
-            #rowscroll { background: transparent; border: none; }
+            #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; }
             #approw { background: transparent; }
             #appdesc { color: #c7ccd2; font-size: 12px; padding: 9px 14px 13px 14px; background: #22262c; }
             #updatebtn { padding: 7px 14px; border-radius: 8px; font-weight: 600; font-size: 12px;
@@ -556,7 +547,7 @@ class Launcher(QMainWindow):
                 background: #2a7d6b; color: #ffffff; border: 1px solid rgba(255,255,255,.25); }
             #installbtn:hover { background: #329181; }
             #installbtn:disabled { background: #8a8f96; color: #e8e8e8; }
-            #filepane { background: #191c21; border-bottom-right-radius: 16px; }
+            #filepane { background: #191c21; }
             #panetitle { color: #f0f2f4; font-size: 18px; font-weight: 700; }
             #panesub { color: #8b929b; font-size: 12px; }
             QToolButton#section { color: #cfd4da; font-size: 13px; font-weight: 600; border: none;
@@ -670,25 +661,23 @@ class Launcher(QMainWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         fg = self.frameGeometry(); fg.moveCenter(screen.center()); self.move(fg.topLeft())
 
-    def _round_top(self, pm, r):
-        """Round the top corners of the banner to match the popup's rounded frame."""
-        from PySide6.QtGui import QPainterPath
-        out = QPixmap(pm.size()); out.fill(Qt.transparent)
-        p = QPainter(out); p.setRenderHint(QPainter.Antialiasing)
-        w, h = pm.width(), pm.height()
-        path = QPainterPath()
-        path.moveTo(0, h); path.lineTo(0, r); path.quadTo(0, 0, r, 0)
-        path.lineTo(w - r, 0); path.quadTo(w, 0, w, r); path.lineTo(w, h); path.closeSubpath()
-        p.setClipPath(path); p.drawPixmap(0, 0, pm); p.end()
-        return out
-
     def _scale_header(self):
         """Keep the banner spanning the full window width, over both panes."""
         if getattr(self, '_header_pm', None) and not self._header_pm.isNull():
             w = self.centralWidget().width() or self.width()
             if w > 0:
-                pm = self._header_pm.scaledToWidth(w, Qt.SmoothTransformation)
-                self.header.setPixmap(self._round_top(pm, 16))
+                self.header.setPixmap(self._header_pm.scaledToWidth(w, Qt.SmoothTransformation))
+
+    def _fit_height(self):
+        """Size the popup so every app row shows at once — no scrolling."""
+        if not getattr(self, 'rows', None):
+            return
+        screen = QApplication.primaryScreen().availableGeometry()
+        rows_h = sum(r.sizeHint().height() for r in self.rows)
+        need = self.header.height() + rows_h + 2
+        h = max(360, min(need, int(screen.height() * 0.96)))
+        if h != self.height():
+            self.setFixedSize(self.width(), h)
 
     def _position_winbtns(self):
         if not hasattr(self, 'close_btn'):
@@ -705,8 +694,9 @@ class Launcher(QMainWindow):
 
     def showEvent(self, e):
         super().showEvent(e)
-        self._center_on_screen()
         self._scale_header()
+        self._fit_height()
+        self._center_on_screen()
         self._position_winbtns()
 
     def mousePressEvent(self, e):
