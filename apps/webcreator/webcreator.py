@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.14-01"
+VERSION = "1.14-02"
 
 
 def _just_dir(kind):
@@ -6882,19 +6882,56 @@ class MainWindow(QMainWindow):
                                'Install it from the “just a… CREATORsuite” launcher.')
 
     def open_manual(self):
-        """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
-        if os.path.isfile(MANUAL_GUIDE):
-            open_external(MANUAL_GUIDE, is_file=True)
-        else:
-            open_external('https://janszafranski.github.io/just-a-collection-of-apps/')
+        """Open the full User Guide in an in-app window."""
+        _p = MANUAL_GUIDE
+        if os.path.isfile(_p):
+            try:
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+                from PySide6.QtWidgets import QDialog, QVBoxLayout
+                from PySide6.QtCore import QUrl as _U, Qt as _Qt
+                _dlg = QDialog(self); _dlg.setWindowTitle('just a... WEBcreator — User Guide'); _dlg.setWindowFlag(_Qt.Window, True); _dlg.resize(920, 840)
+                _lay = QVBoxLayout(_dlg); _lay.setContentsMargins(0, 0, 0, 0)
+                _v = QWebEngineView(_dlg); _lay.addWidget(_v); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                _dlg.show(); self._doc_wins = getattr(self, "_doc_wins", []) + [_dlg]; return
+            except Exception:
+                pass
+        import shutil as _sh, subprocess as _sp
+        _t = _p if os.path.isfile(_p) else "https://janszafranski.github.io/just-a-collection-of-apps/"
+        _op = _sh.which("xdg-open")
+        if _op:
+            try:
+                _sp.Popen([_op, _t], start_new_session=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL); return
+            except Exception:
+                pass
+        from PySide6.QtGui import QDesktopServices as _QDS
+        from PySide6.QtCore import QUrl as _U2
+        _QDS.openUrl(_U2.fromLocalFile(_t) if os.path.isfile(_t) else _U2(_t))
 
     def open_quickstart(self):
-        """Open the Quick Start Guide — the bundled HTML in the browser, or the
-        GitHub-hosted copy if the local file isn't installed beside the app."""
-        if os.path.isfile(QUICKSTART_GUIDE):
-            open_external(QUICKSTART_GUIDE, is_file=True)
-        else:
-            open_external('https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html#quickstart')
+        """Open the Quick Start Guide in an in-app window."""
+        _p = QUICKSTART_GUIDE
+        if os.path.isfile(_p):
+            try:
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+                from PySide6.QtWidgets import QDialog, QVBoxLayout
+                from PySide6.QtCore import QUrl as _U, Qt as _Qt
+                _dlg = QDialog(self); _dlg.setWindowTitle('just a... WEBcreator — Quick Start'); _dlg.setWindowFlag(_Qt.Window, True); _dlg.resize(920, 840)
+                _lay = QVBoxLayout(_dlg); _lay.setContentsMargins(0, 0, 0, 0)
+                _v = QWebEngineView(_dlg); _lay.addWidget(_v); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                _dlg.show(); self._doc_wins = getattr(self, "_doc_wins", []) + [_dlg]; return
+            except Exception:
+                pass
+        import shutil as _sh, subprocess as _sp
+        _t = _p if os.path.isfile(_p) else "https://janszafranski.github.io/just-a-collection-of-apps/"
+        _op = _sh.which("xdg-open")
+        if _op:
+            try:
+                _sp.Popen([_op, _t], start_new_session=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL); return
+            except Exception:
+                pass
+        from PySide6.QtGui import QDesktopServices as _QDS
+        from PySide6.QtCore import QUrl as _U2
+        _QDS.openUrl(_U2.fromLocalFile(_t) if os.path.isfile(_t) else _U2(_t))
 
     def insert_coffee_button(self):
         """Toolbar one-click: drop a 'Buy me a coffee' button, coloured to match the

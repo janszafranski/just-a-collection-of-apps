@@ -20,7 +20,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.2-02"
+VERSION = "1.2-03"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -573,21 +573,30 @@ class Main(QMainWindow):
             QMessageBox.warning(self, APP, 'Could not open that drawing.')
 
     def _open_doc(self, path):
-        # xdg-open honours the user's browser default and works on Wayland, where
-        # QDesktopServices.openUrl silently fails. Qt is only the last resort.
-        import shutil, subprocess
-        target = path if os.path.isfile(path) else 'https://janszafranski.github.io/just-a-collection-of-apps/'
-        opener = shutil.which('xdg-open')
-        if opener:
+        """Open a bundled HTML guide in an in-app window (falls back to the browser)."""
+        _p = path
+        if os.path.isfile(_p):
             try:
-                subprocess.Popen([opener, target], start_new_session=True,
-                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                return
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+                from PySide6.QtWidgets import QDialog, QVBoxLayout
+                from PySide6.QtCore import QUrl as _U, Qt as _Qt
+                _dlg = QDialog(self); _dlg.setWindowTitle('just a... DRAWmaster — Help'); _dlg.setWindowFlag(_Qt.Window, True); _dlg.resize(920, 840)
+                _lay = QVBoxLayout(_dlg); _lay.setContentsMargins(0, 0, 0, 0)
+                _v = QWebEngineView(_dlg); _lay.addWidget(_v); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                _dlg.show(); self._doc_wins = getattr(self, "_doc_wins", []) + [_dlg]; return
             except Exception:
                 pass
-        from PySide6.QtGui import QDesktopServices
-        from PySide6.QtCore import QUrl
-        QDesktopServices.openUrl(QUrl.fromLocalFile(target) if os.path.isfile(target) else QUrl(target))
+        import shutil as _sh, subprocess as _sp
+        _t = _p if os.path.isfile(_p) else "https://janszafranski.github.io/just-a-collection-of-apps/"
+        _op = _sh.which("xdg-open")
+        if _op:
+            try:
+                _sp.Popen([_op, _t], start_new_session=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL); return
+            except Exception:
+                pass
+        from PySide6.QtGui import QDesktopServices as _QDS
+        from PySide6.QtCore import QUrl as _U2
+        _QDS.openUrl(_U2.fromLocalFile(_t) if os.path.isfile(_t) else _U2(_t))
 
     def open_manual(self):
         self._open_doc(MANUAL)

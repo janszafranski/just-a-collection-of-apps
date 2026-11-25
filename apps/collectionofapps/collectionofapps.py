@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... CREATORsuite"
 ORG = "justacollectionofapps"
-VERSION = "1.3-01"
+VERSION = "1.3-02"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
@@ -596,10 +596,30 @@ class Launcher(QMainWindow):
         self.run_cmd(app, [path])
 
     def open_manual(self):
-        if os.path.isfile(MANUAL):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(MANUAL))
-        else:
-            QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
+        """Open the User Guide in an in-app window (falls back to the browser)."""
+        _p = MANUAL
+        if os.path.isfile(_p):
+            try:
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+                from PySide6.QtWidgets import QDialog, QVBoxLayout
+                from PySide6.QtCore import QUrl as _U, Qt as _Qt
+                _dlg = QDialog(self); _dlg.setWindowTitle('just a... CREATORsuite — User Guide'); _dlg.setWindowFlag(_Qt.Window, True); _dlg.resize(920, 840)
+                _lay = QVBoxLayout(_dlg); _lay.setContentsMargins(0, 0, 0, 0)
+                _v = QWebEngineView(_dlg); _lay.addWidget(_v); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                _dlg.show(); self._doc_wins = getattr(self, "_doc_wins", []) + [_dlg]; return
+            except Exception:
+                pass
+        import shutil as _sh, subprocess as _sp
+        _t = _p if os.path.isfile(_p) else "https://janszafranski.github.io/just-a-collection-of-apps/"
+        _op = _sh.which("xdg-open")
+        if _op:
+            try:
+                _sp.Popen([_op, _t], start_new_session=True, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL); return
+            except Exception:
+                pass
+        from PySide6.QtGui import QDesktopServices as _QDS
+        from PySide6.QtCore import QUrl as _U2
+        _QDS.openUrl(_U2.fromLocalFile(_t) if os.path.isfile(_t) else _U2(_t))
 
     def about(self):
         from PySide6.QtWidgets import QMessageBox
