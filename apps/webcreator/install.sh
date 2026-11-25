@@ -15,19 +15,35 @@ APPS="$DATA/applications"
 MIME="$DATA/mime"
 
 command -v python3 >/dev/null 2>&1 || die "python3 not found."
-python3 -c 'import PySide6' 2>/dev/null \
-  || die "Needs PySide6 — the distro package, not pip, so the app follows your desktop theme:
-     Arch/CachyOS:  sudo pacman -S --needed pyside6
-     Debian/Ubuntu/Mint:  sudo apt install python3-pyside6.qtwidgets python3-pyside6.qtwebenginewidgets
-     Fedora:  sudo dnf install python3-pyside6
-     openSUSE:  sudo zypper install python3-PySide6"
-python3 -c 'import bs4' 2>/dev/null \
-  || warn "File ▸ Import Website Folder… needs BeautifulSoup:
-     Arch/CachyOS:  sudo pacman -S --needed python-beautifulsoup4
-     Debian/Ubuntu/Mint:  sudo apt install python3-bs4
-     Fedora/openSUSE:  sudo dnf install python3-beautifulsoup4  (zypper on openSUSE)"
-python3 -c 'import PySide6.QtWebEngineWidgets' 2>/dev/null \
-  || warn "Imported pages match the original layout only with qt6-webengine installed; without it they reflow."
+APPDIR="$DATA/webcreator"
+PYRUN="python3"
+VENV="$APPDIR/venv"
+if python3 -c 'import PySide6' 2>/dev/null; then
+  log "Found PySide6 — using your system Python."
+elif [[ -x "$VENV/bin/python" ]] && "$VENV/bin/python" -c 'import PySide6' 2>/dev/null; then
+  log "Using the private environment already set up for this app."
+  PYRUN="$VENV/bin/python"
+else
+  log "PySide6 isn't installed on this system — setting up a private environment for the app."
+  log "(a one-off download of ~150 MB; needs an internet connection)"
+  if ! python3 -m venv --help >/dev/null 2>&1; then
+    die "Python's 'venv' module is missing. Install it, then re-run this installer:
+     Mint / Ubuntu / Debian:  sudo apt install python3-venv python3-pip
+     Fedora:                  sudo dnf install python3-pip"
+  fi
+  rm -rf "$VENV"
+  python3 -m venv "$VENV" || die "Could not create a Python environment at $VENV"
+  "$VENV/bin/python" -m pip install --upgrade pip >/dev/null 2>&1 || true
+  log "Downloading PySide6 (this can take a minute)…"
+  if ! "$VENV/bin/python" -m pip install PySide6 beautifulsoup4; then
+    rm -rf "$VENV"
+    die "Could not download with pip. Check your internet and try again, or install from your
+distro and re-run:  apt install python3-pyside6.qtwidgets  /  dnf install python3-pyside6  /  pacman -S pyside6"
+  fi
+  "$VENV/bin/python" -c 'import PySide6' 2>/dev/null || die "PySide6 still won't import after install."
+  PYRUN="$VENV/bin/python"
+  log "Private environment ready."
+fi
 
 log "Installing the app"
 install -Dm755 "$SELF/webcreator.py" "$DATA/webcreator/webcreator.py"
@@ -50,9 +66,9 @@ command -v gtk-update-icon-cache >/dev/null && gtk-update-icon-cache -q -t -f "$
 
 log "Installing the launcher"
 install -d "$BIN"
-cat > "$BIN/webcreator" <<'LAUNCH'
+cat > "$BIN/webcreator" <<LAUNCH
 #!/usr/bin/env bash
-exec python3 "${XDG_DATA_HOME:-$HOME/.local/share}/webcreator/webcreator.py" "$@"
+exec "$PYRUN" "$APPDIR/webcreator.py" "\$@"
 LAUNCH
 chmod 755 "$BIN/webcreator"
 
