@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... CREATORsuite"
 ORG = "justacollectionofapps"
-VERSION = "1.2-01"
+VERSION = "1.3-00"
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SHARE = os.path.dirname(HERE)            # ~/.local/share
@@ -482,7 +482,10 @@ class Launcher(QMainWindow):
         self.BANNER_W = 320
         self.selected_key = None
 
-        central = QWidget(); self.setCentralWidget(central)
+        # A centred, frameless popup dialog rather than an ordinary window.
+        self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        central = QWidget(); central.setObjectName('popuproot'); self.setCentralWidget(central)
         outer = QVBoxLayout(central); outer.setContentsMargins(0, 0, 0, 0); outer.setSpacing(0)
 
         # TOP — the title banner, spanning the full width over both panes
@@ -520,13 +523,28 @@ class Launcher(QMainWindow):
         body.addWidget(self.filepane, 1)
         self._scale_header()
 
-        help_menu = self.menuBar().addMenu('&Help')
-        a_guide = QAction('&User Guide', self); a_guide.triggered.connect(self.open_manual); help_menu.addAction(a_guide)
-        a_about = QAction('&About', self); a_about.triggered.connect(self.about); help_menu.addAction(a_about)
+        # Frameless window controls, overlaid on the top-right of the banner.
+        from PySide6.QtWidgets import QMenu
+        self.help_btn = QToolButton(central); self.help_btn.setObjectName('winbtn')
+        self.help_btn.setText('?'); self.help_btn.setCursor(Qt.PointingHandCursor); self.help_btn.setToolTip('Help')
+        self.help_btn.setPopupMode(QToolButton.InstantPopup)
+        hm = QMenu(self.help_btn); hm.addAction('User Guide', self.open_manual); hm.addAction('About', self.about)
+        self.help_btn.setMenu(hm)
+        self.close_btn = QToolButton(central); self.close_btn.setObjectName('closebtn')
+        self.close_btn.setText('✕'); self.close_btn.setCursor(Qt.PointingHandCursor)
+        self.close_btn.setToolTip('Close (Esc)'); self.close_btn.clicked.connect(self.close)
+        for b in (self.help_btn, self.close_btn):
+            b.setFixedSize(28, 28)
 
         self.setStyleSheet('''
-            QMainWindow { background: #1c1f24; }
-            #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; }
+            QMainWindow { background: transparent; }
+            #popuproot { background: #1c1f24; border: 1px solid #343b44; border-radius: 16px; }
+            #winbtn, #closebtn { background: rgba(18,21,26,.55); color: #e8eaec; border: none;
+                border-radius: 14px; font-size: 15px; font-weight: 700; }
+            #winbtn:hover { background: rgba(70,80,92,.95); }
+            #closebtn:hover { background: rgba(192,57,43,.95); color: #ffffff; }
+            #winbtn::menu-indicator, #closebtn::menu-indicator { image: none; width: 0; }
+            #leftcol { background: #1c1f24; border-right: 1px solid #2b2f36; border-bottom-left-radius: 16px; }
             #rowscroll { background: transparent; border: none; }
             #approw { background: transparent; }
             #appdesc { color: #c7ccd2; font-size: 12px; padding: 9px 14px 13px 14px; background: #22262c; }
@@ -538,7 +556,7 @@ class Launcher(QMainWindow):
                 background: #2a7d6b; color: #ffffff; border: 1px solid rgba(255,255,255,.25); }
             #installbtn:hover { background: #329181; }
             #installbtn:disabled { background: #8a8f96; color: #e8e8e8; }
-            #filepane { background: #191c21; }
+            #filepane { background: #191c21; border-bottom-right-radius: 16px; }
             #panetitle { color: #f0f2f4; font-size: 18px; font-weight: 700; }
             #panesub { color: #8b929b; font-size: 12px; }
             QToolButton#section { color: #cfd4da; font-size: 13px; font-weight: 600; border: none;
@@ -557,8 +575,9 @@ class Launcher(QMainWindow):
         for row in self.rows:
             row.set_banner_width(self.BANNER_W)
         screen = QApplication.primaryScreen().availableGeometry()
-        self.resize(min(840, screen.width()), min(780, int(screen.height() * 0.9)))
-        self.setMinimumSize(560, 460)
+        w = min(860, int(screen.width() * 0.95)); h = min(680, int(screen.height() * 0.9))
+        self.setFixedSize(w, h)
+        self._position_winbtns()
         self._center_on_screen()
 
         for row in self.rows:
@@ -651,21 +670,57 @@ class Launcher(QMainWindow):
         screen = QApplication.primaryScreen().availableGeometry()
         fg = self.frameGeometry(); fg.moveCenter(screen.center()); self.move(fg.topLeft())
 
+    def _round_top(self, pm, r):
+        """Round the top corners of the banner to match the popup's rounded frame."""
+        from PySide6.QtGui import QPainterPath
+        out = QPixmap(pm.size()); out.fill(Qt.transparent)
+        p = QPainter(out); p.setRenderHint(QPainter.Antialiasing)
+        w, h = pm.width(), pm.height()
+        path = QPainterPath()
+        path.moveTo(0, h); path.lineTo(0, r); path.quadTo(0, 0, r, 0)
+        path.lineTo(w - r, 0); path.quadTo(w, 0, w, r); path.lineTo(w, h); path.closeSubpath()
+        p.setClipPath(path); p.drawPixmap(0, 0, pm); p.end()
+        return out
+
     def _scale_header(self):
         """Keep the banner spanning the full window width, over both panes."""
         if getattr(self, '_header_pm', None) and not self._header_pm.isNull():
             w = self.centralWidget().width() or self.width()
             if w > 0:
-                self.header.setPixmap(self._header_pm.scaledToWidth(w, Qt.SmoothTransformation))
+                pm = self._header_pm.scaledToWidth(w, Qt.SmoothTransformation)
+                self.header.setPixmap(self._round_top(pm, 16))
+
+    def _position_winbtns(self):
+        if not hasattr(self, 'close_btn'):
+            return
+        m = 12
+        self.close_btn.move(self.width() - 28 - m, m)
+        self.help_btn.move(self.width() - 28 - m - 28 - 8, m)
+        self.close_btn.raise_(); self.help_btn.raise_()
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
         self._scale_header()
+        self._position_winbtns()
 
     def showEvent(self, e):
         super().showEvent(e)
         self._center_on_screen()
         self._scale_header()
+        self._position_winbtns()
+
+    def mousePressEvent(self, e):
+        # Drag the frameless popup by its banner.
+        if e.button() == Qt.LeftButton and e.position().y() <= self.header.height():
+            handle = self.windowHandle()
+            if handle is not None:
+                handle.startSystemMove(); return
+        super().mousePressEvent(e)
+
+    def keyPressEvent(self, e):
+        if e.key() == Qt.Key_Escape:
+            self.close(); return
+        super().keyPressEvent(e)
 
     def build_rows(self):
         for info in APPS:
