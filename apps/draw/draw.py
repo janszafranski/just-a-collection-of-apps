@@ -20,11 +20,11 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.2-03"
+VERSION = "1.2-04"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
-MANUAL = os.path.join(HERE, 'manual.html')
-QUICKSTART = os.path.join(HERE, 'quickstart.html')
+MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
+QUICKSTART = next((p for p in (os.path.join(HERE,'quickstart.pdf'), os.path.join(HERE,'quickstart.html')) if os.path.isfile(p)), os.path.join(HERE,'quickstart.pdf'))
 
 
 def _just_dir(kind):
@@ -582,7 +582,16 @@ class Main(QMainWindow):
                 from PySide6.QtCore import QUrl as _U, Qt as _Qt
                 _dlg = QDialog(self); _dlg.setWindowTitle('just a... DRAWmaster — Help'); _dlg.setWindowFlag(_Qt.Window, True); _dlg.resize(920, 840)
                 _lay = QVBoxLayout(_dlg); _lay.setContentsMargins(0, 0, 0, 0)
-                _v = QWebEngineView(_dlg); _lay.addWidget(_v); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                if _p.lower().endswith(".pdf"):
+                    from PySide6.QtPdf import QPdfDocument
+                    from PySide6.QtPdfWidgets import QPdfView
+                    _pd = QPdfDocument(_dlg); _pd.load(_p)
+                    _v = QPdfView(_dlg); _v.setDocument(_pd)
+                    _v.setPageMode(QPdfView.PageMode.MultiPage); _v.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+                    self._doc_wins = getattr(self, "_doc_wins", []) + [_pd]
+                else:
+                    _v = QWebEngineView(_dlg); _v.load(_U.fromLocalFile(os.path.abspath(_p)))
+                _lay.addWidget(_v)
                 _dlg.show(); self._doc_wins = getattr(self, "_doc_wins", []) + [_dlg]; return
             except Exception:
                 pass

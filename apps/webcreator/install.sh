@@ -54,8 +54,9 @@ install -Dm644 "$SELF/test_webplus_import.py" "$DATA/webcreator/test_webplus_imp
 install -Dm644 "$SELF/serif-templates.json" "$DATA/webcreator/serif-templates.json"
 install -Dm644 "$SELF/quickstart.html" "$DATA/webcreator/quickstart.html"
 install -Dm644 "$SELF/banner.png" "$DATA/webcreator/banner.png"
-[[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$DATA/webcreator/manual.html"
-[[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$DATA/webcreator/quickstart.html"
+for d in manual.pdf quickstart.pdf manual.html quickstart.html; do
+  [[ -f "$SELF/$d" ]] && install -Dm644 "$SELF/$d" "$DATA/webcreator/$d"
+done
 install -Dm644 "$SELF/guide_example_site.png" "$DATA/webcreator/guide_example_site.png"
 
 log "Installing the icon"
