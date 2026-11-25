@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.17-00"
+VERSION = "1.18-00"
 
 
 def _just_dir(kind):
@@ -1360,6 +1360,8 @@ QUICKSHAPES = [
     ('parallelogram', 'Parallelogram'), ('trapezoid', 'Trapezoid'),
     ('heart', 'Heart'), ('lightning', 'Lightning bolt'),
     ('speech', 'Speech bubble'), ('cloud', 'Cloud'),
+    ('burst', 'Starburst'), ('seal', 'Badge seal'),
+    ('ribbon', 'Ribbon banner'), ('pennant', 'Pennant'),
 ]
 QS_KEYS = [k for k, _ in QUICKSHAPES]
 
@@ -1409,6 +1411,17 @@ def quickshape_path(name, w, h):
         pp.cubicTo(w * .1, h * .55, w * .35, h * .7, w * .5, h * .9)
         pp.cubicTo(w * .65, h * .7, w * .9, h * .55, w * .9, h * .35)
         pp.cubicTo(w * .9, h * .1, w * .5, h * .1, w * .5, h * .25); pp.closeSubpath(); return pp
+    if name in ('burst', 'seal'):
+        n, inner = (16, 0.66) if name == 'burst' else (24, 0.9)
+        off = -math.pi / 2; pts = []
+        for i in range(n * 2):
+            k = 1.0 if i % 2 == 0 else inner; a = off + i * math.pi / n
+            pts.append((cx + cx * k * math.cos(a), cy + cy * k * math.sin(a)))
+        return _qs_poly(pts)
+    if name == 'ribbon':
+        return _qs_poly([(0, 0), (w, 0), (w * .88, cy), (w, h), (0, h), (w * .12, cy)])
+    if name == 'pennant':
+        return _qs_poly([(0, 0), (w, 0), (w * .74, cy), (w, h), (0, h)])
     if name == 'speech':
         bh = h * .78; rad = min(w, bh) * .18
         pp = QPainterPath(); pp.addRoundedRect(QRectF(0, 0, w, bh), rad, rad)
@@ -6150,6 +6163,7 @@ class MainWindow(QMainWindow):
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
         menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'], None] + ins + [None,
+                         self.act('&Asset…', lambda: self.insert_asset_dialog(), None, ['insert-object', 'star-shape', 'shapes']),
                          self.act('&Chart…', lambda: self.chart_dialog(), None, ['office-chart-bar', 'x-office-spreadsheet', 'view-statistics']),
                          self.act('&QR Code…', lambda: self.qr_dialog(), None, ['view-barcode-qr', 'insert-barcode', 'view-barcode']),
                          self.act('Calendar…', lambda: self.calendar_wizard(), None, ['view-calendar', 'office-calendar', 'x-office-calendar']),
@@ -8830,6 +8844,74 @@ class MainWindow(QMainWindow):
             obj = mk('qr', 0, 0, 160, 160); obj['text'] = val
             obj['x'] = self.view.snap(max(0, c.x() - 80)); obj['y'] = self.view.snap(max(0, c.y() - 80))
             self.add_object(obj)
+
+    def _load_assets(self):
+        try:
+            import importlib.util as _I
+            p = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'page_assets.py')
+            spec = _I.spec_from_file_location('page_assets', p); mod = _I.module_from_spec(spec); spec.loader.exec_module(mod)
+            return mod.ASSETS()
+        except Exception:
+            return []
+
+    def _asset_thumb(self, a, box=110):
+        from PySide6.QtGui import QImage, QPainter, QPixmap
+        w, h = a['w'], a['h']; scale = min(box / w, box / h)
+        img = QImage(max(1, int(w * scale)), max(1, int(h * scale)), QImage.Format_ARGB32); img.fill(Qt.transparent)
+        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.TextAntialiasing)
+        p.scale(scale, scale)
+        for (ty, x, y, ww, hh, props) in a['objs']:
+            o = mk(ty, x, y, ww, hh, **props)
+            p.save(); p.translate(x, y)
+            try: paint_obj(p, o, None, None, edit=False)
+            except Exception: pass
+            p.restore()
+        p.end()
+        return QPixmap.fromImage(img)
+
+    def insert_asset(self, a):
+        """Drop an asset's objects onto the current page, centred, all selected."""
+        c = self.view.mapToScene(self.view.viewport().rect().center())
+        ox = self.view.snap(max(0, c.x() - a['w'] / 2)); oy = self.view.snap(max(0, c.y() - a['h'] / 2))
+        self.commit()
+        ids = []
+        for (ty, x, y, ww, hh, props) in a['objs']:
+            o = mk(ty, ox + x, oy + y, ww, hh, **props)
+            self.layer().append(o); ids.append(o['id'])
+        self.sel = ids
+        self.refresh()
+        self.hint(f'Inserted {a["name"].lower()} — drag it where you like; everything stays editable.')
+
+    def insert_asset_dialog(self):
+        """A gallery of ready-made callouts, badges, banners, arrows and decorations."""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QScrollArea, QGridLayout,
+                                       QToolButton, QWidget, QFrame)
+        assets = self._load_assets()
+        if not assets:
+            self.hint('The asset library is unavailable (page_assets.py not found).'); return
+        dlg = QDialog(self); dlg.setWindowTitle('Insert an asset'); dlg.setWindowFlag(Qt.Window, True); dlg.resize(760, 650)
+        outer = QVBoxLayout(dlg); outer.setContentsMargins(0, 0, 0, 0)
+        area = QScrollArea(); area.setWidgetResizable(True); area.setFrameShape(QFrame.NoFrame); outer.addWidget(area)
+        inner = QWidget(); area.setWidget(inner); vl = QVBoxLayout(inner)
+        vl.addWidget(QLabel('<b>Assets</b> — click one to drop it on the page. Everything stays editable: '
+                            'recolour it, retype the words, resize it.'))
+        cats = {}
+        for a in assets:
+            cats.setdefault(a['cat'], []).append(a)
+        for cat in ('Callouts', 'Badges', 'Banners', 'Arrows & pointers', 'Decorative'):
+            if cat not in cats:
+                continue
+            lab = QLabel(cat); lab.setStyleSheet('font-weight:600;margin-top:12px;color:#2a7d6b'); vl.addWidget(lab)
+            grid = QGridLayout(); grid.setSpacing(10); grid.setColumnStretch(5, 1); vl.addLayout(grid)
+            for i, a in enumerate(cats[cat]):
+                b = QToolButton(); b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                pm = self._asset_thumb(a, 112)
+                b.setIcon(pm); b.setIconSize(pm.size())
+                b.setText(a['name']); b.setCursor(Qt.PointingHandCursor); b.setAutoRaise(True); b.setFixedWidth(140)
+                b.clicked.connect(lambda _=0, aa=a: (self.insert_asset(aa), dlg.accept()))
+                grid.addWidget(b, i // 5, i % 5, Qt.AlignLeft | Qt.AlignTop)
+        vl.addStretch()
+        dlg.show(); self._asset_dlg = dlg
 
     def mail_merge(self):
         """Duplicate the current page once per CSV record, replacing {{field}} tokens."""
