@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.14-02"
+VERSION = "1.15-00"
 
 
 def _just_dir(kind):
@@ -233,6 +233,12 @@ DEF = {
     'vimeo':    dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
     'newsfeed': dict(w=480, h=560, source=None, accent='#2a7d6b', cardbg='#ffffff', ink='#1f2a30',
                      font='Noto Sans', size=15, max=0, showdate=True, showimg=True, fill='', stroke='#333333', strokeW=0, radius=0),
+    'chart':    dict(w=380, h=260, kind='bar', title='Quarterly sales', font='Noto Sans', ink='#243137',
+                     axis='#9aa4ab', grid='#e6ebee', fill='#ffffff', stroke='#d6dde2', strokeW=1, radius=6,
+                     data=[['Q1', 12], ['Q2', 19], ['Q3', 9], ['Q4', 16]],
+                     colors=['#2a7d6b', '#5b8def', '#f4c96b', '#e8556b', '#9b6fcf', '#49c5b6', '#f2a35e', '#7fb4e8']),
+    'qr':       dict(w=160, h=160, text='https://janszafranski.github.io/just-a-collection-of-apps/',
+                     dark='#000000', light='#ffffff', quiet=4, fill='', stroke='', strokeW=0, radius=0),
 }
 SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {t} = page title)
     ('facebook', 'Facebook', '#1877f2', 'https://www.facebook.com/sharer/sharer.php?u={u}'),
@@ -247,7 +253,7 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
 NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
-                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map')
+                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', chart='Chart', qr='QR code')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -1545,6 +1551,361 @@ def _arrowhead_pts(fx, fy, tx, ty, pw):
 def _svg_poly(pts, color):
     return f'<polygon points="{" ".join(f"{a:g},{b:g}" for a, b in pts)}" fill="{color}"/>'
 
+# ============================================================ Charts & QR codes
+# Two object types PagePlus offered that this app was missing. Both render through
+# paint_obj (so they appear on the canvas AND in the exported PDF).
+
+def _chart_data(o):
+    out = []
+    for row in (o.get('data') or []):
+        try:
+            out.append((str(row[0]), float(row[1])))
+        except (ValueError, TypeError, IndexError):
+            pass
+    return out
+
+
+def paint_chart(p, o):
+    """Draw a bar, column, pie or line chart in local coords (0,0 .. w,h)."""
+    from PySide6.QtGui import QPainterPath
+    w, h = float(o['w']), float(o['h'])
+    data = _chart_data(o)
+    ink = QColor(o.get('ink', '#243137'))
+    cols = o.get('colors') or ['#2a7d6b']
+    kind = o.get('kind', 'bar')
+    fnt = QFont(o.get('font', 'Noto Sans')); fnt.setPixelSize(12)
+    # frame
+    rad = o.get('radius', 6)
+    r = QRectF(0, 0, w, h)
+    if o.get('fill'):
+        p.setPen(Qt.NoPen); p.setBrush(QColor(o['fill']))
+        p.drawRoundedRect(r, rad, rad) if rad else p.drawRect(r)
+    if o.get('strokeW', 0) > 0 and o.get('stroke'):
+        p.setPen(QPen(QColor(o['stroke']), o['strokeW'])); p.setBrush(Qt.NoBrush)
+        p.drawRoundedRect(r.adjusted(.5, .5, -.5, -.5), rad, rad) if rad else p.drawRect(r)
+    pad = 14.0
+    top = pad
+    title = (o.get('title') or '').strip()
+    if title:
+        tf = QFont(o.get('font', 'Noto Sans')); tf.setPixelSize(15); tf.setBold(True)
+        p.setFont(tf); p.setPen(ink)
+        p.drawText(QRectF(pad, 6, w - 2 * pad, 22), Qt.AlignLeft | Qt.AlignVCenter, title)
+        top = 30
+    if not data:
+        p.setFont(fnt); p.setPen(QColor('#8a949b'))
+        p.drawText(r, Qt.AlignCenter, 'Double-click to add chart data')
+        return
+    maxv = max((v for _, v in data), default=1) or 1
+
+    if kind == 'pie':
+        total = sum(v for _, v in data) or 1
+        d = min(w - 2 * pad, h - top - pad - 16)
+        cx, cy = pad + d / 2, top + d / 2
+        rect = QRectF(cx - d / 2, cy - d / 2, d, d)
+        ang = 90 * 16
+        p.setPen(QPen(QColor('#ffffff'), 2))
+        for i, (lbl, v) in enumerate(data):
+            span = -int(round(v / total * 360 * 16))
+            p.setBrush(QColor(cols[i % len(cols)]))
+            p.drawPie(rect, ang, span); ang += span
+        # legend
+        p.setFont(fnt); lx = cx + d / 2 + 16; ly = top
+        for i, (lbl, v) in enumerate(data):
+            p.setPen(Qt.NoPen); p.setBrush(QColor(cols[i % len(cols)]))
+            p.drawRect(QRectF(lx, ly, 11, 11))
+            p.setPen(ink); p.drawText(QRectF(lx + 16, ly - 3, w - lx - 16, 17), Qt.AlignLeft | Qt.AlignVCenter,
+                                      f'{lbl}  ({v:g})')
+            ly += 19
+        return
+
+    # axes area (bar/column/line)
+    axl, axb = pad + 4, h - pad - 16
+    axr, axt = w - pad, top + 4
+    p.setPen(QPen(QColor(o.get('grid', '#e6ebee')), 1))
+    for g in range(1, 4):
+        gy = axt + (axb - axt) * g / 4
+        p.drawLine(QPointF(axl, gy), QPointF(axr, gy))
+    p.setPen(QPen(QColor(o.get('axis', '#9aa4ab')), 1.4))
+    p.drawLine(QPointF(axl, axt), QPointF(axl, axb)); p.drawLine(QPointF(axl, axb), QPointF(axr, axb))
+    n = len(data); slot = (axr - axl) / n
+    p.setFont(fnt)
+    if kind == 'line':
+        pts = []
+        for i, (lbl, v) in enumerate(data):
+            x = axl + slot * (i + 0.5); y = axb - (axb - axt) * (v / maxv)
+            pts.append(QPointF(x, y))
+        p.setPen(QPen(QColor(cols[0]), 2.5)); p.setBrush(Qt.NoBrush)
+        for i in range(len(pts) - 1):
+            p.drawLine(pts[i], pts[i + 1])
+        p.setBrush(QColor(cols[0])); p.setPen(QPen(QColor('#ffffff'), 1.5))
+        for pt in pts:
+            p.drawEllipse(pt, 3.5, 3.5)
+        for i, (lbl, v) in enumerate(data):
+            p.setPen(QColor('#5c6b73'))
+            p.drawText(QRectF(axl + slot * i, axb + 2, slot, 15), Qt.AlignCenter, lbl)
+    else:  # bar / column
+        bw = slot * 0.6
+        for i, (lbl, v) in enumerate(data):
+            bh = (axb - axt) * (v / maxv)
+            x = axl + slot * i + (slot - bw) / 2
+            p.setPen(Qt.NoPen); p.setBrush(QColor(cols[i % len(cols)]))
+            p.drawRect(QRectF(x, axb - bh, bw, bh))
+            p.setPen(QColor('#5c6b73'))
+            p.drawText(QRectF(axl + slot * i, axb + 2, slot, 15), Qt.AlignCenter, lbl)
+
+
+# ---- QR Code generator: byte mode, ECC level M, versions 1-10 ----
+_QR_EC_M = {
+    1: (10, [(1, 16)]), 2: (16, [(1, 28)]), 3: (26, [(1, 44)]), 4: (18, [(2, 32)]),
+    5: (24, [(2, 43)]), 6: (16, [(4, 27)]), 7: (18, [(4, 31)]), 8: (22, [(2, 38), (2, 39)]),
+    9: (22, [(3, 36), (2, 37)]), 10: (26, [(4, 43), (1, 44)]),
+}
+_QR_ALIGN = {1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34],
+             7: [6, 22, 38], 8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50]}
+_QR_CAP_M = {1: 14, 2: 26, 3: 42, 4: 62, 5: 84, 6: 106, 7: 122, 8: 152, 9: 180, 10: 213}
+
+_GF_EXP = [0] * 512
+_GF_LOG = [0] * 256
+_x = 1
+for _i in range(255):
+    _GF_EXP[_i] = _x
+    _GF_LOG[_x] = _i
+    _x <<= 1
+    if _x & 0x100:
+        _x ^= 0x11d
+for _i in range(255, 512):
+    _GF_EXP[_i] = _GF_EXP[_i - 255]
+
+
+def _gf_mul(a, b):
+    if a == 0 or b == 0:
+        return 0
+    return _GF_EXP[_GF_LOG[a] + _GF_LOG[b]]
+
+
+def _rs_generator(n):
+    g = [1]
+    for i in range(n):
+        g2 = [0] * (len(g) + 1)
+        for j in range(len(g)):
+            g2[j] ^= _gf_mul(g[j], 1)
+            g2[j + 1] ^= _gf_mul(g[j], _GF_EXP[i])
+        g = g2
+    return g
+
+
+def _rs_ecc(data, n):
+    g = _rs_generator(n)
+    res = list(data) + [0] * n
+    for i in range(len(data)):
+        c = res[i]
+        if c:
+            for j in range(len(g)):
+                res[i + j] ^= _gf_mul(g[j], c)
+    return res[len(data):]
+
+
+def qr_matrix(text):
+    """Return a 2D list (0/1) for the smallest fitting QR (byte mode, ECC M)."""
+    raw = text.encode('utf-8')
+    ver = next((v for v in range(1, 11) if len(raw) <= _QR_CAP_M[v]), 10)
+    ecc_per, groups = _QR_EC_M[ver]
+    total_data = sum(nb * dc for nb, dc in groups)
+    # bit stream: mode 0100 + length + bytes
+    bits = []
+    def put(val, ln):
+        for i in range(ln - 1, -1, -1):
+            bits.append((val >> i) & 1)
+    put(0b0100, 4)
+    put(len(raw), 8 if ver < 10 else 16)
+    for b in raw:
+        put(b, 8)
+    # terminator + pad to byte
+    cap = total_data * 8
+    for _ in range(min(4, cap - len(bits))):
+        bits.append(0)
+    while len(bits) % 8:
+        bits.append(0)
+    codewords = [int(''.join(str(b) for b in bits[i:i + 8]), 2) for i in range(0, len(bits), 8)]
+    pads = [0xEC, 0x11]
+    i = 0
+    while len(codewords) < total_data:
+        codewords.append(pads[i % 2]); i += 1
+    # split into blocks, compute ecc
+    blocks, eccs = [], []
+    idx = 0
+    for nb, dc in groups:
+        for _ in range(nb):
+            blk = codewords[idx:idx + dc]; idx += dc
+            blocks.append(blk); eccs.append(_rs_ecc(blk, ecc_per))
+    # interleave data then ecc
+    stream = []
+    maxd = max(len(b) for b in blocks)
+    for i in range(maxd):
+        for b in blocks:
+            if i < len(b): stream.append(b[i])
+    for i in range(ecc_per):
+        for e in eccs:
+            stream.append(e[i])
+    databits = []
+    for cw in stream:
+        for i in range(7, -1, -1):
+            databits.append((cw >> i) & 1)
+
+    size = 17 + 4 * ver
+    m = [[None] * size for _ in range(size)]
+    res = [[False] * size for _ in range(size)]  # function-module reservation
+
+    def place_finder(r, c):
+        for dr in range(-1, 8):
+            for dc in range(-1, 8):
+                rr, cc = r + dr, c + dc
+                if 0 <= rr < size and 0 <= cc < size:
+                    inr = 0 <= dr <= 6 and 0 <= dc <= 6
+                    ring = dr in (0, 6) or dc in (0, 6)
+                    core = 2 <= dr <= 4 and 2 <= dc <= 4
+                    m[rr][cc] = 1 if (inr and (ring or core)) else 0
+                    res[rr][cc] = True
+    place_finder(0, 0); place_finder(0, size - 7); place_finder(size - 7, 0)
+    # timing
+    for i in range(size):
+        if m[6][i] is None:
+            m[6][i] = 1 if i % 2 == 0 else 0; res[6][i] = True
+        if m[i][6] is None:
+            m[i][6] = 1 if i % 2 == 0 else 0; res[i][6] = True
+    # alignment
+    ap = _QR_ALIGN[ver]
+    for ar in ap:
+        for ac in ap:
+            if res[ar][ac]:
+                continue
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    rr, cc = ar + dr, ac + dc
+                    ring = dr in (-2, 2) or dc in (-2, 2)
+                    center = dr == 0 and dc == 0
+                    m[rr][cc] = 1 if (ring or center) else 0; res[rr][cc] = True
+    # dark module + reserve format areas
+    m[size - 8][8] = 1; res[size - 8][8] = True
+    for i in range(9):
+        for (rr, cc) in [(8, i), (i, 8)]:
+            if 0 <= rr < size and 0 <= cc < size and not res[rr][cc]:
+                res[rr][cc] = True; m[rr][cc] = m[rr][cc] if m[rr][cc] is not None else 0
+    for i in range(8):
+        res[8][size - 1 - i] = True; res[size - 1 - i][8] = True
+    # place data in zigzag
+    di = 0
+    col = size - 1
+    upward = True
+    while col > 0:
+        if col == 6:
+            col -= 1
+        rng = range(size - 1, -1, -1) if upward else range(size)
+        for row in rng:
+            for c in (col, col - 1):
+                if not res[row][c] and m[row][c] is None:
+                    bit = databits[di] if di < len(databits) else 0; di += 1
+                    m[row][c] = bit
+        upward = not upward
+        col -= 2
+
+    def mask_fn(k):
+        return [
+            lambda r, c: (r + c) % 2 == 0,
+            lambda r, c: r % 2 == 0,
+            lambda r, c: c % 3 == 0,
+            lambda r, c: (r + c) % 3 == 0,
+            lambda r, c: (r // 2 + c // 3) % 2 == 0,
+            lambda r, c: (r * c) % 2 + (r * c) % 3 == 0,
+            lambda r, c: ((r * c) % 2 + (r * c) % 3) % 2 == 0,
+            lambda r, c: ((r + c) % 2 + (r * c) % 3) % 2 == 0,
+        ][k]
+
+    def penalty(mat):
+        pen = 0
+        # rule 1: runs of >=5 in rows and cols
+        for line in list(mat) + [list(x) for x in zip(*mat)]:
+            run = 1
+            for i in range(1, size):
+                if line[i] == line[i - 1]:
+                    run += 1
+                else:
+                    if run >= 5: pen += 3 + (run - 5)
+                    run = 1
+            if run >= 5: pen += 3 + (run - 5)
+        # rule 2: 2x2 blocks
+        for r in range(size - 1):
+            for c in range(size - 1):
+                if mat[r][c] == mat[r][c + 1] == mat[r + 1][c] == mat[r + 1][c + 1]:
+                    pen += 3
+        # rule 3: finder-like 1011101 + 0000
+        pat1 = [1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0]
+        pat2 = [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1]
+        for line in list(mat) + [list(x) for x in zip(*mat)]:
+            for i in range(size - 11 + 1):
+                seg = line[i:i + 11]
+                if seg == pat1 or seg == pat2: pen += 40
+        # rule 4: dark proportion
+        dark = sum(sum(row) for row in mat)
+        ratio = dark * 100 // (size * size)
+        pen += min(abs(ratio - 50) // 5, 20) * 10 if False else (abs(ratio - 50) // 5) * 10
+        return pen
+
+    best, best_pen, best_k = None, None, 0
+    for k in range(8):
+        fn = mask_fn(k)
+        mat = [[(m[r][c] ^ 1) if (not res[r][c] and fn(r, c)) else (m[r][c] or 0)
+                for c in range(size)] for r in range(size)]
+        # format info for ECC M (01) + mask k
+        fmt = _qr_format_bits(k)
+        for i in range(6): mat[8][i] = fmt[i]
+        mat[8][7] = fmt[6]; mat[8][8] = fmt[7]; mat[7][8] = fmt[8]
+        for i in range(9, 15): mat[14 - i][8] = fmt[i]
+        for i in range(8): mat[size - 1 - i][8] = fmt[i]
+        for i in range(8, 15): mat[8][size - 15 + i] = fmt[i]
+        pen = penalty(mat)
+        if best_pen is None or pen < best_pen:
+            best, best_pen, best_k = mat, pen, k
+    return best
+
+
+def _qr_format_bits(mask):
+    # ECC level M = 0b00, 5-bit data = (00 << 3) | mask
+    data = (0b00 << 3) | mask
+    v = data << 10
+    g = 0b10100110111
+    for i in range(14, 9, -1):
+        if (v >> i) & 1:
+            v ^= g << (i - 10)
+    bits = (data << 10) | (v & 0x3ff)
+    bits ^= 0b101010000010010
+    return [(bits >> (14 - i)) & 1 for i in range(15)]
+
+
+def paint_qr(o, p):
+    """Draw a QR code for o['text'] in local coords (0,0 .. w,h)."""
+    w, h = float(o['w']), float(o['h'])
+    text = (o.get('text') or '').strip() or ' '
+    try:
+        mat = qr_matrix(text)
+    except Exception:
+        p.fillRect(QRectF(0, 0, w, h), QColor('#f2f2f2'))
+        p.setPen(QColor('#8a949b')); p.drawText(QRectF(0, 0, w, h), Qt.AlignCenter, 'QR error')
+        return
+    n = len(mat); quiet = int(o.get('quiet', 4))
+    units = n + 2 * quiet
+    side = min(w, h)
+    cell = side / units
+    ox = (w - cell * units) / 2 + quiet * cell
+    oy = (h - cell * units) / 2 + quiet * cell
+    p.fillRect(QRectF((w - side) / 2, (h - side) / 2, side, side), QColor(o.get('light', '#ffffff')))
+    p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('dark', '#000000')))
+    for r in range(n):
+        for c in range(n):
+            if mat[r][c]:
+                p.drawRect(QRectF(ox + c * cell, oy + r * cell, cell + 0.5, cell + 0.5))
+
+
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
@@ -1623,6 +1984,10 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
             p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(lr, 4, 4)
             p.setPen(QColor('#ffffff')); p.drawText(lr, Qt.AlignCenter, label)
         p.restore()
+    elif t == 'chart':
+        paint_chart(p, o)
+    elif t == 'qr':
+        paint_qr(o, p)
     elif t in ('text', 'artistic', 'button'):
         box()
         if not hide_text:
@@ -5717,6 +6082,8 @@ class MainWindow(QMainWindow):
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
         menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'], None] + ins + [None,
+                         self.act('&Chart…', lambda: self.chart_dialog(), None, ['office-chart-bar', 'x-office-spreadsheet', 'view-statistics']),
+                         self.act('&QR Code…', lambda: self.qr_dialog(), None, ['view-barcode-qr', 'insert-barcode', 'view-barcode']),
                          self.act('Calendar…', lambda: self.calendar_wizard(), None, ['view-calendar', 'office-calendar', 'x-office-calendar']),
                          self.act('Mail Merge…', lambda: self.mail_merge(), None, ['mail-send', 'document-send', 'mail-message-new'])])
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
@@ -6482,7 +6849,7 @@ class MainWindow(QMainWindow):
             tb.addSeparator(); tb.addAction(self.a['grid']); tb.addAction(self.a['snap'])
             return
         types = {x['type'] for x in objs}
-        label(TYPE_NAMES[o['type']] if len(objs) == 1 else f'{len(objs)} objects'); tb.addSeparator()
+        label(TYPE_NAMES.get(o['type'], o['type'].title()) if len(objs) == 1 else f'{len(objs)} objects'); tb.addSeparator()
         textish = types & {'text', 'artistic', 'button', 'table', 'nav', 'form'}
         if textish and len(types) == 1 or (types <= {'text', 'artistic', 'button'}):
             fc = QFontComboBox(); fc.setCurrentFont(QFont(o.get('font', SANS))); fc.setMaximumWidth(190)
@@ -7026,6 +7393,8 @@ class MainWindow(QMainWindow):
         elif t == 'share': self.share_dialog(o)
         elif t == 'nav': self.nav_dialog(o)
         elif t == 'newsfeed': self.newsfeed_dialog(o)
+        elif t == 'chart': self.chart_dialog(o)
+        elif t == 'qr': self.qr_dialog(o)
 
     def flow_head_obj(self, o):
         """A linked follower frame is edited at its story's head frame."""
@@ -8300,6 +8669,65 @@ class MainWindow(QMainWindow):
         t['x'] = self.view.snap(max(0, c.x() - 215)); t['y'] = self.view.snap(max(0, c.y() - 120))
         t['h'] = max(120, len(cells) * 34 + 8)
         self.add_object(t)
+
+    def chart_dialog(self, o=None):
+        """Insert or edit a bar / line / pie chart."""
+        from PySide6.QtWidgets import QComboBox, QLineEdit, QPlainTextEdit
+        editing = o is not None
+        kinds = [('bar', 'Bar chart'), ('line', 'Line chart'), ('pie', 'Pie chart')]
+        kcb = QComboBox()
+        for k, lbl in kinds: kcb.addItem(lbl, k)
+        if editing:
+            kcb.setCurrentIndex(next((i for i, (k, _) in enumerate(kinds) if k == o.get('kind')), 0))
+        title = QLineEdit(o.get('title') if editing else 'Quarterly sales')
+        box = QPlainTextEdit(); box.setFixedHeight(120)
+        rows = (o.get('data') if editing else None) or [['Q1', 12], ['Q2', 19], ['Q3', 9], ['Q4', 16]]
+        box.setPlainText('\n'.join(f'{r[0]}, {r[1]:g}' for r in rows))
+        dlg = form_dialog(self, 'Chart', [('Type:', kcb), ('Title:', title), ('Data:', box)],
+                          QLabel('One “label, value” per line — for example:  Q1, 12'))
+        if not dlg.exec(): return
+        parsed = []
+        for line in box.toPlainText().splitlines():
+            line = line.strip()
+            if not line: continue
+            if ',' in line:
+                a, _, b = line.rpartition(',')
+            else:
+                parts = line.rsplit(None, 1)
+                if len(parts) != 2: continue
+                a, b = parts
+            try:
+                parsed.append([a.strip(), float(b.strip())])
+            except ValueError:
+                continue
+        if not parsed:
+            QMessageBox.warning(self, APP, 'No valid data rows — use “label, value” on each line.'); return
+        if editing:
+            self.commit(); o['kind'] = kcb.currentData(); o['title'] = title.text(); o['data'] = parsed; self.refresh()
+        else:
+            c = self.view.mapToScene(self.view.viewport().rect().center())
+            obj = mk('chart', 0, 0, 380, 260)
+            obj['kind'] = kcb.currentData(); obj['title'] = title.text(); obj['data'] = parsed
+            obj['x'] = self.view.snap(max(0, c.x() - 190)); obj['y'] = self.view.snap(max(0, c.y() - 130))
+            self.add_object(obj)
+
+    def qr_dialog(self, o=None):
+        """Insert or edit a QR code."""
+        from PySide6.QtWidgets import QLineEdit
+        editing = o is not None
+        txt = QLineEdit(o.get('text') if editing else 'https://')
+        dlg = form_dialog(self, 'QR Code', [('Links to:', txt)],
+                          QLabel('A web address, an email (mailto:…), a phone number (tel:…) or any text.'))
+        if not dlg.exec(): return
+        val = txt.text().strip()
+        if not val: return
+        if editing:
+            self.commit(); o['text'] = val; self.refresh()
+        else:
+            c = self.view.mapToScene(self.view.viewport().rect().center())
+            obj = mk('qr', 0, 0, 160, 160); obj['text'] = val
+            obj['x'] = self.view.snap(max(0, c.x() - 80)); obj['y'] = self.view.snap(max(0, c.y() - 80))
+            self.add_object(obj)
 
     def mail_merge(self):
         """Duplicate the current page once per CSV record, replacing {{field}} tokens."""

@@ -120,6 +120,20 @@ TEXT_DEMO = [
 ]
 
 
+CHART_DEMO = [
+    ("artistic", 40, 36, 560, 44, dict(html="<p>Charts &amp; QR codes</p>", size=30, color="#243137", bold=True)),
+    ("chart", 40, 110, 360, 240, dict(kind="bar", title="Quarterly sales",
+        data=[["Q1", 12], ["Q2", 19], ["Q3", 9], ["Q4", 16]])),
+    ("chart", 420, 110, 300, 240, dict(kind="pie", title="Market share",
+        data=[["North", 34], ["South", 22], ["East", 28], ["West", 16]])),
+    ("chart", 40, 372, 360, 220, dict(kind="line", title="Visitors",
+        data=[["Jan", 5], ["Feb", 8], ["Mar", 7], ["Apr", 12], ["May", 15]])),
+    ("qr", 470, 392, 180, 180, dict(text="https://janszafranski.github.io/just-a-collection-of-apps/")),
+    ("text", 40, 600, 714, 30, dict(pad=0, size=12, color="#5c6b73",
+        html="<p>Bar, line and pie charts from a short table of data — and a scannable QR code.</p>")),
+]
+
+
 def _add(w, objs, upto=None):
     pw = w.site.get("width", 794)
     for i, (t, x, y, ww, hh, p) in enumerate(objs):
@@ -198,6 +212,17 @@ def capture():
     for _ in range(8):
         app.processEvents()
     imgs["textpage"] = grab(w)
+
+    # 7) Charts & QR demo page
+    w = _win()
+    _add(w, CHART_DEMO)
+    for _ in range(8):
+        app.processEvents()
+    try: w.view.fit_width()
+    except Exception: pass
+    for _ in range(8):
+        app.processEvents()
+    imgs["charts"] = grab(w)
 
     return imgs
 
@@ -503,14 +528,24 @@ same look across a document is easier with text styles, so a heading is always t
 run <b>Format ▸ Check Spelling…</b> (F7); you can also turn a tab-separated block of text into a real
 table with <b>convert text to a table</b>.</p>""")]))
 
-    C.append(("Tables, Calendars and Mail Merge",
+    C.append(("Tables, Charts, Calendars and More",
       "<p class='lede'>Beyond free text, PAGEdesigner builds the structured pieces a real publication "
-      "needs: tables for data, a calendar wizard, and a mail merge for personalised runs.</p>", [
+      "needs: tables for data, charts that picture it, QR codes, a calendar wizard, and a mail merge "
+      "for personalised runs.</p>", [
       ("Tables", f"""
 <p><b>Insert ▸ Table</b> drops a grid you type straight into — a price list, a timetable, the “Dates
 for the diary” box in the sample newsletter. Choose the number of rows and columns, give the header
 row its own fill, and drag the borders to size the whole table or individual columns.</p>
 {figure(IM['sample'], 'A table (lower right) sits comfortably in a laid-out page.')}"""),
+      ("Charts", f"""
+<p><b>Insert ▸ Chart…</b> turns a short table of figures into a <b>bar</b>, <b>line</b> or <b>pie</b>
+chart. Type one “label, value” per line, pick the type and give it a title; the chart draws itself and
+prints crisply in the PDF. Double-click a chart any time to change its data or type.</p>
+{figure(IM['charts'], 'Bar, pie and line charts, and a QR code, all inserted on one page.')}"""),
+      ("QR codes", """
+<p><b>Insert ▸ QR Code…</b> builds a scannable QR code from a web address, an email
+(<code>mailto:…</code>), a phone number (<code>tel:…</code>) or any text. Resize it like a picture and
+it stays sharp — print it on a flyer or poster so a phone camera jumps straight to your page.</p>"""),
       ("The Calendar wizard", """
 <p><b>Insert ▸ Calendar…</b> generates a monthly or yearly calendar you can drop onto a page and
 style — handy for a community newsletter or a printed planner.</p>"""),
