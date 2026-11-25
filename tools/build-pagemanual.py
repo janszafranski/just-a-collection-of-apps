@@ -230,6 +230,18 @@ def capture():
         app.processEvents()
     imgs["charts"] = grab(w)
 
+    # 8) The Assets gallery (Insert ▸ Asset…)
+    try:
+        w = _win()
+        w.insert_asset_dialog()
+        dlg = w._asset_dlg
+        dlg.setAttribute(Qt.WA_DontShowOnScreen, True); dlg.resize(760, 650); dlg.show()
+        for _ in range(12):
+            app.processEvents()
+        imgs["assets"] = grab(dlg)
+    except Exception:
+        imgs["assets"] = imgs["charts"]
+
     return imgs
 
 
@@ -521,6 +533,41 @@ current page and zoom.</p>
 tool. <b>View ▸ Fit Page</b> and <b>Fit Width</b> frame the page quickly. The <b>Pan</b> tool (or
 holding the space bar) slides the page around when you are zoomed in.</p>""")]))
 
+    C.append(("Templates and Assets",
+      "<p class='lede'>You don’t have to start from a blank page. PAGEdesigner comes with ready-made "
+      "<b>design templates</b> to build on, and a library of <b>assets</b> — callouts, badges, banners "
+      "and decorations — to drop onto any page. Both save you time and both stay completely editable.</p>", [
+      ("Starting from a template", f"""
+<p>When the program opens, the Startup Assistant shows the <b>Design Templates</b> gallery: finished
+layouts grouped by kind — posters, flyers, a newsletter, a café menu, business cards, a certificate,
+an invitation, vouchers and social-media posts. Click one and it opens as a document already laid out.</p>
+{figure(IM['templates'], 'The Design Templates gallery, grouped by kind.')}
+<p>A template is a normal document: there is nothing special about it once it opens. Replace the
+placeholder headings and body text with your own words, double-click a picture frame to drop in a
+photo, recolour anything you like, and delete what you don’t need. When it’s ready, print it or export
+a PDF exactly as you would any other document.</p>"""),
+      ("The Assets library", f"""
+<p>Choose <b>Insert ▸ Asset…</b> for a gallery of ready-made graphics to add to the page you’re
+working on — the finishing touches that make a poster or a flyer pop.</p>
+{figure(IM['assets'], 'The Assets gallery — callouts, badges, banners, arrows and decorations.')}
+<p>Assets come in five groups:</p>
+<ul>
+<li><b>Callouts</b> — speech and thought bubbles, and a tag for pointing something out;</li>
+<li><b>Badges</b> — a SALE starburst, a “50% OFF” flash, a “NEW” roundel, a quality seal and a star;</li>
+<li><b>Banners</b> — a ribbon, a pennant flag and a title bar for section headings;</li>
+<li><b>Arrows &amp; pointers</b> — arrows, a chevron and a lightning bolt;</li>
+<li><b>Decorative</b> — a sunburst, a star, a heart and page dividers.</li>
+</ul>"""),
+      ("Assets stay editable", """
+<p>Every asset is built from the same shapes and text the rest of the program uses, so once it’s on
+the page it behaves like anything else: drag it where you want it, resize it, change its colours from
+the Colour panel, and — on a badge or banner — just click the words and retype them. A “SALE” badge
+becomes a “½ PRICE” badge in seconds; a green ribbon becomes a red one with one colour change.</p>"""),
+      ("Making your own", """
+<p>Anything you build from shapes, text and pictures can be reused: lay it out once, then copy and
+paste it onto another page or into another document. Combined with templates and the asset library,
+that means most everyday jobs start from something, not from nothing.</p>""")]))
+
     C.append(("Setting Up Pages",
       "<p class='lede'>Every publication is a stack of pages that share a paper size and, usually, a "
       "common background. This chapter covers adding and arranging pages, master pages for repeating "
@@ -583,15 +630,34 @@ columns and pages. Resize or delete a frame and the text re-flows through the ch
 <p>Where frame text is for paragraphs, <b>artistic text</b> is a single line you can scale to any
 size — the tool for mastheads, titles and pull-quotes. It stays crisp at any size because it is
 vector, not a picture of type.</p>"""),
-      ("Fonts, paragraphs and styles", """
-<p>Select text and use the <b>Format</b> menu and the text panel to set the font, size, weight,
-colour, alignment and line spacing. A <b>drop cap</b> enlarges the first letter of a paragraph into
-the lines below it; <b>bulleted and numbered lists</b> structure a sequence of points. Running the
-same look across a document is easier with text styles, so a heading is always the same heading.</p>"""),
-      ("Wrapping and checking", """
-<p>Text can <b>wrap</b> around a picture or shape so the two sit together neatly. Before you print,
-run <b>Format ▸ Check Spelling…</b> (F7); you can also turn a tab-separated block of text into a real
-table with <b>convert text to a table</b>.</p>""")]))
+      ("Fonts and paragraphs", """
+<p>Select some text and use the <b>Format</b> menu and the text panel to set the <b>font</b>, <b>size</b>,
+<b>weight</b> (bold), <b>italic</b> and <b>underline</b>, the text <b>colour</b>, the <b>alignment</b>
+(left, centred, right or justified) and the <b>line spacing</b>. Changes apply to whatever you have
+selected — a word, a line or a whole frame.</p>
+<p>A <b>drop cap</b> (Format menu) enlarges the first letter of a paragraph and sets it into the lines
+below, the classic way to open an article or a story.</p>"""),
+      ("Text styles", """
+<p>When a document has several headings, you want them all to look the same. <b>Text styles</b> make
+that automatic: instead of setting the font, size and colour of each heading by hand, you apply a
+named style — a <i>Heading</i>, a <i>Subheading</i>, <i>Body</i> — from the <b>Format</b> menu, and
+every piece of text with that style matches. They keep a long document consistent and make a global
+restyle a one-step job.</p>"""),
+      ("Bulleted and numbered lists", """
+<p>To turn a run of short points into a list, select the paragraphs and choose a bullet or number
+style from <b>Format ▸ Lists</b> — a disc, a circle or a square for bullets; 1-2-3, a-b-c or i-ii-iii
+for numbers. The list indents and lines up neatly, and numbered lists renumber themselves if you add
+or remove an item.</p>"""),
+      ("Fitting text", """
+<p>When a headline is a shade too big or too small for its frame, resize the frame and the <b>artistic
+text</b> scales with it; for <b>frame text</b>, adjust the size until it sits comfortably, or link the
+frame to another so a long story flows on rather than overrunning. The red overflow marker in the
+corner of a frame tells you there is more text than the frame can show.</p>"""),
+      ("Wrapping text, spell check and tables from text", """
+<p>Text can <b>wrap</b> around a picture or shape so the words flow neatly around the artwork rather
+than sitting behind it. Before you print, run <b>Format ▸ Check Spelling…</b> (F7) to catch typos.
+And if you’ve typed a block of tab- or comma-separated data, <b>convert text to a table</b> turns it
+into a real, editable table in one step.</p>""")]))
 
     C.append(("Tables, Charts, Calendars and More",
       "<p class='lede'>Beyond free text, PAGEdesigner builds the structured pieces a real publication "
@@ -665,11 +731,19 @@ the picker say which part of the object you are colouring.</p>
 {figure(colour, 'The Colour picker, with Fill / Line / Text tabs and RGB controls.')}"""),
       ("Swatches", """
 <p>The <b>Swatches</b> tab keeps a palette of colours one click away, so a document stays consistent.
-Save a colour you use often and reuse it across every object.</p>"""),
-      ("Gradients and transparency", """
-<p>Beyond flat colour, a <b>gradient</b> fades one colour into another across a shape, and
-<b>transparency</b> lets what is behind show through — for a tint over a photo or a soft watermark.
-Both are set from the panels of the same name.</p>""")]))
+Save a colour you use often and reuse it across every object rather than matching hex values by hand.</p>"""),
+      ("Colour schemes", """
+<p>A <b>colour scheme</b> is a small set of coordinated colours applied across the whole publication at
+once. Picking a different scheme recolours every object that uses it, so you can try a document in
+several looks — a warm scheme, a cool one, a mono one — in seconds, without touching each item.</p>"""),
+      ("Gradient fills", """
+<p>Beyond flat colour, a <b>gradient</b> fades one colour smoothly into another across a shape — a
+sky behind a headline, a soft panel behind text. Set the two colours and the direction from the fill
+controls; the gradient scales with the object.</p>"""),
+      ("Transparency", """
+<p><b>Transparency</b> lets what is behind an object show through it. A half-transparent coloured
+rectangle over a photo makes a tint you can read white text on; a faint shape becomes a watermark.
+Adjust an object’s transparency from the <b>Transparency</b> tab.</p>""")]))
 
     C.append(("Checking and Publishing",
       "<p class='lede'>When the layout is ready, PAGEdesigner helps you check it and then put it out "

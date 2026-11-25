@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.18-01"
+VERSION = "1.18-02"
 
 
 def _just_dir(kind):
