@@ -153,11 +153,17 @@ def capture():
     """Return {key: PIL image} for every picture the guide needs."""
     imgs = {}
 
-    # 1) Startup Assistant
+    # 1) Startup Assistant — the Design Templates gallery (row 0) and the
+    #    paper-size picker (New Publication, row 1)
     w = _win()
     dlg = PC.StartupAssistant(w)
-    dlg.setAttribute(Qt.WA_DontShowOnScreen, True); dlg.resize(900, 640); dlg.nav.setCurrentRow(0); dlg.show()
-    for _ in range(10):
+    dlg.setAttribute(Qt.WA_DontShowOnScreen, True); dlg.resize(900, 640)
+    dlg.nav.setCurrentRow(0); dlg.show()
+    for _ in range(12):
+        app.processEvents()
+    imgs["templates"] = grab(dlg)
+    dlg.nav.setCurrentRow(1)
+    for _ in range(8):
         app.processEvents()
     imgs["startup"] = grab(dlg)
 
@@ -423,9 +429,20 @@ def manual_chapters(IM):
       "everyday jobs of opening, saving and viewing a publication.</p>", [
       ("Starting the program", f"""
 <p>Launch PAGEdesigner from the CREATORsuite launcher or by running <code>pagecreator</code>.
-It opens on the <b>Startup Assistant</b>, where you choose how to begin.</p>
-{figure(IM['startup'], 'The Startup Assistant appears each time you start the program.')}"""),
-      ("Creating a new publication", """
+It opens on the <b>Startup Assistant</b>, where you choose how to begin — from a ready-made
+<b>design template</b>, from a blank <b>paper size</b>, or by re-opening recent work.</p>"""),
+      ("Starting from a design template", f"""
+<p>The quickest way to a finished document is to <b>start from a design</b>. The Assistant opens on
+the <b>Design Templates</b> gallery — posters, flyers, a newsletter, a café menu, business cards, a
+certificate, an invitation and social-media posts, grouped by kind.</p>
+{figure(IM['templates'], 'The Design Templates gallery — pick a layout and make it your own.')}
+<p>Click a template and it opens as a document already laid out. Replace the placeholder headings and
+text with your own words, double-click a picture frame to drop in a photo, then print or export a PDF.
+Everything is editable — move, recolour or delete anything you like.</p>"""),
+      ("Creating a new publication", f"""
+<p>Prefer a blank page? Choose <b>New Publication</b> and pick a paper size.</p>
+{figure(IM['startup'], 'New Publication — start from a blank paper size.')}"""),
+      ("Paper sizes", """
 <p>In the Assistant’s <b>New Publication</b> list, pick a paper size. The presets are grouped:</p>
 <ul>
 <li><b>Documents</b> — A4, A4 Landscape, A5, A3, US Letter, US Legal;</li>
