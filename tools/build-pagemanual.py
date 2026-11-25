@@ -87,17 +87,52 @@ SAMPLE = [
 ]
 
 
-def _add_sample(w, upto=None):
+SHAPES_DEMO = [
+    ("artistic", 40, 36, 560, 44, dict(html="<p>Shapes, lines &amp; QuickShapes</p>", size=30, color="#243137", bold=True)),
+    ("shape", 40, 110, 150, 108, dict(shape="rect", fill="#9fc3d6", stroke="#2b3a42", strokeW=2)),
+    ("shape", 212, 110, 150, 108, dict(shape="rect", fill="#cfe0e6", stroke="#2b3a42", strokeW=2, radius=18)),
+    ("shape", 384, 110, 150, 108, dict(shape="ellipse", fill="#f4c96b", stroke="#8a6d1f", strokeW=2)),
+    ("line", 560, 164, 190, 0, dict(stroke="#2b3a42", strokeW=3)),
+    ("shape", 40, 250, 120, 120, dict(shape="star5", fill="#f4c96b", stroke="#c8851b", strokeW=2)),
+    ("shape", 180, 250, 120, 120, dict(shape="arrow", fill="#5b8def", stroke="#2f5fb0", strokeW=2)),
+    ("shape", 320, 250, 128, 120, dict(shape="heart", fill="#e8556b", stroke="#b2374b", strokeW=2)),
+    ("shape", 470, 250, 150, 120, dict(shape="speech", fill="#ffffff", stroke="#2a7df0", strokeW=3)),
+    ("shape", 640, 250, 120, 120, dict(shape="hexagon", fill="#49c5b6", stroke="#2a8577", strokeW=2)),
+    ("shape", 40, 410, 160, 110, dict(shape="rect", fill="#2a7d6b", strokeW=0, shadow=dict(color="#000000", blur=16, dx=7, dy=9, opacity=40))),
+    ("shape", 240, 410, 160, 110, dict(shape="rect", fill="#f4c96b", strokeW=0, glow=dict(color="#ffe08a", blur=22, opacity=85))),
+    ("text", 40, 540, 360, 30, dict(pad=0, size=12, color="#5c6b73", html="<p>A filled rectangle (left) carries a drop shadow; the gold one has an outer glow.</p>")),
+]
+
+TEXT_DEMO = [
+    ("artistic", 40, 36, 560, 44, dict(html="<p>Working with text</p>", size=30, color="#243137", bold=True)),
+    ("text", 40, 104, 350, 300, dict(size=13, color="#243137", html=(
+        "<p><span style='font-size:230%'>O</span>nce upon a time a paragraph began with a large "
+        "dropped capital, set into the first few lines. Frame text wraps neatly inside its frame "
+        "and can flow on to a second, linked frame when it overruns.</p>"
+        "<p>This is a second paragraph. Notice how the text keeps an even left edge and a comfortable "
+        "line height for reading.</p>"))),
+    ("text", 410, 104, 344, 300, dict(size=13, color="#243137", html=(
+        "<p><b>A short checklist</b></p><ul><li>Type straight into a frame</li>"
+        "<li>Link frames to flow long text</li><li>Give a heading its own style</li>"
+        "<li>Add a bulleted or numbered list</li><li>Check spelling before you print</li></ul>"))),
+    ("artistic", 40, 430, 500, 56, dict(html="<p>Big artistic headlines</p>", size=38, color="#2a7d6b", bold=True)),
+    ("text", 40, 500, 714, 30, dict(pad=0, size=12, color="#5c6b73", html="<p>Artistic text is a single line you scale freely — ideal for titles and mastheads.</p>")),
+]
+
+
+def _add(w, objs, upto=None):
     pw = w.site.get("width", 794)
-    for i, (t, x, y, ww, hh, p) in enumerate(SAMPLE):
+    for i, (t, x, y, ww, hh, p) in enumerate(objs):
         if upto is not None and i >= upto:
             break
-        if ww is None:
-            ww = pw
-        w.add_object(mk(t, x, y, ww, hh, **p))
+        w.add_object(mk(t, x, y, pw if ww is None else ww, hh, **p))
     w.sel = []
     if hasattr(w, "set_tool"):
         w.set_tool("pointer")
+
+
+def _add_sample(w, upto=None):
+    _add(w, SAMPLE, upto)
 
 
 def capture():
@@ -141,6 +176,28 @@ def capture():
     for _ in range(6):
         app.processEvents()
     imgs["building"] = grab(w)
+
+    # 5) Shapes / QuickShapes demo page
+    w = _win()
+    _add(w, SHAPES_DEMO)
+    for _ in range(8):
+        app.processEvents()
+    try: w.view.fit_width()
+    except Exception: pass
+    for _ in range(8):
+        app.processEvents()
+    imgs["shapes"] = grab(w)
+
+    # 6) Text demo page
+    w = _win()
+    _add(w, TEXT_DEMO)
+    for _ in range(8):
+        app.processEvents()
+    try: w.view.fit_width()
+    except Exception: pass
+    for _ in range(8):
+        app.processEvents()
+    imgs["textpage"] = grab(w)
 
     return imgs
 
@@ -324,6 +381,290 @@ every picture is produced by the app itself. See <b>Help ▸ User Guide</b> for 
     print("wrote quickstart.html:", len(doc) // 1024, "KiB,", len(S), "sections")
 
 
+def manual_chapters(IM):
+    """The full User Guide. Each chapter: (title, intro_html, [(heading, body_html)])."""
+    W = IM["workspace"]
+    tools = crop(W, (0, 76, 48, 900))
+    toolbar = crop(W, (248, 34, 1178, 78))
+    colour = crop(W, (700, 76, 1178, 470))
+    pages = crop(W, (700, 470, 1178, 905))
+
+    C = []
+
+    C.append(("Getting Started",
+      "<p class='lede'>PAGEdesigner is a page-layout program in the tradition of Serif’s "
+      "PagePlus. You place text, pictures, shapes and tables on a page exactly where you want "
+      "them, and print the result or export a PDF. This chapter introduces the workspace and the "
+      "everyday jobs of opening, saving and viewing a publication.</p>", [
+      ("Starting the program", f"""
+<p>Launch PAGEdesigner from the CREATORsuite launcher or by running <code>pagecreator</code>.
+It opens on the <b>Startup Assistant</b>, where you choose how to begin.</p>
+{figure(IM['startup'], 'The Startup Assistant appears each time you start the program.')}"""),
+      ("Creating a new publication", """
+<p>In the Assistant’s <b>New Publication</b> list, pick a paper size. The presets are grouped:</p>
+<ul>
+<li><b>Documents</b> — A4, A4 Landscape, A5, A3, US Letter, US Legal;</li>
+<li><b>Business</b> — business cards, letterhead, DL flyers, postcards, compliment slips;</li>
+<li><b>Booklet &amp; Folded</b> — A5/A4 booklets, greeting cards, tri-folds;</li>
+<li><b>Large Format</b> — A3, A2 and A1 posters.</li>
+</ul>
+<p>Each thumbnail is drawn to the sheet’s true proportions. Prefer your own dimensions? Enter a
+width, height and page count under <b>Custom size</b> and click <b>Create</b>.</p>"""),
+      ("Opening and saving", """
+<p>Use <b>File ▸ Open</b> for an existing <code>.pagc</code> publication, or the <b>Open</b> page
+of the Startup Assistant for recent work. <b>File ▸ Save</b> (Ctrl+S) stores your document;
+<b>Save As</b> makes a copy. By default documents are saved to your shared
+<i>Documents/just a…</i> folder, so the CREATORsuite launcher can find them again.</p>
+<p>PAGEdesigner also opens files from the program it replaces: <b>File ▸ Open PagePlus…</b> reads a
+Serif PagePlus <code>.ppp</code> publication, and <b>File ▸ Open WebPlus Site…</b> imports a WebPlus
+site, each as an editable document (your original is never changed).</p>"""),
+      ("The workspace", f"""
+<p>A new document opens with the page in the centre and everything you need around it.</p>
+{figure(IM['workspace'], 'The PAGEdesigner workspace.')}
+<p>Down the left is the <b>tool palette</b>; along the top, the <b>menu bar</b> and <b>toolbar</b>;
+to the right, the tabbed <b>panels</b> (Pages, Swatches, Line, Transparency, Transform, Layers and
+the Colour picker). The <b>rulers</b> frame the page, and the status bar along the bottom shows the
+current page and zoom.</p>
+{figure(tools, 'The tool palette: pointer, pan, zoom, text, picture, table, shapes and lines.')}"""),
+      ("Moving around and zooming", """
+<p>Change the zoom with the control at the bottom-right, with Ctrl+scroll, or with the <b>Zoom</b>
+tool. <b>View ▸ Fit Page</b> and <b>Fit Width</b> frame the page quickly. The <b>Pan</b> tool (or
+holding the space bar) slides the page around when you are zoomed in.</p>""")]))
+
+    C.append(("Setting Up Pages",
+      "<p class='lede'>Every publication is a stack of pages that share a paper size and, usually, a "
+      "common background. This chapter covers adding and arranging pages, master pages for repeating "
+      "content, and the guides and rulers that keep a layout tidy.</p>", [
+      ("Pages and the Pages tab", f"""
+<p>The <b>Pages</b> tab lists every page in the document. Use the buttons beneath it to add a page,
+delete the current one, or move a page up or down the running order. Double-click a page to go to it.</p>
+{figure(pages, 'The Pages tab, with the page list above and master pages below.')}"""),
+      ("Master pages", """
+<p>Anything that should appear on <i>every</i> page — a logo, a footer, a page number, a watermark —
+belongs on a <b>master page</b>. A master sits behind the ordinary pages that use it, so you draw the
+object once and it shows through everywhere.</p>
+<p>Create one with <b>New master page</b>, edit it with <b>Edit master page</b>, and set which master a
+page uses from <b>Master properties</b>. Built a page already and realised several items repeat?
+<b>Arrange ▸ Move Repeated Objects to Master Page…</b> lifts them onto the master for you.</p>"""),
+      ("Rulers, guides and the grid", """
+<p>Drag out from a ruler to drop a <b>guide line</b>; objects snap to guides as you move them, which
+makes columns and margins easy to keep even. The ruler’s corner toggles between measurement origins.
+Turn snapping and the layout grid on or off from the <b>View</b> menu.</p>"""),
+      ("Headers, footers and page numbers", """
+<p>Put headers and footers on a master page so they repeat. For automatic page numbers, add a text
+frame to the master and insert a page-number field — each page then shows its own number without any
+manual updating.</p>""")]))
+
+    C.append(("Working with Objects",
+      "<p class='lede'>Text frames, pictures, shapes and tables are all <b>objects</b>. Whatever the "
+      "kind, you select, move, size, arrange and align them in the same way — the skills in this "
+      "chapter apply everywhere in the program.</p>", [
+      ("Selecting and moving", """
+<p>With the <b>Pointer</b> tool, click an object to select it; Shift-click to add more to the
+selection, or drag a band across several at once. Drag any selected object to move it; the handles
+around it resize it, and the round handle above it rotates it.</p>"""),
+      ("The Transform panel", """
+<p>For exact control, open the <b>Transform</b> tab and type an object’s position, width, height or
+rotation angle. This is the reliable way to make two objects the same size, or to place something a
+precise distance from the page edge.</p>"""),
+      ("Aligning and distributing", """
+<p><b>Arrange ▸ Align</b> lines selected objects up — left edges, centres, right edges, tops or
+bottoms — either to each other or to the page. <b>Distribute</b> spaces three or more objects evenly.
+Alignment is what turns a rough arrangement into a crisp one.</p>"""),
+      ("Order, grouping and locking", """
+<p>Objects stack in the order you create them. <b>Arrange</b> sends a selection to the front or back,
+or forward and back one step at a time, so a caption can sit over a picture. <b>Group</b> ties several
+objects together so they move as one; <b>Lock / Unlock</b> pins something in place so you can’t nudge
+it by accident.</p>""")]))
+
+    C.append(("Text",
+      "<p class='lede'>Text is the heart of most publications. PAGEdesigner handles it the PagePlus "
+      "way — in frames you can link and flow, with artistic text for headlines, and full control over "
+      "fonts, paragraphs and styles.</p>", [
+      ("Text frames", f"""
+<p>Choose the <b>Text</b> tool and drag a rectangle to make a <b>text frame</b>. Type into it and the
+text wraps inside the frame’s edges. A frame is the basic container for body copy.</p>
+{figure(IM['textpage'], 'Frame text with a drop capital and a bulleted list, beside an artistic headline.')}"""),
+      ("Flowing and linking frames", """
+<p>When a frame holds more text than it can show, an overflow marker appears. Drag a link from that
+marker to another frame and the text <b>flows</b> on — exactly how a newspaper runs a story across
+columns and pages. Resize or delete a frame and the text re-flows through the chain automatically.</p>"""),
+      ("Artistic text", """
+<p>Where frame text is for paragraphs, <b>artistic text</b> is a single line you can scale to any
+size — the tool for mastheads, titles and pull-quotes. It stays crisp at any size because it is
+vector, not a picture of type.</p>"""),
+      ("Fonts, paragraphs and styles", """
+<p>Select text and use the <b>Format</b> menu and the text panel to set the font, size, weight,
+colour, alignment and line spacing. A <b>drop cap</b> enlarges the first letter of a paragraph into
+the lines below it; <b>bulleted and numbered lists</b> structure a sequence of points. Running the
+same look across a document is easier with text styles, so a heading is always the same heading.</p>"""),
+      ("Wrapping and checking", """
+<p>Text can <b>wrap</b> around a picture or shape so the two sit together neatly. Before you print,
+run <b>Format ▸ Check Spelling…</b> (F7); you can also turn a tab-separated block of text into a real
+table with <b>convert text to a table</b>.</p>""")]))
+
+    C.append(("Tables, Calendars and Mail Merge",
+      "<p class='lede'>Beyond free text, PAGEdesigner builds the structured pieces a real publication "
+      "needs: tables for data, a calendar wizard, and a mail merge for personalised runs.</p>", [
+      ("Tables", f"""
+<p><b>Insert ▸ Table</b> drops a grid you type straight into — a price list, a timetable, the “Dates
+for the diary” box in the sample newsletter. Choose the number of rows and columns, give the header
+row its own fill, and drag the borders to size the whole table or individual columns.</p>
+{figure(IM['sample'], 'A table (lower right) sits comfortably in a laid-out page.')}"""),
+      ("The Calendar wizard", """
+<p><b>Insert ▸ Calendar…</b> generates a monthly or yearly calendar you can drop onto a page and
+style — handy for a community newsletter or a printed planner.</p>"""),
+      ("Mail Merge", """
+<p><b>Mail Merge…</b> takes a list of names and addresses from a CSV file and produces one copy of
+the document per row, filling placeholder fields with each person’s details — for letters, labels or
+personalised flyers.</p>""")]))
+
+    C.append(("Pictures",
+      "<p class='lede'>Pictures bring a page to life. PAGEdesigner keeps them in frames you can crop "
+      "and style, and hands off to PAINTcanvas when a photo needs real editing.</p>", [
+      ("Picture frames", """
+<p>Choose the <b>Picture</b> tool and drag a box to create a <b>picture frame</b>. A new frame shows
+a placeholder until you give it an image; double-click it to choose a photo. Keeping pictures in
+frames means you can design the layout first and drop the photographs in later.</p>"""),
+      ("Fitting, cropping and borders", """
+<p>A picture <b>fits</b> its frame — filling it or sitting inside it — and you can <b>crop</b> to show
+just the part you want. Round the frame’s corners or give it an outline from the Line panel to finish
+it off.</p>"""),
+      ("Editing a photo", """
+<p>Need to brighten, retouch or cut out a photo? <b>Edit in PAINTcanvas</b> sends the picture across
+to the image editor; when you save there, the edited version comes straight back into your page.</p>""")]))
+
+    C.append(("Shapes, Lines and QuickShapes",
+      "<p class='lede'>Shapes and lines structure a page and add visual interest — a coloured band "
+      "for a masthead, a rule between stories, a star on a special offer. PAGEdesigner’s QuickShapes "
+      "give you twenty ready outlines, each with a fill, an outline and optional effects.</p>", [
+      ("Drawing shapes and lines", f"""
+<p>The shape tools draw rectangles (with optional rounded corners), ellipses and straight lines. Hold
+a modifier while dragging to constrain a square or circle. A thin filled rectangle makes a neat rule.</p>
+{figure(IM['shapes'], 'Basic shapes, a line, and a row of QuickShapes.')}"""),
+      ("QuickShapes", """
+<p><b>QuickShapes</b> are ready-made outlines — triangles, diamonds, polygons, stars, arrows, a
+chevron, a cross, a heart, a lightning bolt, a speech bubble and a cloud. Pick one and drag it out,
+then resize and recolour it like any other shape.</p>"""),
+      ("Fills, outlines, dashes and arrowheads", """
+<p>Every shape has a <b>fill</b> and an <b>outline</b>; lines can be <b>dashed</b> and finished with
+<b>arrowheads</b>. Set them in the Colour and Line panels — a dashed line with an arrowhead makes a
+simple callout.</p>"""),
+      ("Drop shadow and glow", f"""
+<p>Filter effects lift an object off the page. A <b>drop shadow</b> adds depth; an <b>outer glow</b>
+draws the eye to a highlight or a price. Both are adjustable — colour, blur, offset and strength.</p>
+{figure(crop(IM['shapes'], (258, 540, 700, 700)), 'The same rectangle with a drop shadow (left) and an outer glow (right).')}""")]))
+
+    C.append(("Colour, Fills and Transparency",
+      "<p class='lede'>Colour ties a publication together. PAGEdesigner offers solid colours, "
+      "swatches you keep to hand, gradient fills and adjustable transparency.</p>", [
+      ("Applying colour", f"""
+<p>The <b>Colour</b> picker sets a solid fill or outline for the selected object — choose a colour
+with the sliders or type a hex value. The <b>Fill</b>, <b>Line</b> and <b>Text</b> tabs at the top of
+the picker say which part of the object you are colouring.</p>
+{figure(colour, 'The Colour picker, with Fill / Line / Text tabs and RGB controls.')}"""),
+      ("Swatches", """
+<p>The <b>Swatches</b> tab keeps a palette of colours one click away, so a document stays consistent.
+Save a colour you use often and reuse it across every object.</p>"""),
+      ("Gradients and transparency", """
+<p>Beyond flat colour, a <b>gradient</b> fades one colour into another across a shape, and
+<b>transparency</b> lets what is behind show through — for a tint over a photo or a soft watermark.
+Both are set from the panels of the same name.</p>""")]))
+
+    C.append(("Checking and Publishing",
+      "<p class='lede'>When the layout is ready, PAGEdesigner helps you check it and then put it out "
+      "into the world — on paper or as a PDF.</p>", [
+      ("Preflight and spell check", """
+<p>Before publishing, run a final <b>Check Spelling…</b> (F7) and look over the page for anything
+overlapping or running off the edge. Catching problems here saves a reprint later.</p>"""),
+      ("Printing", """
+<p><b>File ▸ Print</b> sends the publication to your printer. Choose the printer, the pages and the
+number of copies, and print.</p>"""),
+      ("Exporting a PDF", f"""
+<p><b>Export PDF…</b> (Ctrl+E) writes a <b>vector PDF</b> — the standard way to send a document to a
+print shop or to share online. Because the output is vector, text and shapes stay razor-sharp at any
+size, and you can include <b>bleed and crop marks</b> for professional printing.</p>
+{figure(IM['sample'], 'The finished newsletter, ready to export as a crisp vector PDF.')}""")]))
+
+    C.append(("Keyboard Shortcuts and Reference", "<p class='lede'>A quick reference to the "
+      "shortcuts and menus you will reach for most.</p>", [
+      ("Common shortcuts", """
+<table class="ref">
+<tr><th>Action</th><th>Shortcut</th></tr>
+<tr><td>New / Open / Save</td><td>Ctrl+N · Ctrl+O · Ctrl+S</td></tr>
+<tr><td>Undo / Redo</td><td>Ctrl+Z · Ctrl+Shift+Z</td></tr>
+<tr><td>Cut / Copy / Paste</td><td>Ctrl+X · Ctrl+C · Ctrl+V</td></tr>
+<tr><td>Select all / Deselect</td><td>Ctrl+A · Esc</td></tr>
+<tr><td>Check spelling</td><td>F7</td></tr>
+<tr><td>Export PDF</td><td>Ctrl+E</td></tr>
+<tr><td>Zoom in / out</td><td>Ctrl++ · Ctrl+−</td></tr>
+</table>"""),
+      ("The menus at a glance", """
+<ul>
+<li><b>File</b> — new, open, save, open PagePlus/WebPlus, import website, print, export PDF;</li>
+<li><b>Edit</b> — undo/redo, cut/copy/paste, select;</li>
+<li><b>Insert</b> — text, picture, table, calendar, shapes;</li>
+<li><b>Format</b> — font and paragraph settings, drop cap, lists, spell check;</li>
+<li><b>Arrange</b> — align, order, group, lock, move repeated objects to master;</li>
+<li><b>View</b> — zoom, fit, rulers, guides, grid, snapping;</li>
+<li><b>Help</b> — this User Guide, the Quick Start, and About.</li>
+</ul>""")]))
+    return C
+
+
+def build_manual(IM):
+    C = manual_chapters(IM)
+    # table of contents
+    toc = []
+    for ci, (title, _intro, secs) in enumerate(C, 1):
+        subs = "".join(f'<li><a href="#c{ci}s{si}">{H.escape(h)}</a></li>'
+                       for si, (h, _b) in enumerate(secs, 1))
+        toc.append(f'<li class="ch"><span class="n">{ci}</span>'
+                   f'<a href="#c{ci}">{H.escape(title)}</a><ul>{subs}</ul></li>')
+    # body
+    body = []
+    for ci, (title, intro, secs) in enumerate(C, 1):
+        body.append(f'<section class="chapter"><div class="chrule"><span class="cn">Chapter {ci}</span>'
+                    f'<h2 id="c{ci}">{H.escape(title)}</h2></div>\n{intro}')
+        for si, (h, b) in enumerate(secs, 1):
+            body.append(f'<h3 id="c{ci}s{si}">{H.escape(h)}</h3>\n{b}')
+        body.append("</section>")
+    doc = f"""<!DOCTYPE html>
+<html lang="en-GB">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>just a… PAGEdesigner — User Guide</title>
+<style>{CSS}{MANUAL_CSS}</style>
+<div class="page">
+<header class="mast"><h1>PAGEdesigner</h1><p>User Guide — the complete reference for laying out,
+checking and publishing a document.</p></header>
+<nav class="contents"><h2 style="border:0">Contents</h2><ol class="booktoc">{''.join(toc)}</ol></nav>
+{''.join(body)}
+<footer>just a… PAGEdesigner User Guide · generated {date.today().isoformat()} ·
+every picture is produced by the app itself · in the spirit of Serif PagePlus.</footer>
+</div>
+</html>
+"""
+    (OUT / "manual.html").write_text(doc, encoding="utf-8")
+    print("wrote manual.html:", len(doc) // 1024, "KiB,", len(C), "chapters")
+
+
+MANUAL_CSS = """
+.contents{margin:1.5em 0 2em} .booktoc{list-style:none;padding:0;margin:0}
+.booktoc .ch{margin:.6em 0;font-weight:600} .booktoc .ch>a{color:var(--ink);text-decoration:none}
+.booktoc .n{color:var(--accent);margin-right:.5em} .booktoc ul{list-style:none;padding:0 0 0 1.6em;margin:.2em 0;font-weight:400;columns:2;gap:24px}
+.booktoc ul li{margin:.1em 0} .booktoc a:hover{color:var(--accent)}
+.chapter{margin-top:2.6em} .chrule{border-top:4px solid var(--accent);margin-bottom:.4em}
+.chrule .cn{display:block;color:var(--accent);font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;margin-top:.4em}
+.chrule h2{border:0;margin:.05em 0 .3em;padding:0;font-size:1.9rem}
+h3{font-size:1.18rem;margin:1.6em 0 .4em;color:#17323a}
+table.ref{border-collapse:collapse;width:100%;max-width:66ch;margin:1em 0}
+table.ref th,table.ref td{border:1px solid var(--line);padding:7px 10px;text-align:left;font-size:.95rem}
+table.ref th{background:var(--band)}
+@media print{ .chapter{break-before:page} .contents{break-after:page} }
+"""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--quick", action="store_true")
@@ -332,6 +673,8 @@ def main():
         sys.exit("Pillow required")
     IM = capture()
     build_quickstart(IM)
+    if not args.quick:
+        build_manual(IM)
     try:
         _TMP.unlink()
     except OSError:
