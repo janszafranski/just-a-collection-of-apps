@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-01"
+VERSION = "1.4-02"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
