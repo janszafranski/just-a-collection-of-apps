@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-03"
+VERSION = "1.4-04"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -1038,8 +1038,14 @@ class Main(QMainWindow):
 
 
 def letter_icon(glyph, size=22):
+    # Draw the glyph in the CURRENT THEME's text colour so the tool icons are
+    # visible on both light desktops (e.g. Mint) and dark ones — a hard-coded
+    # light grey was invisible on a light toolbar.
+    from PySide6.QtGui import QPalette
+    app = QApplication.instance()
+    col = app.palette().color(QPalette.WindowText) if app else QColor('#2b3238')
     pm = QPixmap(size, size); pm.fill(Qt.transparent)
-    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing); p.setPen(QColor('#dfe3e8'))
+    p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing); p.setPen(col)
     f = QFont('Noto Sans'); f.setPixelSize(int(size * 0.72)); p.setFont(f)
     p.drawText(pm.rect(), Qt.AlignCenter, glyph); p.end()
     return QIcon(pm)
