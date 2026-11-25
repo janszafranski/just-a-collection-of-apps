@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-00"
+VERSION = "1.4-01"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -1005,12 +1005,21 @@ class Main(QMainWindow):
         self._open_help(QUICKSTART)
 
     def _open_help(self, path):
+        # xdg-open honours the user's browser default and works on Wayland, where
+        # QDesktopServices.openUrl silently fails. Qt is only the last resort.
+        import shutil, subprocess
+        target = path if os.path.isfile(path) else 'https://janszafranski.github.io/just-a-collection-of-apps/'
+        opener = shutil.which('xdg-open')
+        if opener:
+            try:
+                subprocess.Popen([opener, target], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
         from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
-        if os.path.isfile(path):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
-        else:
-            QDesktopServices.openUrl(QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target) if os.path.isfile(target) else QUrl(target))
 
     def about(self):
         QMessageBox.about(self, f'About {APP}',

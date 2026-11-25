@@ -20,7 +20,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.2-00"
+VERSION = "1.2-01"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = os.path.join(HERE, 'manual.html')
@@ -571,10 +571,21 @@ class Main(QMainWindow):
             QMessageBox.warning(self, APP, 'Could not open that drawing.')
 
     def open_manual(self):
+        # xdg-open honours the user's browser default and works on Wayland, where
+        # QDesktopServices.openUrl silently fails. Qt is only the last resort.
+        import shutil, subprocess
+        target = MANUAL if os.path.isfile(MANUAL) else 'https://janszafranski.github.io/just-a-collection-of-apps/'
+        opener = shutil.which('xdg-open')
+        if opener:
+            try:
+                subprocess.Popen([opener, target], start_new_session=True,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                return
+            except Exception:
+                pass
         from PySide6.QtGui import QDesktopServices
         from PySide6.QtCore import QUrl
-        QDesktopServices.openUrl(QUrl.fromLocalFile(MANUAL) if os.path.isfile(MANUAL)
-                                 else QUrl('https://janszafranski.github.io/just-a-collection-of-apps/'))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(target) if os.path.isfile(target) else QUrl(target))
 
     def about(self):
         QMessageBox.about(self, f'About {APP}', f'<b>{APP}</b><br>Version {VERSION}<br><br>A tiny vector '
