@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.14-00"
+VERSION = "1.14-01"
 
 
 def _just_dir(kind):
