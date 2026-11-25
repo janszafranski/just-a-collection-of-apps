@@ -57,8 +57,9 @@ log "Installing the app"
 install -Dm755 "$SELF/pagecreator.py" "$APPDIR/pagecreator.py"
 install -Dm644 "$SELF/page_templates.py" "$APPDIR/page_templates.py"
 install -Dm644 "$SELF/banner.png" "$APPDIR/banner.png"
-[[ -f "$SELF/manual.html" ]] && install -Dm644 "$SELF/manual.html" "$APPDIR/manual.html"
-[[ -f "$SELF/quickstart.html" ]] && install -Dm644 "$SELF/quickstart.html" "$APPDIR/quickstart.html"
+for d in manual.pdf quickstart.pdf manual.html quickstart.html; do
+  [[ -f "$SELF/$d" ]] && install -Dm644 "$SELF/$d" "$APPDIR/$d"
+done
 
 log "Installing the icon"
 for sz in 32 48 64 128 256; do

@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.16-01"
+VERSION = "1.17-00"
 
 
 def _just_dir(kind):
@@ -550,8 +550,10 @@ TEMPLATES = [('Harbour', 'Small business', tpl_harbour), ('Meadow', 'Community g
 # colours, and then it is yours.
 
 SERIF_CATALOGUE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'serif-templates.json')
-QUICKSTART_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'quickstart.html')
-MANUAL_GUIDE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'manual.html')
+_HERE = os.path.dirname(os.path.abspath(__file__))
+# Prefer the PDF (cover + contents, opens in the in-app viewer); fall back to the HTML.
+QUICKSTART_GUIDE = next((p for p in (os.path.join(_HERE, 'quickstart.pdf'), os.path.join(_HERE, 'quickstart.html')) if os.path.isfile(p)), os.path.join(_HERE, 'quickstart.pdf'))
+MANUAL_GUIDE = next((p for p in (os.path.join(_HERE, 'manual.pdf'), os.path.join(_HERE, 'manual.html')) if os.path.isfile(p)), os.path.join(_HERE, 'manual.pdf'))
 BANNER_IMG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'banner.png')
 _SERIF = None
 
@@ -7295,25 +7297,40 @@ class MainWindow(QMainWindow):
     GUIDE_URL = 'https://janszafranski.github.io/just-a-collection-of-apps/pagedesigner.html'
 
     def _show_doc(self, path, title):
-        """Open a bundled HTML guide in an IN-APP window — works on every machine
-        with no external browser or file-association needed (the app already ships
-        with QtWebEngine). Falls back to the browser / the online copy only if that
-        fails."""
+        """Open a bundled guide in an IN-APP window — PDFs (cover + contents) in the
+        Qt PDF viewer, or HTML in a web view. No external browser or file-association
+        is needed. Falls back to the system viewer / the online copy only if that fails."""
         if os.path.isfile(path):
-            try:
-                from PySide6.QtWebEngineWidgets import QWebEngineView
-                from PySide6.QtWidgets import QDialog, QVBoxLayout
-                dlg = QDialog(self); dlg.setWindowTitle(title)
-                dlg.setWindowFlag(Qt.Window, True); dlg.resize(920, 840)
-                lay = QVBoxLayout(dlg); lay.setContentsMargins(0, 0, 0, 0)
-                v = QWebEngineView(dlg); lay.addWidget(v)
-                v.load(QUrl.fromLocalFile(os.path.abspath(path)))
-                dlg.show()
-                self._doc_wins = getattr(self, '_doc_wins', []) + [dlg]   # keep a reference
-                return
-            except Exception:
-                pass
-            open_external(path, is_file=True)
+            from PySide6.QtWidgets import QDialog, QVBoxLayout
+            if path.lower().endswith('.pdf'):
+                try:
+                    from PySide6.QtPdf import QPdfDocument
+                    from PySide6.QtPdfWidgets import QPdfView
+                    dlg = QDialog(self); dlg.setWindowTitle(title)
+                    dlg.setWindowFlag(Qt.Window, True); dlg.resize(840, 940)
+                    lay = QVBoxLayout(dlg); lay.setContentsMargins(0, 0, 0, 0)
+                    d = QPdfDocument(dlg); d.load(path)
+                    v = QPdfView(dlg); v.setDocument(d)
+                    v.setPageMode(QPdfView.PageMode.MultiPage); v.setZoomMode(QPdfView.ZoomMode.FitToWidth)
+                    lay.addWidget(v); dlg.show()
+                    self._doc_wins = getattr(self, '_doc_wins', []) + [dlg, d]
+                    return
+                except Exception:
+                    pass
+            else:
+                try:
+                    from PySide6.QtWebEngineWidgets import QWebEngineView
+                    dlg = QDialog(self); dlg.setWindowTitle(title)
+                    dlg.setWindowFlag(Qt.Window, True); dlg.resize(920, 840)
+                    lay = QVBoxLayout(dlg); lay.setContentsMargins(0, 0, 0, 0)
+                    v = QWebEngineView(dlg); lay.addWidget(v)
+                    v.load(QUrl.fromLocalFile(os.path.abspath(path)))
+                    dlg.show()
+                    self._doc_wins = getattr(self, '_doc_wins', []) + [dlg]
+                    return
+                except Exception:
+                    pass
+            open_external(path, is_file=True)   # last resort: the system's PDF/HTML viewer
         else:
             open_external(self.GUIDE_URL)
 

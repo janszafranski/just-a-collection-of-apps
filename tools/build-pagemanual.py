@@ -385,6 +385,52 @@ footer{color:var(--mute);font-size:.85rem;margin-top:3em;border-top:1px solid va
 """
 
 
+def _banner_uri():
+    p = OUT / "banner.png"
+    if Image and p.exists():
+        return datauri(Image.open(str(p)).convert("RGB"), 900)
+    return ""
+
+
+def cover(kind):
+    uri = _banner_uri()
+    top = f'<img class="cv-banner" src="{uri}" alt="">' if uri else '<div class="cv-kind" style="font-size:3rem">PAGEdesigner</div>'
+    return (f'<section class="cover"><div class="cv-inner">{top}'
+            f'<div class="cv-kind">{kind}</div><div class="cv-rule"></div>'
+            f'<div class="cv-sub">just a&hellip; PAGEdesigner &mdash; a page-layout program in the spirit of Serif PagePlus</div>'
+            f'<div class="cv-date">{date.today().strftime("%B %Y")}</div></div></section>')
+
+
+COVER_CSS = """
+.cover{min-height:960px;display:flex;align-items:center;justify-content:center;text-align:center;break-after:page;page-break-after:always}
+.cv-inner{max-width:640px;padding:0 40px}
+.cv-banner{width:100%;max-width:560px;margin:0 auto 10px;display:block;border-radius:8px}
+.cv-kind{font-size:2.4rem;font-weight:700;color:var(--accent);letter-spacing:.02em;margin-top:.3em}
+.cv-rule{height:3px;width:120px;background:var(--accent);margin:18px auto}
+.cv-sub{color:var(--mute);font-size:1.08rem;max-width:48ch;margin:0 auto}
+.cv-date{color:var(--mute);margin-top:2.4em;font-size:.95rem}
+"""
+
+
+def render_pdf(html_path, pdf_path):
+    """Print the bundled HTML guide to a paginated A4 PDF (cover + contents + chapters)."""
+    from PySide6.QtCore import QUrl, QEventLoop, QMarginsF, QTimer
+    from PySide6.QtGui import QPageLayout, QPageSize
+    from PySide6.QtWebEngineCore import QWebEnginePage
+    pg = QWebEnginePage(); loop = QEventLoop(); res = {}
+    def finished(_ok):
+        lay = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(14, 14, 14, 14))
+        pg.printToPdf(str(pdf_path), lay)
+    def pdfdone(_path, good):
+        res['ok'] = good; loop.quit()
+    pg.loadFinished.connect(finished); pg.pdfPrintingFinished.connect(pdfdone)
+    pg.load(QUrl.fromLocalFile(os.path.abspath(str(html_path))))
+    QTimer.singleShot(50000, loop.quit); loop.exec()
+    sz = os.path.getsize(pdf_path) // 1024 if os.path.exists(pdf_path) else 0
+    print(f"wrote {os.path.basename(str(pdf_path))}: {sz} KiB", "OK" if res.get('ok') else "FAILED")
+    return res.get('ok', False)
+
+
 def build_quickstart(IM):
     S = quickstart_sections(IM)
     toc = "".join(f'<li><span class="n">{i+1}</span><a href="#s{i+1}">{H.escape(t)}</a></li>'
@@ -397,10 +443,12 @@ def build_quickstart(IM):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>just a… PAGEdesigner — Quick Start Guide</title>
-<style>{CSS}</style>
+<style>{CSS}{COVER_CSS}</style>
 <div class="page">
+{cover('Quick Start Guide')}
 <header class="mast"><h1>PAGEdesigner — Quick Start</h1>
 <p>From a blank page to a finished, printable document — in thirteen steps.</p></header>
+<h2 style="border:0">Contents</h2>
 <ol class="toc">{toc}</ol>
 {''.join(body)}
 <footer>just a… PAGEdesigner Quick Start · generated {date.today().isoformat()} ·
@@ -691,8 +739,9 @@ def build_manual(IM):
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>just a… PAGEdesigner — User Guide</title>
-<style>{CSS}{MANUAL_CSS}</style>
+<style>{CSS}{MANUAL_CSS}{COVER_CSS}</style>
 <div class="page">
+{cover('User Guide')}
 <header class="mast"><h1>PAGEdesigner</h1><p>User Guide — the complete reference for laying out,
 checking and publishing a document.</p></header>
 <nav class="contents"><h2 style="border:0">Contents</h2><ol class="booktoc">{''.join(toc)}</ol></nav>
@@ -730,8 +779,10 @@ def main():
         sys.exit("Pillow required")
     IM = capture()
     build_quickstart(IM)
+    render_pdf(OUT / "quickstart.html", OUT / "quickstart.pdf")
     if not args.quick:
         build_manual(IM)
+        render_pdf(OUT / "manual.html", OUT / "manual.pdf")
     try:
         _TMP.unlink()
     except OSError:
