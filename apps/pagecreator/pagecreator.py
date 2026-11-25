@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.15-01"
+VERSION = "1.15-02"
 
 
 def _just_dir(kind):
@@ -7226,20 +7226,38 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, APP, f'“just a… {label}” isn’t installed yet.\n\n'
                                'Install it from the “just a… CREATORsuite” launcher.')
 
-    def open_manual(self):
-        """Open the full User Guide (bundled HTML), or the GitHub copy if not installed."""
-        if os.path.isfile(MANUAL_GUIDE):
-            open_external(MANUAL_GUIDE, is_file=True)
+    GUIDE_URL = 'https://janszafranski.github.io/just-a-collection-of-apps/pagedesigner.html'
+
+    def _show_doc(self, path, title):
+        """Open a bundled HTML guide in an IN-APP window — works on every machine
+        with no external browser or file-association needed (the app already ships
+        with QtWebEngine). Falls back to the browser / the online copy only if that
+        fails."""
+        if os.path.isfile(path):
+            try:
+                from PySide6.QtWebEngineWidgets import QWebEngineView
+                from PySide6.QtWidgets import QDialog, QVBoxLayout
+                dlg = QDialog(self); dlg.setWindowTitle(title)
+                dlg.setWindowFlag(Qt.Window, True); dlg.resize(920, 840)
+                lay = QVBoxLayout(dlg); lay.setContentsMargins(0, 0, 0, 0)
+                v = QWebEngineView(dlg); lay.addWidget(v)
+                v.load(QUrl.fromLocalFile(os.path.abspath(path)))
+                dlg.show()
+                self._doc_wins = getattr(self, '_doc_wins', []) + [dlg]   # keep a reference
+                return
+            except Exception:
+                pass
+            open_external(path, is_file=True)
         else:
-            open_external('https://janszafranski.github.io/just-a-collection-of-apps/')
+            open_external(self.GUIDE_URL)
+
+    def open_manual(self):
+        """Open the full User Guide in an in-app window."""
+        self._show_doc(MANUAL_GUIDE, 'just a... PAGEdesigner — User Guide')
 
     def open_quickstart(self):
-        """Open the Quick Start Guide — the bundled HTML in the browser, or the
-        GitHub-hosted copy if the local file isn't installed beside the app."""
-        if os.path.isfile(QUICKSTART_GUIDE):
-            open_external(QUICKSTART_GUIDE, is_file=True)
-        else:
-            open_external('https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html#quickstart')
+        """Open the Quick Start Guide in an in-app window."""
+        self._show_doc(QUICKSTART_GUIDE, 'just a... PAGEdesigner — Quick Start')
 
     def insert_coffee_button(self):
         """Toolbar one-click: drop a 'Buy me a coffee' button, coloured to match the
