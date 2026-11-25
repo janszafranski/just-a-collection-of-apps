@@ -164,11 +164,88 @@ def TEMPLATES():
     T.append(dict(name='Social — promo', cat='Social posts', w=800, h=800, objs=[
         ('shape', 0, 0, 800, 800, dict(shape='rect', fill='#fff3e8', strokeW=0)),
         _pic(60, 60, 680, 420),
-        ('shape', 520, 420, 220, 220, dict(shape='star5', fill='#e8556b', strokeW=0)),
+        ('shape', 520, 420, 220, 220, dict(shape='burst', fill='#e8556b', strokeW=0)),
         ('text', 540, 500, 180, 70, dict(pad=0, size=30, bold=True, color='#ffffff', align='center', html='<p>20%<br>OFF</p>')),
         ('artistic', 60, 520, 460, 50, dict(size=40, bold=True, color='#20343f', html='<p>New this week</p>')),
         ('text', 60, 580, 460, 120, dict(pad=0, size=20, color='#5c6b73', html='<p>Handmade oak chopping boards, finished in our workshop. While they last.</p>')),
         ('text', 60, 720, 680, 30, dict(pad=0, size=16, color='#8a949b', html='<p>@harbourandco · link in bio</p>')),
+    ]))
+
+    # ---- Workshop / class poster (A4) -------------------------------------
+    T.append(dict(name='Workshop poster', cat='Posters', w=794, h=1123, objs=[
+        ('shape', 0, 0, 794, 1123, dict(shape='rect', fill='#f4efe6', strokeW=0)),
+        ('shape', 0, 0, 794, 14, dict(shape='rect', fill='#b5652b', strokeW=0)),
+        ('text', 60, 70, 674, 30, dict(pad=0, size=18, color='#b5652b', html='<p>A HANDS-ON EVENING CLASS</p>')),
+        ('artistic', 56, 120, 682, 180, dict(size=76, bold=True, color='#2b2017', html='<p>Learn to<br>whittle</p>')),
+        _pic(60, 340, 674, 360),
+        ('artistic', 60, 740, 500, 44, dict(size=30, bold=True, color='#2b2017', html='<p>Thursdays · 7–9pm</p>')),
+        ('text', 60, 800, 500, 120, dict(pad=0, size=18, color='#5c5244', html='<p>Six weeks, all tools and timber supplied. No experience needed — just bring an apron.</p><p>£90 for the course.</p>')),
+        ('shape', 600, 740, 150, 150, dict(shape='seal', fill='#b5652b', strokeW=0)),
+        ('text', 614, 790, 122, 54, dict(pad=0, size=18, bold=True, color='#ffffff', align='center', html='<p>6 weeks</p>')),
+        ('text', 60, 1050, 674, 30, dict(pad=0, size=15, color='#8a7f6d', html='<p>Book at harbourandco.example · limited places</p>')),
+    ]))
+
+    # ---- Property for sale (A4) -------------------------------------------
+    T.append(dict(name='Property for sale', cat='Flyers', w=794, h=1123, objs=[
+        ('shape', 0, 0, 794, 90, dict(shape='rect', fill='#1f3a5f', strokeW=0)),
+        ('artistic', 40, 26, 420, 40, dict(size=26, bold=True, color='#ffffff', html='<p>Quayside Homes</p>')),
+        ('text', 500, 34, 254, 26, dict(pad=0, size=15, color='#cbd8e6', align='right', html='<p>FOR SALE</p>')),
+        _pic(0, 90, 794, 440),
+        ('artistic', 40, 560, 500, 44, dict(size=34, bold=True, color='#1f3a5f', html='<p>3 Quay Cottages</p>')),
+        ('text', 40, 616, 460, 30, dict(pad=0, size=18, color='#5c6b73', html='<p>A restored fisherman’s cottage by the water.</p>')),
+        ('artistic', 540, 556, 214, 50, dict(size=40, bold=True, color='#2a7d6b', align='right', html='<p>£285,000</p>')),
+        ('table', 40, 680, 714, 180, dict(head='#e4ecf3', cells=[['Bedrooms', '3', 'Reception', '2'], ['Bathrooms', '2', 'Garden', 'Yes'], ['EPC', 'C', 'Council tax', 'D']])),
+        ('text', 40, 900, 714, 120, dict(pad=0, size=16, color='#4b5a63', html='<p>Viewings by appointment. Call Quayside Homes on 01234 567890 or email sales@quaysidehomes.example.</p>')),
+    ]))
+
+    # ---- Gift voucher (landscape) -----------------------------------------
+    T.append(dict(name='Gift voucher', cat='Vouchers & cards', w=794, h=380, objs=[
+        ('shape', 0, 0, 794, 380, dict(shape='rect', fill='#20343f', strokeW=0)),
+        ('shape', 24, 24, 746, 332, dict(shape='rect', fill='', stroke='#c9a227', strokeW=1.5, radius=8)),
+        ('text', 60, 60, 400, 28, dict(pad=0, size=18, color='#c9a227', html='<p>HARBOUR &amp; CO.</p>')),
+        ('artistic', 56, 110, 500, 90, dict(size=66, bold=True, color='#ffffff', html='<p>Gift Voucher</p>')),
+        ('artistic', 540, 110, 214, 90, dict(size=76, bold=True, color='#c9a227', align='right', html='<p>£25</p>')),
+        ('line', 60, 270, 420, 0, dict(stroke='#5c6b73', strokeW=1)),
+        ('text', 60, 280, 420, 26, dict(pad=0, size=14, color='#9fb0bd', html='<p>To</p>')),
+        ('line', 60, 330, 420, 0, dict(stroke='#5c6b73', strokeW=1)),
+        ('text', 60, 340, 420, 26, dict(pad=0, size=14, color='#9fb0bd', html='<p>From</p>')),
+        ('shape', 600, 250, 120, 100, dict(shape='rect', fill='#ffffff', strokeW=0, radius=6)),
+        ('qr', 612, 258, 96, 84, dict(text='https://harbourandco.example/voucher')),
+    ]))
+
+    # ---- Appointment card (business card) ---------------------------------
+    T.append(dict(name='Appointment card', cat='Business cards', w=334, h=213, objs=[
+        ('shape', 0, 0, 334, 213, dict(shape='rect', fill='#ffffff', stroke='#e2e6ea', strokeW=1)),
+        ('shape', 0, 0, 334, 46, dict(shape='rect', fill='#5b4b8a', strokeW=0)),
+        ('text', 16, 13, 302, 24, dict(pad=0, size=16, bold=True, color='#ffffff', html='<p>Your next appointment</p>')),
+        ('text', 20, 70, 294, 26, dict(pad=0, size=13, color='#5c6b73', html='<p>Date</p>')),
+        ('line', 90, 90, 224, 0, dict(stroke='#d6dde2', strokeW=1)),
+        ('text', 20, 110, 294, 26, dict(pad=0, size=13, color='#5c6b73', html='<p>Time</p>')),
+        ('line', 90, 130, 224, 0, dict(stroke='#d6dde2', strokeW=1)),
+        ('text', 20, 160, 294, 40, dict(pad=0, size=11, color='#8a949b', html='<p>Riverside Clinic · 01234 567890</p>')),
+    ]))
+
+    # ---- Price list (A4) --------------------------------------------------
+    T.append(dict(name='Price list', cat='Menus', w=794, h=1123, objs=[
+        ('shape', 0, 0, 794, 1123, dict(shape='rect', fill='#ffffff', strokeW=0)),
+        ('shape', 0, 0, 794, 150, dict(shape='rect', fill='#2a7d6b', strokeW=0)),
+        ('artistic', 50, 40, 694, 54, dict(size=44, bold=True, color='#ffffff', html='<p>Our prices</p>')),
+        ('text', 52, 104, 694, 28, dict(pad=0, size=16, color='#cfeae2', html='<p>Simple, honest pricing — no surprises.</p>')),
+        ('artistic', 50, 200, 400, 34, dict(size=22, bold=True, color='#20343f', html='<p>Repairs</p>')),
+        ('table', 50, 246, 694, 170, dict(head='#e9f2ef', cells=[['Service', 'From'], ['Door rehang', '£45'], ['Window repair', '£60'], ['Furniture repair', '£40']])),
+        ('artistic', 50, 450, 400, 34, dict(size=22, bold=True, color='#20343f', html='<p>Fitted work</p>')),
+        ('table', 50, 496, 694, 170, dict(head='#e9f2ef', cells=[['Service', 'From'], ['Fitted shelving', '£180'], ['Staircase repair', '£250'], ['Kitchen (per unit)', '£120']])),
+        ('text', 50, 1050, 694, 30, dict(pad=0, size=14, color='#8a949b', html='<p>Prices are a guide — every job gets a free written quote.</p>')),
+    ]))
+
+    # ---- Thank-you card (A5) ----------------------------------------------
+    T.append(dict(name='Thank-you card', cat='Vouchers & cards', w=559, h=794, objs=[
+        ('shape', 0, 0, 559, 794, dict(shape='rect', fill='#f7f2ea', strokeW=0)),
+        ('shape', 0, 0, 559, 10, dict(shape='rect', fill='#c9a227', strokeW=0)),
+        ('shape', 190, 150, 179, 160, dict(shape='heart', fill='#e8a33d', strokeW=0)),
+        ('artistic', 40, 360, 479, 90, dict(size=66, bold=True, color='#5a3d1e', align='center', html='<p>Thank you</p>')),
+        ('text', 60, 470, 439, 150, dict(pad=0, size=19, color='#6b5a44', align='center', html='<p>For your custom, your kindness and your support this year. It means the world to our small workshop.</p>')),
+        ('text', 60, 700, 439, 40, dict(pad=0, size=17, color='#9a7b52', align='center', html='<p>— everyone at Harbour &amp; Co.</p>')),
     ]))
 
     return T
