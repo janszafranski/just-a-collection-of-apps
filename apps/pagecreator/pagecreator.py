@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.22-00"
+VERSION = "1.23-00"
 
 
 def _just_dir(kind):
@@ -2380,6 +2380,357 @@ def paint_page_vector(painter, site, page, Wpx, Hpx):
             painter.translate(o['w'] / 2, o['h'] / 2); painter.rotate(o['rot']); painter.translate(-o['w'] / 2, -o['h'] / 2)
         painter.setOpacity(o.get('opacity', 1)); paint_obj(painter, o, site, page, edit=False); painter.restore()
         painter.setOpacity(1)
+
+# ----------------------------------------------------------------------------
+# Canva bridge — PowerPoint (.pptx), PDF and images in and out
+# ----------------------------------------------------------------------------
+# Canva has no public local document format: you cannot open a ".canva" file.
+# What Canva's own Upload (import) and Download (export) support is PowerPoint,
+# PDF and images, so this is the real bridge both ways. PPTX is the round-trip
+# format Canva both reads and writes, so our export writes a valid minimal
+# OOXML .pptx (one slide per page: a full-page raster of the design, with each
+# text frame overlaid as a real editable PowerPoint text box) and our import
+# reads a .pptx (Canva's or PowerPoint's) back into pages.
+
+EMU = 914400                 # English Metric Units per inch (OOXML)
+EMU_PER_PX = EMU // 96       # 9525 — our canvas is a 96dpi coordinate system
+
+def _emu(px): return int(round(px * EMU_PER_PX))
+def _px_from_emu(e): return int(round(e / EMU_PER_PX))
+
+def _xml_esc(s):
+    return (str(s).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+            .replace('"', '&quot;'))
+
+def _obj_text(o):
+    """Plain text of a text/artistic/button object (its HTML flattened to text)."""
+    h = o.get('html', '') or ''
+    # turn block/line breaks into newlines before stripping the rest of the tags
+    h = re.sub(r'<\s*br\s*/?>', '\n', h, flags=re.I)
+    h = re.sub(r'</\s*(p|div|li|h[1-6])\s*>', '\n', h, flags=re.I)
+    return re.sub(r'[ \t]+\n', '\n', H.unescape(re.sub(r'<[^>]+>', '', h))).strip()
+
+def _hex6(color, default='000000'):
+    """An #rrggbb / rgb(...) colour as a bare 6-hex string for OOXML."""
+    c = QColor(color) if color else None
+    if c is not None and c.isValid():
+        return '%02X%02X%02X' % (c.red(), c.green(), c.blue())
+    return default
+
+def _png_bytes(img):
+    """A QImage as PNG bytes."""
+    ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, 'PNG')
+    return bytes(ba)
+
+# --- minimal shared OOXML parts (slide master / layout / theme) --------------
+_PPTX_MASTER = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    '<p:sldMaster xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+    '<p:cSld><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+    '<p:grpSpPr/></p:spTree></p:cSld>'
+    '<p:clrMap bg1="lt1" tx1="dk1" bg2="lt2" tx2="dk2" accent1="accent1" accent2="accent2" '
+    'accent3="accent3" accent4="accent4" accent5="accent5" accent6="accent6" hlink="hlink" folHlink="folHlink"/>'
+    '<p:sldLayoutIdLst><p:sldLayoutId id="2147483649" r:id="rId1"/></p:sldLayoutIdLst></p:sldMaster>')
+_PPTX_LAYOUT = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    '<p:sldLayout xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+    'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main" type="blank" preserve="1">'
+    '<p:cSld name="Blank"><p:spTree><p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr>'
+    '<p:grpSpPr/></p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping/></p:clrMapOvr></p:sldLayout>')
+_PPTX_THEME = (
+    '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+    '<a:theme xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" name="Office Theme">'
+    '<a:themeElements><a:clrScheme name="Office">'
+    '<a:dk1><a:sysClr val="windowText" lastClr="000000"/></a:dk1>'
+    '<a:lt1><a:sysClr val="window" lastClr="FFFFFF"/></a:lt1>'
+    '<a:dk2><a:srgbClr val="44546A"/></a:dk2><a:lt2><a:srgbClr val="E7E6E6"/></a:lt2>'
+    '<a:accent1><a:srgbClr val="4472C4"/></a:accent1><a:accent2><a:srgbClr val="ED7D31"/></a:accent2>'
+    '<a:accent3><a:srgbClr val="A5A5A5"/></a:accent3><a:accent4><a:srgbClr val="FFC000"/></a:accent4>'
+    '<a:accent5><a:srgbClr val="5B9BD5"/></a:accent5><a:accent6><a:srgbClr val="70AD47"/></a:accent6>'
+    '<a:hlink><a:srgbClr val="0563C1"/></a:hlink><a:folHlink><a:srgbClr val="954F72"/></a:folHlink>'
+    '</a:clrScheme><a:fontScheme name="Office">'
+    '<a:majorFont><a:latin typeface="Calibri Light"/><a:ea typeface=""/><a:cs typeface=""/></a:majorFont>'
+    '<a:minorFont><a:latin typeface="Calibri"/><a:ea typeface=""/><a:cs typeface=""/></a:minorFont>'
+    '</a:fontScheme><a:fmtScheme name="Office">'
+    '<a:fillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+    '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:fillStyleLst>'
+    '<a:lnStyleLst><a:ln w="6350"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>'
+    '<a:ln w="12700"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln>'
+    '<a:ln w="19050"><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:ln></a:lnStyleLst>'
+    '<a:effectStyleLst><a:effectStyle><a:effectLst/></a:effectStyle><a:effectStyle><a:effectLst/></a:effectStyle>'
+    '<a:effectStyle><a:effectLst/></a:effectStyle></a:effectStyleLst>'
+    '<a:bgFillStyleLst><a:solidFill><a:schemeClr val="phClr"/></a:solidFill>'
+    '<a:solidFill><a:schemeClr val="phClr"/></a:solidFill><a:solidFill><a:schemeClr val="phClr"/></a:solidFill></a:bgFillStyleLst>'
+    '</a:fmtScheme></a:themeElements></a:theme>')
+
+def _pptx_txbox(shid, name, x, y, w, h, text, size_pt, hexcol):
+    """A <p:sp> text box: positioned/sized in EMU, carrying plain text split into
+    paragraphs, at an approximate font size (half-points) and colour."""
+    runs = []
+    for para in (text.split('\n') or ['']):
+        if para.strip() == '':
+            runs.append('<a:p/>')
+        else:
+            runs.append(
+                '<a:p><a:r><a:rPr lang="en-US" dirty="0" sz="%d"><a:solidFill><a:srgbClr val="%s"/></a:solidFill></a:rPr>'
+                '<a:t>%s</a:t></a:r></a:p>' % (max(100, int(size_pt * 100)), hexcol, _xml_esc(para)))
+    body = ''.join(runs) or '<a:p/>'
+    return (
+        '<p:sp><p:nvSpPr><p:cNvPr id="%d" name="%s"/>'
+        '<p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr>'
+        '<p:spPr><a:xfrm><a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom><a:noFill/></p:spPr>'
+        '<p:txBody><a:bodyPr wrap="square" rtlCol="0"><a:spAutoFit/></a:bodyPr><a:lstStyle/>%s</p:txBody></p:sp>'
+        % (shid, _xml_esc(name), _emu(x), _emu(y), _emu(w), _emu(h), body))
+
+def _pptx_pic(shid, name, rid, x, y, w, h):
+    """A <p:pic> picture, referencing media by relationship id."""
+    return (
+        '<p:pic><p:nvPicPr><p:cNvPr id="%d" name="%s"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+        '<p:blipFill><a:blip r:embed="%s"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+        '<p:spPr><a:xfrm><a:off x="%d" y="%d"/><a:ext cx="%d" cy="%d"/></a:xfrm>'
+        '<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+        % (shid, _xml_esc(name), rid, _emu(x), _emu(y), _emu(w), _emu(h)))
+
+def write_canva_pptx(site, path, raster_scale=1.5):
+    """Write `site` as a valid minimal .pptx — one slide per page. Each slide gets a
+    full-bleed raster of the page as its background picture, then every text / artistic
+    / button object is overlaid as a real, editable PowerPoint text box so it stays
+    editable in Canva. Pictures and shapes remain baked into the background raster (v1)."""
+    import zipfile
+    Wpx = site['width']
+    def pageH(pg): return pg.get('height') or site['height']
+    files = {}
+    media = {}        # media filename -> bytes
+    # per-slide presentation bookkeeping
+    slide_rels = {}   # slide index -> list of (rId, type, target)
+    n = len(site['pages'])
+
+    for i, page in enumerate(site['pages'], start=1):
+        Hpx = pageH(page)
+        # 1) full-page raster background
+        raster = render_page_image(site, page, width=max(1, int(Wpx * raster_scale)))
+        mname = 'media/image%d.png' % i
+        media[mname] = _png_bytes(raster)
+        rels = [('rId1', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout', '../slideLayouts/slideLayout1.xml'),
+                ('rId2', 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/image', '../' + mname)]
+        shapes = [_pptx_pic(10, 'Background', 'rId2', 0, 0, Wpx, Hpx)]
+        shid = 11
+        # 2) overlay each text object as an editable text box
+        for o in page_objects(site, page):
+            if o.get('hidden') or o.get('type') not in ('text', 'artistic', 'button'):
+                continue
+            txt = _obj_text(o)
+            if not txt:
+                continue
+            shapes.append(_pptx_txbox(shid, 'Text %d' % shid, o['x'], o['y'],
+                                      o.get('w', 100), o.get('h', 40), txt,
+                                      o.get('size', 16), _hex6(o.get('color'))))
+            shid += 1
+        rels_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                    '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                    + ''.join('<Relationship Id="%s" Type="%s" Target="%s"/>' % r for r in rels)
+                    + '</Relationships>')
+        slide_xml = ('<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+                     '<p:sld xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+                     'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+                     'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+                     '<p:cSld><p:spTree>'
+                     '<p:nvGrpSpPr><p:cNvPr id="1" name=""/><p:cNvGrpSpPr/><p:nvPr/></p:nvGrpSpPr><p:grpSpPr/>'
+                     + ''.join(shapes) +
+                     '</p:spTree></p:cSld><p:clrMapOvr><a:overrideClrMapping/></p:clrMapOvr></p:sld>')
+        files['ppt/slides/slide%d.xml' % i] = slide_xml
+        files['ppt/slides/_rels/slide%d.xml.rels' % i] = rels_xml
+        slide_rels[i] = rels
+
+    # presentation.xml — slide size from page 0, one sldId per slide
+    sldW, sldH = _emu(Wpx), _emu(pageH(site['pages'][0]))
+    sld_ids = ''.join('<p:sldId id="%d" r:id="rId%d"/>' % (255 + i, i) for i in range(1, n + 1))
+    files['ppt/presentation.xml'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<p:presentation xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" '
+        'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" '
+        'xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">'
+        '<p:sldMasterIdLst><p:sldMasterId id="2147483648" r:id="rId%d"/></p:sldMasterIdLst>'
+        '<p:sldIdLst>%s</p:sldIdLst>'
+        '<p:sldSz cx="%d" cy="%d"/><p:notesSz cx="6858000" cy="9144000"/></p:presentation>'
+        % (n + 1, sld_ids, sldW, sldH))
+    # presentation rels: one per slide + the slide master
+    pres_rels = [('rId%d' % i, 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slide',
+                  'slides/slide%d.xml' % i) for i in range(1, n + 1)]
+    pres_rels.append(('rId%d' % (n + 1), 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster',
+                      'slideMasters/slideMaster1.xml'))
+    pres_rels.append(('rId%d' % (n + 2), 'http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme',
+                      'theme/theme1.xml'))
+    files['ppt/_rels/presentation.xml.rels'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        + ''.join('<Relationship Id="%s" Type="%s" Target="%s"/>' % r for r in pres_rels)
+        + '</Relationships>')
+
+    # slide master (+rels → layout + theme) and the single blank layout (+rels → master)
+    files['ppt/slideMasters/slideMaster1.xml'] = _PPTX_MASTER
+    files['ppt/slideMasters/_rels/slideMaster1.xml.rels'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout1.xml"/>'
+        '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme" Target="../theme/theme1.xml"/>'
+        '</Relationships>')
+    files['ppt/slideLayouts/slideLayout1.xml'] = _PPTX_LAYOUT
+    files['ppt/slideLayouts/_rels/slideLayout1.xml.rels'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideMaster" Target="../slideMasters/slideMaster1.xml"/>'
+        '</Relationships>')
+    files['ppt/theme/theme1.xml'] = _PPTX_THEME
+
+    # package-level parts
+    files['_rels/.rels'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="ppt/presentation.xml"/>'
+        '</Relationships>')
+    slide_overrides = ''.join(
+        '<Override PartName="/ppt/slides/slide%d.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slide+xml"/>' % i
+        for i in range(1, n + 1))
+    files['[Content_Types].xml'] = (
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n'
+        '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+        '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+        '<Default Extension="xml" ContentType="application/xml"/>'
+        '<Default Extension="png" ContentType="image/png"/>'
+        '<Override PartName="/ppt/presentation.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"/>'
+        '<Override PartName="/ppt/slideMasters/slideMaster1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideMaster+xml"/>'
+        '<Override PartName="/ppt/slideLayouts/slideLayout1.xml" ContentType="application/vnd.openxmlformats-officedocument.presentationml.slideLayout+xml"/>'
+        '<Override PartName="/ppt/theme/theme1.xml" ContentType="application/vnd.openxmlformats-officedocument.theme+xml"/>'
+        + slide_overrides + '</Types>')
+
+    with zipfile.ZipFile(path, 'w', zipfile.ZIP_DEFLATED) as z:
+        # [Content_Types].xml first is conventional and keeps some readers happy
+        z.writestr('[Content_Types].xml', files.pop('[Content_Types].xml'))
+        for name, data in files.items():
+            z.writestr(name, data)
+        for name, data in media.items():
+            z.writestr('ppt/' + name, data)
+    return n
+
+# --- PPTX import -------------------------------------------------------------
+_NS = {
+    'p': 'http://schemas.openxmlformats.org/presentationml/2006/main',
+    'a': 'http://schemas.openxmlformats.org/drawingml/2006/main',
+    'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships',
+    'rel': 'http://schemas.openxmlformats.org/package/2006/relationships',
+    'ct': 'http://schemas.openxmlformats.org/package/2006/content-types',
+}
+
+def read_canva_pptx(path):
+    """Read a .pptx (ours, Canva's or PowerPoint's) into a new site dict. Builds pages
+    in presentation sldIdLst order, mapping p:pic → picture objects (media embedded as a
+    data-URI) and text-carrying p:sp → text frames. Returns a tpl_blank-based site."""
+    import zipfile, xml.etree.ElementTree as ET
+    with zipfile.ZipFile(path) as z:
+        names = set(z.namelist())
+        def xml(n):
+            return ET.fromstring(z.read(n)) if n in names else None
+
+        # slide size from presentation.xml (default A-ish if absent)
+        pres = xml('ppt/presentation.xml')
+        sldW_px = sldH_px = None
+        if pres is not None:
+            sz = pres.find('p:sldSz', _NS)
+            if sz is not None:
+                sldW_px = _px_from_emu(int(sz.get('cx', 0))) or None
+                sldH_px = _px_from_emu(int(sz.get('cy', 0))) or None
+        sldW_px = sldW_px or 960
+        sldH_px = sldH_px or 540
+
+        # slide order: resolve presentation rels r:id -> slide part
+        pres_rels = xml('ppt/_rels/presentation.xml.rels')
+        rid2target = {}
+        if pres_rels is not None:
+            for rel in pres_rels.findall('rel:Relationship', _NS):
+                rid2target[rel.get('Id')] = rel.get('Target')
+        slide_parts = []
+        if pres is not None:
+            lst = pres.find('p:sldIdLst', _NS)
+            if lst is not None:
+                for sid in lst.findall('p:sldId', _NS):
+                    rid = sid.get('{%s}id' % _NS['r'])
+                    tgt = rid2target.get(rid)
+                    if tgt:
+                        slide_parts.append('ppt/' + tgt.lstrip('/').replace('../', ''))
+        if not slide_parts:   # fall back to any slideN.xml, numerically
+            slide_parts = sorted((n for n in names if re.match(r'ppt/slides/slide\d+\.xml$', n)),
+                                 key=lambda s: int(re.search(r'(\d+)', s).group(1)))
+
+        site = tpl_blank(os.path.splitext(os.path.basename(path))[0], max(50, sldW_px), max(50, sldH_px))
+        first = True
+        for spart in slide_parts:
+            tree = xml(spart)
+            if tree is None:
+                continue
+            # this slide's rels (for r:embed -> media)
+            base = spart.rsplit('/', 1)[-1]
+            rels = xml('ppt/slides/_rels/%s.rels' % base)
+            embed2media = {}
+            if rels is not None:
+                for rel in rels.findall('rel:Relationship', _NS):
+                    if rel.get('Type', '').endswith('/image'):
+                        tgt = rel.get('Target', '')
+                        embed2media[rel.get('Id')] = 'ppt/' + re.sub(r'^\.\./', '', tgt.lstrip('/'))
+            objs = []
+            tree_el = tree.find('p:cSld/p:spTree', _NS)
+            if tree_el is None:
+                page = site['pages'][0] if first else add_page(site, 'Slide')
+                first = False
+                continue
+            for sp in tree_el:
+                tag = sp.tag.split('}')[-1]
+                if tag == 'pic':
+                    blip = sp.find('.//a:blip', _NS)
+                    rid = blip.get('{%s}embed' % _NS['r']) if blip is not None else None
+                    mpart = embed2media.get(rid)
+                    if not mpart or mpart not in names:
+                        continue
+                    data = z.read(mpart)
+                    ext = os.path.splitext(mpart)[1].lstrip('.').lower() or 'png'
+                    mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'gif': 'gif', 'svg': 'svg+xml'}.get(ext, 'png')
+                    uri = 'data:image/%s;base64,%s' % (mime, base64.b64encode(data).decode())
+                    off = sp.find('.//a:off', _NS); ext_el = sp.find('.//a:ext', _NS)
+                    x = _px_from_emu(int(off.get('x', 0))) if off is not None else 0
+                    y = _px_from_emu(int(off.get('y', 0))) if off is not None else 0
+                    w = _px_from_emu(int(ext_el.get('cx', 0))) if ext_el is not None else sldW_px
+                    h = _px_from_emu(int(ext_el.get('cy', 0))) if ext_el is not None else sldH_px
+                    key = add_asset(site, uri)
+                    site.setdefault('assetnames', {})[key] = os.path.basename(mpart)
+                    objs.append(mk('picture', x, y, max(1, w), max(1, h), src=key, fit='stretch'))
+                elif tag == 'sp':
+                    txt = '\n'.join(''.join(t.text or '' for t in para.findall('.//a:t', _NS))
+                                    for para in sp.findall('.//a:p', _NS)).strip('\n')
+                    if not txt.strip():
+                        continue
+                    off = sp.find('.//a:off', _NS); ext_el = sp.find('.//a:ext', _NS)
+                    x = _px_from_emu(int(off.get('x', 0))) if off is not None else 40
+                    y = _px_from_emu(int(off.get('y', 0))) if off is not None else 40
+                    w = _px_from_emu(int(ext_el.get('cx', 0))) if ext_el is not None else 320
+                    h = _px_from_emu(int(ext_el.get('cy', 0))) if ext_el is not None else 60
+                    sz_el = sp.find('.//a:rPr[@sz]', _NS)
+                    size = int(round(int(sz_el.get('sz')) / 100.0)) if (sz_el is not None and sz_el.get('sz')) else 16
+                    clr = sp.find('.//a:rPr/a:solidFill/a:srgbClr', _NS)
+                    color = ('#' + clr.get('val')) if (clr is not None and clr.get('val')) else '#2b2b2b'
+                    html = ''.join('<p>%s</p>' % esc(line) for line in txt.split('\n')) or '<p></p>'
+                    objs.append(mk('text', x, y, max(1, w), max(1, h), html=html,
+                                   size=max(6, size), color=color))
+            page = site['pages'][0] if first else add_page(site, 'Slide')
+            first = False
+            page['height'] = max(50, sldH_px)
+            page['objects'] = objs
+        if first:   # no slides at all — leave the one blank page tpl_blank made
+            pass
+        return site
 
 # ----------------------------------------------------------------------------
 # Print imposition — arranging document pages N-per-sheet / as a folded booklet
@@ -5948,7 +6299,9 @@ class StartupAssistant(QDialog):
 
     def do_import(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Import', os.path.expanduser('~'),
-                                              'PagePlus publication (*.ppp);;PDF document (*.pdf);;All files (*)')
+                                              'All importable (*.ppp *.pdf *.pptx *.png *.jpg *.jpeg *.svg);;'
+                                              'PagePlus publication (*.ppp);;PDF document (*.pdf);;'
+                                              'From Canva — PowerPoint (*.pptx);;Images (*.png *.jpg *.jpeg *.svg);;All files (*)')
         if path:
             self.result_importfile = path; self.accept()
 
@@ -6335,7 +6688,10 @@ class MainWindow(QMainWindow):
                 elif isinstance(it, tuple): sub = m.addMenu(it[0]); [sub.addAction(x) if x else sub.addSeparator() for x in it[1]]
                 else: m.addAction(it)
             return m
-        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], None, a['save'], a['saveas'], None, a['docsetup'], a['preflight'],
+        export_sub = [self.act('For &Canva (PowerPoint / PDF / Images)…', self.export_canva, None, ['document-export', 'document-send'])]
+        import_canva_act = self.act('From &Canva (PowerPoint / PDF / Image)…', lambda: self.import_canva(), None, ['document-import', 'document-open'])
+        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], import_canva_act, None, a['save'], a['saveas'],
+                       ('Export', export_sub), None, a['docsetup'], a['preflight'],
                        self.act('Print / PDF &Preview…', self.print_preview_dialog, None, ['document-print-preview', 'document-preview', 'document-print']),
                        a['printdoc'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall'], None,
@@ -10514,6 +10870,8 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP, f"Couldn't open {os.path.basename(path)}.\n\n{ex}")
         elif low.endswith('.pdf'):
             self.open_pdf_as_doc(path)
+        elif low.endswith(('.pptx', '.png', '.jpg', '.jpeg', '.svg')):
+            self.import_canva(path)
 
     def open_pdf_as_doc(self, path):
         from PySide6.QtPdf import QPdfDocument
@@ -11311,6 +11669,96 @@ class MainWindow(QMainWindow):
             painter.end()
         self.hint(f'Exported {len(pages)} page(s) as {IMPOSITION[layout][0].split(" (")[0]} '
                   f'on {len(sheets)} sheet(s) to {os.path.basename(path)}')
+
+    # ------------------------------------------------- Canva bridge
+    def export_canva(self, fmt=None, path=None, folder=None):
+        """Export the document in a format Canva can Upload: PowerPoint (.pptx),
+        PDF, or one PNG per page. PPTX is the round-trip format Canva both reads and
+        writes. `fmt`/`path`/`folder` let a caller (and the headless tests) drive it
+        without the dialog; left None, a small dialog asks."""
+        if fmt is None:
+            from PySide6.QtWidgets import QComboBox
+            pick = QComboBox()
+            pick.addItem('PowerPoint (.pptx) — editable text over the design', 'pptx')
+            pick.addItem('PDF — one page per sheet', 'pdf')
+            pick.addItem('Images — one PNG per page', 'images')
+            note = QLabel("Canva has no file you can open directly: this bridges through the "
+                          "formats Canva's Upload supports. PowerPoint (.pptx) is the round-trip "
+                          "format Canva both reads and writes — your text frames stay editable.")
+            note.setWordWrap(True); note.setStyleSheet('color:gray')
+            dlg = form_dialog(self, 'For Canva', [('Format:', pick)], note)
+            if not dlg.exec(): return
+            fmt = pick.currentData()
+        if fmt == 'pdf':
+            return self.export_pdf('1up')
+        base = os.path.splitext(self.path or self.site.get('name') or 'document')[0]
+        if fmt == 'images':
+            if folder is None:
+                folder = QFileDialog.getExistingDirectory(self, 'For Canva — choose a folder for the page images',
+                                                           os.path.dirname(self.path) if self.path else os.path.expanduser('~'))
+                if not folder: return
+            Wpx = self.site['width']
+            for i, page in enumerate(self.site['pages'], start=1):
+                img = render_page_image(self.site, page, width=max(1, int(Wpx * 1.5)))
+                img.save(os.path.join(folder, 'page-%03d.png' % i), 'PNG')
+            self.hint(f'Exported {len(self.site["pages"])} page image(s) to {folder}')
+            return folder
+        # PowerPoint (.pptx)
+        if path is None:
+            start = base + '.pptx'
+            path, _ = QFileDialog.getSaveFileName(self, 'For Canva — PowerPoint', start, 'PowerPoint presentations (*.pptx)')
+            if not path: return
+            if not path.lower().endswith('.pptx'): path += '.pptx'
+        try:
+            n = write_canva_pptx(self.site, path)
+        except Exception as ex:
+            QMessageBox.warning(self, APP, f"Couldn't write the PowerPoint file.\n\n{ex}"); return
+        self.hint(f'Exported {n} slide(s) to {os.path.basename(path)} — upload it to Canva.')
+        return path
+
+    def import_canva(self, path=None, skip_save_check=False):
+        """Import a design Canva can Download: PowerPoint (.pptx), PDF or an image.
+        Canva has no openable file of its own; .pptx is the round-trip Canva writes."""
+        if path is None:
+            if not skip_save_check and not self.maybe_save(): return
+            last = self.settings.value('canvaDir', os.path.expanduser('~'))
+            path, _ = QFileDialog.getOpenFileName(
+                self, 'From Canva', last,
+                'Canva-compatible files (*.pptx *.pdf *.png *.jpg *.jpeg *.svg);;'
+                'PowerPoint (*.pptx);;PDF (*.pdf);;Images (*.png *.jpg *.jpeg);;SVG (*.svg);;All files (*)')
+            if not path: return
+            self.settings.setValue('canvaDir', os.path.dirname(path))
+        low = path.lower()
+        if low.endswith('.pdf'):
+            return self.open_pdf_as_doc(path)
+        if low.endswith('.pptx'):
+            try:
+                site = read_canva_pptx(path)
+            except Exception as ex:
+                QMessageBox.warning(self, APP, f"Couldn't read that PowerPoint file.\n\n{ex}"); return
+            self.set_site(site); self.dirty = True; self.update_title()
+            self.hint(f'Imported {len(site["pages"])} page(s) from {os.path.basename(path)}.')
+            return site
+        if low.endswith('.svg'):
+            # SVG: Canva exports flattened SVGs that we don't parse into native objects.
+            # Rasterise it to a full-page picture so the design still comes across.
+            img = QImage(path)
+            if img.isNull():
+                QMessageBox.warning(self, APP, "Couldn't read that SVG."); return
+        else:   # .png / .jpg / .jpeg and anything else Qt can read as an image
+            img = QImage(path)
+            if img.isNull():
+                QMessageBox.warning(self, APP, "Couldn't read that image."); return
+        wpx, hpx = max(1, img.width()), max(1, img.height())
+        ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, 'PNG')
+        uri = 'data:image/png;base64,' + bytes(ba.toBase64()).decode()
+        site = tpl_blank(os.path.splitext(os.path.basename(path))[0], wpx, hpx)
+        key = add_asset(site, uri)
+        site.setdefault('assetnames', {})[key] = os.path.basename(path)
+        site['pages'][0]['objects'] = [mk('picture', 0, 0, wpx, hpx, src=key, fit='stretch')]
+        self.set_site(site); self.dirty = True; self.update_title()
+        self.hint(f'Imported {os.path.basename(path)} as a 1-page document.')
+        return site
 
     def publish_disk(self):
         """Publish = pick Static or Responsive, then show the 'put it online'

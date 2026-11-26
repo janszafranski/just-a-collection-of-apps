@@ -333,6 +333,7 @@ def capture(full=True):
     drive(w2.gradient_dialog, "linear")
     drive(w2.replace_colour_dialog)
     drive(w2.print_preview_dialog)
+    drive(w2.export_canva)              # File ▸ Export ▸ For Canva…  (title "For Canva")
     drive(w2.guides_dialog)
     drive(w2.spell_dialog)
     drive(w2.find_replace_dialog)       # Edit ▸ Find & Replace (Ctrl+H)
@@ -1177,7 +1178,29 @@ to fit its screen — right for a long, text-led document, less so for a poster.
       ("Importing from PagePlus, WebPlus and PDF", """
 <p>PAGEdesigner opens work from the programs it stands in for. <b>File ▸ Open PagePlus…</b> reads a Serif
 PagePlus <code>.ppp</code> publication; it can import a WebPlus site, and place a PDF as an editable
-document. In each case your original file is left untouched, so there is no risk in trying.</p>""")]))
+document. In each case your original file is left untouched, so there is no risk in trying.</p>"""),
+      ("Working with Canva", f"""
+<p><b>Canva</b> is a popular online design tool, and you can move work both ways between it and
+PAGEdesigner. There is one honest thing to know first: <b>Canva has no design file you can open directly</b>
+— no <code>.canva</code> on your disk to double-click. What Canva <i>does</i> let you do is <b>Upload</b>
+and <b>Download</b> designs as <b>PowerPoint (<code>.pptx</code>), PDF and images</b>. PAGEdesigner
+bridges through exactly those formats, and of them <b>PowerPoint is the round-trip format</b>: Canva both
+reads and writes it, so text survives the journey and stays editable.</p>
+{proc('send a document to Canva',
+  'Choose <b>File ▸ Export ▸ For Canva (PowerPoint / PDF / Images)…</b>.',
+  'Pick <b>PowerPoint (.pptx)</b> — this is the default, and the one Canva reads best.',
+  'Save the file, then in Canva choose <b>Create a design ▸ Import file</b> (or drag the <code>.pptx</code> onto Canva) and upload it.')}
+{fig(dlg('For Canva'), 'The “For Canva” export chooser: PowerPoint keeps your text editable; PDF and images are also offered.')}
+<p>You get one <b>slide per page</b>. Each slide carries a full-page picture of your design as its
+background, and then every <b>text frame</b> is laid over the top as a <b>real, editable PowerPoint text
+box</b> — so once it is in Canva you can retype and restyle the words in place. Pictures and shapes come
+across baked into the background picture in this first version; the text is what stays live.</p>
+{note('The three formats suit different needs. <b>PowerPoint (.pptx)</b> is the round-trip choice — use it whenever you may edit the text again in Canva. <b>PDF</b> is best when the look must not change. <b>Images</b> (one PNG per page) are handy for a quick post or a background.')}
+{proc('bring a Canva design into PAGEdesigner',
+  'In Canva, choose <b>Share ▸ Download</b> and pick <b>PowerPoint (PPTX)</b> (or a PDF, or a PNG/JPG image).',
+  'In PAGEdesigner choose <b>File ▸ From Canva (PowerPoint / PDF / Image)…</b>.',
+  'Pick the downloaded file. A <code>.pptx</code> becomes one page per slide with its text as text frames and its pictures placed; a PDF opens with each page placed; an image becomes a one-page document.')}
+{caution('Because a <code>.pptx</code> carries only so much, imported pages are a faithful starting point rather than a pixel-perfect copy — check each page and nudge anything that shifted. A Canva <b>SVG</b> download is flattened, so PAGEdesigner brings it in as a full-page picture rather than separate objects.')}""")]))
 
     parts.append(("Part V", "Output & Publishing", ch))
 
@@ -1188,7 +1211,9 @@ document. In each case your original file is left untouched, so there is no risk
 <tr><td>New…</td><td>Start a new document via the Startup Assistant</td></tr>
 <tr><td>Open… / Open Recent</td><td>Open a saved <code>.pagc</code> document, or a recent one</td></tr>
 <tr><td>Open PagePlus…</td><td>Import a Serif PagePlus <code>.ppp</code> publication</td></tr>
+<tr><td>From Canva (PowerPoint / PDF / Image)…</td><td>Import a Canva-downloaded <code>.pptx</code>, PDF or image as a new document</td></tr>
 <tr><td>Save / Save As…</td><td>Save the document, or save a copy under a new name</td></tr>
+<tr><td>Export ▸ For Canva (PowerPoint / PDF / Images)…</td><td>Write a <code>.pptx</code> (editable text over the design), a PDF, or one PNG per page to upload to Canva</td></tr>
 <tr><td>Document Setup…</td><td>Page size, orientation and margins</td></tr>
 <tr><td>Preflight…</td><td>Check the document for common problems before output</td></tr>
 <tr><td>Print…</td><td>Send the document to a printer</td></tr>
