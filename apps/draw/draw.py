@@ -20,7 +20,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.2-04"
+VERSION = "1.3-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -382,12 +382,23 @@ class Main(QMainWindow):
         self.settings = QSettings(ORG, 'DRAWmaster')
         self.path = None
         self.canvas = Canvas(self)
+        self.load_bundled_fonts()
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
         sa.setStyleSheet('QScrollArea{background:#cfd4da;border:none}')
         self.setCentralWidget(sa)
         self.build_menu(); self.build_tools()
         self.setWindowTitle(APP); self.resize(1180, 820)
         self.pos_lbl = QLabel('  '); self.statusBar().addPermanentWidget(self.pos_lbl)
+
+    def load_bundled_fonts(self):
+        """Register the display/script fonts shipped in fonts/ (shared with the rest of
+        the just a... suite) so they're available desktop-wide."""
+        from PySide6.QtGui import QFontDatabase
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if fn.lower().endswith(('.ttf', '.otf')):
+                    QFontDatabase.addApplicationFont(os.path.join(d, fn))
 
     def build_tools(self):
         tt = QToolBar('Tools'); tt.setOrientation(Qt.Vertical); tt.setIconSize(QSize(22, 22))

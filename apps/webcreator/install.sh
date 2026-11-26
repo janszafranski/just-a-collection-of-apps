@@ -47,6 +47,15 @@ fi
 
 log "Installing the app"
 install -Dm755 "$SELF/webcreator.py" "$DATA/webcreator/webcreator.py"
+# Bundled fonts (shared across the just a... suite): a copy beside the app so it loads
+# them even where they aren't installed, plus desktop-wide registration via fontconfig.
+if compgen -G "$SELF/fonts/*.ttf" >/dev/null 2>&1; then
+  echo ":: Installing the bundled fonts"
+  install -d "$APPDIR/fonts"; cp "$SELF/fonts/"*.ttf "$APPDIR/fonts/" 2>/dev/null || true
+  [ -f "$SELF/fonts/README.txt" ] && cp "$SELF/fonts/README.txt" "$APPDIR/fonts/" 2>/dev/null || true
+  FONTDIR="$DATA/fonts/just-a-suite"; install -d "$FONTDIR"; cp "$SELF/fonts/"*.ttf "$FONTDIR/" 2>/dev/null || true
+  command -v fc-cache >/dev/null && fc-cache -f "$FONTDIR" >/dev/null 2>&1 || true
+fi
 install -Dm644 "$SELF/test_webplus_import.py" "$DATA/webcreator/test_webplus_import.py"
 # The 89 template page trees and their colour schemes. The app runs without
 # it — the Startup Assistant just falls back to the three design templates —

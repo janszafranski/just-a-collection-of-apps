@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-06"
+VERSION = "1.4-07"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -365,10 +365,11 @@ class Canvas(QWidget):
         if self.tool == 'cutout':
             self.cutout_at(pos, self.cutout_tol); return
         if self.tool == 'text':
-            txt, ok = QInputDialog.getText(self.win, 'Text', 'Text to add:')
-            if ok and txt:
-                self.snapshot(); p = QPainter(self.img); p.setPen(self.color)
-                f = QFont('Noto Sans'); f.setPixelSize(max(8, self.size * 4)); p.setFont(f)
+            res = self.win.ask_text()
+            if res:
+                txt, fam, px = res
+                self.snapshot(); p = QPainter(self.img); p.setRenderHint(QPainter.TextAntialiasing); p.setPen(self.color)
+                f = QFont(fam); f.setPixelSize(px); p.setFont(f)
                 p.drawText(QPointF(pos.x(), pos.y()), txt); p.end(); self.update()
             return
         if self.tool in ('mrect', 'mellipse'):          # marquee selection — not an image edit
@@ -692,6 +693,7 @@ class Main(QMainWindow):
         self.settings = QSettings(ORG, 'PAINT')
         self.path = None
         self.canvas = Canvas(self)
+        self.load_bundled_fonts()
         from PySide6.QtWidgets import QScrollArea
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
         sa.setStyleSheet('QScrollArea{background:#20242a;border:none}')
@@ -859,6 +861,36 @@ class Main(QMainWindow):
         a = QAction(text, self);  a.triggered.connect(slot)
         if sc: a.setShortcut(sc)
         return a
+
+    def load_bundled_fonts(self):
+        """Register the display/script fonts shipped in fonts/ so they're offered in the
+        Text tool's font picker (shared with the rest of the just a... suite)."""
+        from PySide6.QtGui import QFontDatabase
+        self.bundled_fonts = []
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if fn.lower().endswith(('.ttf', '.otf')):
+                    QFontDatabase.addApplicationFont(os.path.join(d, fn))
+
+    def ask_text(self):
+        """Prompt for text, font and size before stamping it onto the canvas."""
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
+                                       QSpinBox, QFontComboBox, QDialogButtonBox)
+        dlg = QDialog(self); dlg.setWindowTitle('Add Text'); dlg.resize(440, 180)
+        v = QVBoxLayout(dlg)
+        le = QLineEdit(); le.setPlaceholderText('Text to add…')
+        fc = QFontComboBox(); fc.setCurrentFont(QFont(getattr(self, '_text_font', 'Noto Sans')))
+        sp = QSpinBox(); sp.setRange(6, 400); sp.setSuffix(' px'); sp.setValue(getattr(self, '_text_px', max(16, self.canvas.size * 4)))
+        form = QFormLayout(); form.addRow('Text:', le); form.addRow('Font:', fc); form.addRow('Size:', sp)
+        v.addLayout(form)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        le.setFocus()
+        if dlg.exec() != QDialog.Accepted or not le.text().strip():
+            return None
+        self._text_font = fc.currentFont().family(); self._text_px = sp.value()
+        return (le.text(), self._text_font, self._text_px)
 
     def cutout_studio(self):
         """Remove a background to transparency: click it with the Cutout tool, or

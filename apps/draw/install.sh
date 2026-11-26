@@ -38,6 +38,15 @@ distro and re-run:  apt install python3-pyside6.qtwidgets  /  dnf install python
 fi
 log "Installing the app"
 install -Dm755 "$SELF/draw.py" "$DATA/draw/draw.py"
+# Bundled fonts (shared across the just a... suite): a copy beside the app so it loads
+# them even where they aren't installed, plus desktop-wide registration via fontconfig.
+if compgen -G "$SELF/fonts/*.ttf" >/dev/null 2>&1; then
+  echo ":: Installing the bundled fonts"
+  install -d "$APPDIR/fonts"; cp "$SELF/fonts/"*.ttf "$APPDIR/fonts/" 2>/dev/null || true
+  [ -f "$SELF/fonts/README.txt" ] && cp "$SELF/fonts/README.txt" "$APPDIR/fonts/" 2>/dev/null || true
+  FONTDIR="$DATA/fonts/just-a-suite"; install -d "$FONTDIR"; cp "$SELF/fonts/"*.ttf "$FONTDIR/" 2>/dev/null || true
+  command -v fc-cache >/dev/null && fc-cache -f "$FONTDIR" >/dev/null 2>&1 || true
+fi
 install -Dm644 "$SELF/banner.png" "$DATA/draw/banner.png"
 for d in manual.pdf quickstart.pdf manual.html quickstart.html; do
   [[ -f "$SELF/$d" ]] && install -Dm644 "$SELF/$d" "$DATA/draw/$d"
