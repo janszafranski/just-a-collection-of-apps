@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.7-01"
+VERSION = "1.8-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -185,6 +185,16 @@ try:
 except Exception:
     HAS_PIL = False
 
+# OpenCV is an OPTIONAL extra: when present it gives the Smart Mask tool a
+# grabCut-quality cut-out (Fluid-Mask-grade edges). Everything still works
+# without it via a NumPy colour-model fallback (see smart_mask()).
+try:
+    import cv2 as _cv2
+    HAS_CV2 = True
+except Exception:
+    _cv2 = None
+    HAS_CV2 = False
+
 
 def q2pil(img):
     im = img.convertToFormat(QImage.Format_RGBA8888)
@@ -230,6 +240,102 @@ def new_mask(w, h, white=True):
     m = QImage(w, h, QImage.Format_Grayscale8)
     m.fill(QColor('#ffffff') if white else QColor('#000000'))
     return m
+
+
+def _feather_mask(binary, feather):
+    """Soften a 0/255 uint8 HxW mask's edges with a Gaussian of radius `feather` (px).
+    feather<=0 returns the hard mask unchanged."""
+    if feather <= 0:
+        return binary.astype(_np.uint8)
+    soft = Image.fromarray(binary.astype('uint8'), 'L').filter(
+        ImageFilter.GaussianBlur(float(feather)))
+    return _np.asarray(soft).astype(_np.uint8)
+
+
+def _smart_mask_fallback(rgb, keep, remove, feather=0):
+    """NumPy-only foreground/background separation (no OpenCV). Builds a Gaussian
+    colour model (mean + covariance) for the KEEP-scribbled and REMOVE-scribbled
+    pixels, then classifies every pixel to the nearer model by Mahalanobis-ish
+    distance. Returns a 0..255 uint8 mask (255 = foreground), feathered."""
+    h, w = rgb.shape[:2]
+    data = rgb.reshape(-1, 3).astype(_np.float64)
+    kf = keep.reshape(-1)
+    rf = remove.reshape(-1)
+    fg_px = data[kf]
+    bg_px = data[rf]
+    if fg_px.shape[0] == 0 or bg_px.shape[0] == 0:
+        # not enough guidance — everything the user marked KEEP is the subject
+        out = _np.where(keep, 255, 0).astype(_np.uint8)
+        return _feather_mask(out, feather)
+
+    def model(px):
+        mean = px.mean(axis=0)
+        cov = _np.cov(px.T) if px.shape[0] > 1 else _np.eye(3)
+        cov = cov + _np.eye(3) * 1.0           # regularise (avoid singular)
+        try:
+            inv = _np.linalg.inv(cov)
+        except _np.linalg.LinAlgError:
+            inv = _np.eye(3)
+        return mean, inv
+
+    fg_mean, fg_inv = model(fg_px)
+    bg_mean, bg_inv = model(bg_px)
+
+    def dist(inv, mean):
+        d = data - mean
+        return _np.einsum('ij,jk,ik->i', d, inv, d)
+
+    fg_d = dist(fg_inv, fg_mean)
+    bg_d = dist(bg_inv, bg_mean)
+    fg = (fg_d <= bg_d).reshape(h, w)
+    # honour the scribbles exactly where the user painted them
+    fg = fg | keep
+    fg = fg & ~remove
+    out = _np.where(fg, 255, 0).astype(_np.uint8)
+    return _feather_mask(out, feather)
+
+
+def smart_mask(rgb, keep, remove, feather=0, force_fallback=False):
+    """Fluid-Mask-style scribble cut-out. Given an RGB image (HxWx3 uint8) and two
+    boolean HxW scribble maps — `keep` over the subject, `remove` over the
+    background — return a 0..255 uint8 HxW mask where 255 = foreground (the subject).
+
+    With OpenCV present (and force_fallback False) this seeds cv2.grabCut from the
+    scribbles (GC_FGD under KEEP, GC_BGD under REMOVE, GC_PR_FGD elsewhere) and runs
+    a few GC_INIT_WITH_MASK iterations — the sharp, Fluid-Mask-grade path. Otherwise a
+    pure NumPy colour-model fallback is used. `feather` applies a Gaussian to the
+    binary result for soft edges (hair/foliage). This is a pure function (no Qt)."""
+    rgb = _np.ascontiguousarray(rgb[..., :3].astype(_np.uint8))
+    keep = _np.ascontiguousarray(keep.astype(bool))
+    remove = _np.ascontiguousarray(remove.astype(bool))
+    h, w = rgb.shape[:2]
+    if not keep.any():
+        return _np.zeros((h, w), _np.uint8)
+
+    if HAS_CV2 and not force_fallback:
+        try:
+            gc = _np.full((h, w), _cv2.GC_PR_FGD, _np.uint8)
+            gc[remove] = _cv2.GC_BGD
+            gc[keep] = _cv2.GC_FGD
+            if not (gc == _cv2.GC_BGD).any():
+                # grabCut needs some background seed — treat the border as probable bg
+                gc_pr = _np.full((h, w), _cv2.GC_PR_BGD, _np.uint8)
+                gc_pr[keep] = _cv2.GC_FGD
+                gc = gc_pr
+            bgdm = _np.zeros((1, 65), _np.float64)
+            fgdm = _np.zeros((1, 65), _np.float64)
+            bgr = rgb[..., ::-1].copy()
+            _cv2.grabCut(bgr, gc, None, bgdm, fgdm, 5, _cv2.GC_INIT_WITH_MASK)
+            fg = (gc == _cv2.GC_FGD) | (gc == _cv2.GC_PR_FGD)
+            fg = fg | keep
+            fg = fg & ~remove
+            out = _np.where(fg, 255, 0).astype(_np.uint8)
+            if out.any():
+                return _feather_mask(out, feather)
+            # grabCut collapsed to nothing — fall through to the NumPy model
+        except Exception:
+            pass
+    return _smart_mask_fallback(rgb, keep, remove, feather)
 
 
 EXPORT_FORMATS = [
@@ -425,6 +531,12 @@ class Canvas(QWidget):
         self.cutout_tol = 45
         self.wand_tol = 32             # magic-wand colour tolerance (0..255-ish)
         self.wand_contiguous = True    # wand selects a connected region vs. the whole image
+        # Smart Mask (Fluid-Mask-style) scribbles: two bool HxW overlays painted over
+        # the image (never altering it) — KEEP marks the subject, REMOVE the background.
+        self.sm_keep = None            # bool HxW ndarray or None
+        self.sm_remove = None          # bool HxW ndarray or None
+        self.sm_brush = 18             # scribble brush diameter (px)
+        self.sm_mode = 'keep'          # which scribble the left-drag paints: 'keep' | 'remove'
         self.last = None
         self.start = None
         self.preview = None            # (tool, QPoint start, QPoint cur) while dragging a shape
@@ -715,6 +827,10 @@ class Canvas(QWidget):
                 pen = QPen(col, 1, style); pen.setCosmetic(True); p.setPen(pen)
                 p.drawEllipse(r) if kind == 'ellipse' else p.drawRect(r)
             p.restore()
+        if self.tool == 'smartmask':
+            sov = self._sm_overlay()
+            if sov is not None:
+                p.drawImage(r, sov, QRectF(0, 0, sov.width(), sov.height()))
         p.end()
 
     def _mask_overlay(self):
@@ -747,6 +863,11 @@ class Canvas(QWidget):
         return pen
 
     def mousePressEvent(self, e):
+        if self.tool == 'smartmask' and e.button() in (Qt.LeftButton, Qt.RightButton):
+            pos = self.img_pos(e)
+            mode = 'remove' if e.button() == Qt.RightButton else self.sm_mode
+            self._sm_active = mode
+            self.last = pos; self._sm_paint(pos, pos, mode); return
         if e.button() != Qt.LeftButton: return
         pos = self.img_pos(e)
         if self.tool == 'picker':
@@ -798,6 +919,11 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, e):
         pos = self.img_pos(e)
         self.win.set_pos(pos)
+        if self.tool == 'smartmask':
+            if (e.buttons() & (Qt.LeftButton | Qt.RightButton)) and self.last is not None:
+                self._sm_paint(self.last, pos, getattr(self, '_sm_active', self.sm_mode))
+                self.last = pos
+            return
         if not (e.buttons() & Qt.LeftButton): return
         if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone') and self.last is not None:
             self._stroke(self.last, pos); self.last = pos; self.update()
@@ -807,6 +933,8 @@ class Canvas(QWidget):
             self.sel_drag = (self.start, pos); self.update()
 
     def mouseReleaseEvent(self, e):
+        if self.tool == 'smartmask':
+            self.last = None; return
         if e.button() != Qt.LeftButton: return
         pos = self.img_pos(e)
         if self.tool in ('mrect', 'mellipse') and self.start is not None:
@@ -1174,6 +1302,79 @@ class Canvas(QWidget):
         self._flood_transparent(corners, ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff), tol)
         self.update(); self.win.update_title()
 
+    # ---- Smart Mask (Fluid-Mask-style scribble cut-out) ----
+    def _sm_ensure(self):
+        """Make sure the two scribble overlays exist at the current image size (reset
+        them if the geometry changed)."""
+        h, w = self.img.height(), self.img.width()
+        if self.sm_keep is None or self.sm_keep.shape != (h, w):
+            self.sm_keep = _np.zeros((h, w), bool)
+            self.sm_remove = _np.zeros((h, w), bool)
+
+    def sm_clear(self):
+        """Forget all Smart Mask scribbles."""
+        self.sm_keep = self.sm_remove = None
+        self.update()
+
+    def _sm_paint(self, a, b, mode):
+        """Stamp a line of the scribble brush (diameter self.sm_brush) from a to b onto
+        the KEEP or REMOVE overlay. Painting one clears the overlapping bit of the other."""
+        if not HAS_PIL: return
+        self._sm_ensure()
+        h, w = self.sm_keep.shape
+        # rasterise the stroke into a temporary 8-bit image via QPainter, then OR it in
+        stroke = QImage(w, h, QImage.Format_Grayscale8); stroke.fill(QColor('#000000'))
+        p = QPainter(stroke)
+        pen = QPen(QColor('#ffffff'), max(1, self.sm_brush))
+        pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
+        p.setPen(pen); p.drawLine(a, b); p.end()
+        painted = _np.asarray(q2pil(stroke).convert('L')) > 127
+        if mode == 'keep':
+            self.sm_keep |= painted; self.sm_remove &= ~painted
+        else:
+            self.sm_remove |= painted; self.sm_keep &= ~painted
+        self.update()
+
+    def _sm_overlay(self):
+        """A translucent RGBA QImage showing KEEP (green) / REMOVE (red) scribbles over
+        the canvas, for paintEvent. None if there are no scribbles."""
+        if not HAS_PIL or self.sm_keep is None: return None
+        if not self.sm_keep.any() and not self.sm_remove.any(): return None
+        h, w = self.sm_keep.shape
+        ov = _np.zeros((h, w, 4), _np.uint8)
+        ov[self.sm_keep] = (60, 220, 90, 120)
+        ov[self.sm_remove] = (235, 70, 70, 120)
+        return pil2q(Image.fromarray(ov, 'RGBA'))
+
+    def smart_mask_result(self, feather=0, force_fallback=False):
+        """Run smart_mask() on the current flattened document using the stored
+        scribbles. Returns a uint8 HxW mask (255 = subject), or None if there are
+        no KEEP scribbles / no NumPy."""
+        if not HAS_PIL or self.sm_keep is None or not self.sm_keep.any():
+            return None
+        rgb = _np.asarray(q2pil(self.composited()).convert('RGB'))
+        return smart_mask(rgb, self.sm_keep, self.sm_remove,
+                          feather=feather, force_fallback=force_fallback)
+
+    def smart_mask_to_selection(self, mask):
+        """Adopt a Smart Mask result as the current selection (so adjustments / cut
+        apply to the subject)."""
+        if mask is None or not mask.any(): return
+        self.set_mask_sel(mask)
+
+    def smart_mask_cutout_layer(self, mask):
+        """Copy the masked subject of the flattened document onto a NEW transparent
+        layer (non-destructive). Returns the new Layer, or None."""
+        if not HAS_PIL or mask is None or not mask.any(): return None
+        self.snapshot_full()
+        rgba = _np.asarray(q2pil(self.composited())).astype(_np.uint16).copy()
+        rgba[..., 3] = (rgba[..., 3] * mask // 255).astype(_np.uint16)
+        cut = pil2q(Image.fromarray(rgba.astype('uint8'), 'RGBA'))
+        layer = Layer(cut, self._unique_name('Cut-out'))
+        self.active += 1; self.layers.insert(self.active, layer)
+        self.update(); self.win.refresh_layers()
+        return layer
+
     def apply_fx(self, color, blur, dx, dy, opacity, twice=False):
         """Composite a soft drop shadow / glow of the drawing's opaque pixels behind it."""
         self.snapshot()
@@ -1457,7 +1658,8 @@ class Main(QMainWindow):
              ('burn', 'Burn — darken', '◐'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
              ('wand', 'Magic wand — click to select by colour', '✦'),
-             ('cutout', 'Cutout — click a background to erase it to transparency', '✂')]
+             ('cutout', 'Cutout — click a background to erase it to transparency', '✂'),
+             ('smartmask', 'Smart Mask — scribble KEEP (subject) / REMOVE (background), then Apply', '✎')]
 
     def __init__(self):
         super().__init__()
@@ -1602,6 +1804,21 @@ class Main(QMainWindow):
         self.wand_cb.toggled.connect(lambda on: setattr(self.canvas, 'wand_contiguous', on))
         for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
             top.addWidget(wdg); wdg.setVisible(False)
+        # --- Smart Mask controls (scribble cut-out) ---
+        self.sm_lbl = QLabel(' Smart Mask ')
+        self.sm_mode_cb = QComboBox(); self.sm_mode_cb.addItems(['Paint KEEP (subject)', 'Paint REMOVE (background)'])
+        self.sm_mode_cb.setToolTip('What the left-drag paints (right-drag always paints REMOVE)')
+        self.sm_mode_cb.currentIndexChanged.connect(
+            lambda i: setattr(self.canvas, 'sm_mode', 'remove' if i else 'keep'))
+        self.sm_brush_spin = QSpinBox(); self.sm_brush_spin.setRange(1, 200)
+        self.sm_brush_spin.setValue(int(self.canvas.sm_brush)); self.sm_brush_spin.setSuffix(' px')
+        self.sm_brush_spin.setToolTip('Scribble brush size')
+        self.sm_brush_spin.valueChanged.connect(lambda v: setattr(self.canvas, 'sm_brush', v))
+        self.sm_apply_btn = QPushButton('Apply…'); self.sm_apply_btn.setToolTip('Build the cut-out mask from your scribbles')
+        self.sm_apply_btn.clicked.connect(self.smart_mask_apply)
+        self.sm_clear_btn = QPushButton('Clear scribbles'); self.sm_clear_btn.clicked.connect(lambda: self.canvas.sm_clear())
+        for wdg in (self.sm_lbl, self.sm_mode_cb, self.sm_brush_spin, self.sm_apply_btn, self.sm_clear_btn):
+            top.addWidget(wdg); wdg.setVisible(False)
         # --- shape fill controls (rect / ellipse) ---
         self.fill_lbl = QLabel(' Shape ')
         self.fill_cb = QComboBox(); self.fill_cb.addItems(['Outline', 'Fill', 'Both'])
@@ -1657,6 +1874,7 @@ class Main(QMainWindow):
         img.addAction(self.act('&Place Texture…', self.place_texture_dialog))
         img.addSeparator()
         img.addAction(self.act('Cu&tout Studio… (remove background)', self.cutout_studio))
+        img.addAction(self.act('Smart &Mask (cut out subject)…', self.smart_mask_apply))
 
         adj = m.addMenu('&Adjust')
         adj.addAction(self.act('&Brightness / Contrast…', self.dlg_brightness))
@@ -1775,12 +1993,61 @@ class Main(QMainWindow):
         self.set_tool('cutout')
         dlg.exec()
 
+    def smart_mask_apply(self):
+        """Build a cut-out mask from the Smart Mask scribbles, then let the user send it
+        to a selection and/or a new transparent layer, with a feather control."""
+        if not self._need_pil(): return
+        self.set_tool('smartmask')
+        c = self.canvas
+        if c.sm_keep is None or not c.sm_keep.any():
+            QMessageBox.information(self, APP,
+                'Scribble over your subject with the Smart Mask tool first (green = KEEP), '
+                'and over the background (red = REMOVE — right-drag, or switch the mode), '
+                'then Apply.')
+            return
+        engine = 'OpenCV grabCut' if HAS_CV2 else 'NumPy colour model'
+        dlg = QDialog(self); dlg.setWindowTitle('Smart Mask — cut out subject'); dlg.resize(440, 300)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('<b>Separate your subject from the background.</b>'))
+        info = QLabel('Green KEEP scribbles mark the subject, red REMOVE scribbles mark the '
+                      'background. Raise the feather for soft edges (hair, foliage).<br>'
+                      f'<i>Engine: {engine}.</i>')
+        info.setWordWrap(True); v.addWidget(info)
+        frow = QHBoxLayout(); frow.addWidget(QLabel('Edge feather:'))
+        fs = QSlider(Qt.Horizontal); fs.setRange(0, 30); fs.setValue(2)
+        fval = QLabel('2 px'); fs.valueChanged.connect(lambda x: fval.setText(f'{x} px'))
+        frow.addWidget(fs, 1); frow.addWidget(fval); v.addLayout(frow)
+        sel_cb = QCheckBox('Set the subject as the selection'); sel_cb.setChecked(True)
+        cut_cb = QCheckBox('Cut the subject out to a new layer'); cut_cb.setChecked(False)
+        v.addWidget(sel_cb); v.addWidget(cut_cb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        feather = fs.value()
+        mask = c.smart_mask_result(feather=feather)
+        if mask is None or not mask.any():
+            QMessageBox.information(self, APP,
+                'The Smart Mask could not find a subject — add more KEEP and REMOVE scribbles and try again.')
+            return
+        cov = int((mask > 127).sum())
+        if cut_cb.isChecked():
+            c.smart_mask_cutout_layer(mask)      # pushes its own full snapshot
+        if sel_cb.isChecked():
+            c.smart_mask_to_selection(mask)
+        c.update()
+        self.status.showMessage(f'Smart Mask: {cov} subject pixels ({engine}).', 4000)
+
     # ---- state ----
     def set_tool(self, t):
         self.canvas.tool = t
         if hasattr(self, 'wand_spin'):
             for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
                 wdg.setVisible(t == 'wand')
+        if hasattr(self, 'sm_apply_btn'):
+            for wdg in (self.sm_lbl, self.sm_mode_cb, self.sm_brush_spin, self.sm_apply_btn, self.sm_clear_btn):
+                wdg.setVisible(t == 'smartmask')
         if hasattr(self, 'fill_cb'):
             for wdg in (self.fill_lbl, self.fill_cb, self.fill_col_btn):
                 wdg.setVisible(t in ('rect', 'ellipse'))

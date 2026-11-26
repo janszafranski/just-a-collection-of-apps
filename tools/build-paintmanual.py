@@ -310,6 +310,40 @@ def capture(full=True):
     except Exception as e:
         print("cutout demo failed:", e)
 
+    # Smart Mask demo: scribble KEEP over a subject and REMOVE over a textured
+    # background, then run smart_mask() — show the scribbles, then the cut-out on
+    # checker. Everything is self-made synthetic imagery.
+    try:
+        sw, sh = 420, 300
+        base = _blank(sw, sh, "#dfe8ee")
+        p = QPainter(base); p.setRenderHint(QPainter.Antialiasing); p.setPen(Qt.NoPen)
+        # a gently textured background (soft stripes) so the result isn't trivial
+        for i in range(0, sw, 34):
+            p.fillRect(QRectF(i, 0, 17, sh), QColor("#c7d6e0"))
+        p.setBrush(QColor("#e07a3b")); p.drawEllipse(QRectF(120, 70, 170, 170))   # subject
+        p.setBrush(QColor("#2b3238")); p.drawEllipse(QRectF(165, 120, 22, 22))
+        p.setBrush(QColor("#2b3238")); p.drawEllipse(QRectF(225, 120, 22, 22))
+        p.end()
+        import numpy as _np
+        rgb = _np.asarray(PC.q2pil(base).convert("RGB"))
+        keep = _np.zeros((sh, sw), bool); remove = _np.zeros((sh, sw), bool)
+        keep[140:180, 180:230] = True                  # scribble on the subject
+        remove[20:50, 10:40] = True                    # scribble on the background
+        remove[250:285, 370:405] = True
+        # "before" with the scribbles drawn translucently (green keep, red remove)
+        ov = _np.zeros((sh, sw, 4), _np.uint8)
+        ov[keep] = (60, 220, 90, 150); ov[remove] = (235, 70, 70, 150)
+        before = PC.q2pil(base).convert("RGBA")
+        before.alpha_composite(Image.fromarray(ov, "RGBA"))
+        IM["smartmask_before"] = before.convert("RGB")
+        # run the engine (uses cv2 grabCut if available, else NumPy fallback)
+        mask = PC.smart_mask(rgb, keep, remove, feather=2)
+        rgba = _np.dstack([rgb, mask]).astype("uint8")
+        IM["smartmask_after"] = Image.fromarray(rgba, "RGBA")     # alpha → checker in CSS
+        IM["smartmask_engine"] = "OpenCV grabCut" if PC.HAS_CV2 else "NumPy colour model"
+    except Exception as e:
+        print("smart mask demo failed:", e)
+
     # effects demo: a shape on transparent bg with a drop shadow composited in.
     try:
         ew, eh = 420, 260
@@ -461,6 +495,16 @@ def capture(full=True):
     drive(w2._fx_dialog, "glow")
     drive(w2.new)                 # New Image dialog
     drive(w2.cutout_studio)       # Cutout Studio
+    try:                          # Smart Mask — seed scribbles so the dialog (not the hint) opens
+        import numpy as _np
+        h, w = w2.canvas.img.height(), w2.canvas.img.width()
+        k = _np.zeros((h, w), bool); r = _np.zeros((h, w), bool)
+        k[h // 2 - 20:h // 2 + 20, w // 2 - 20:w // 2 + 20] = True
+        r[5:25, 5:25] = True
+        w2.canvas.sm_keep = k; w2.canvas.sm_remove = r
+    except Exception as e:
+        print("smart mask scribble seed failed:", e)
+    drive(w2.smart_mask_apply)    # Smart Mask dialog
     drive(w2.export)              # Export dialog
     drive(w2.add_overlay_dialog)  # Add Overlay picker
     drive(w2.place_texture_dialog)  # Place Texture picker
@@ -701,7 +745,7 @@ roughly how big the file will be before you commit.</p>
       ("The tool palette", f"""
 <p>The vertical <b>tool palette</b> on the left holds every tool you paint and edit with. Click one to
 select it; its name appears as a tooltip and in the status bar.</p>
-{fig(IM.get('toolpalette'), 'The tool palette — from Brush at the top to the Cutout tool at the foot.', 'tall')}
+{fig(IM.get('toolpalette'), 'The tool palette — from Brush at the top to the Smart Mask tool at the foot.', 'tall')}
 <p>From the top: <b>Brush</b>, <b>Eraser</b>, <b>Line</b>, <b>Rectangle</b>, <b>Ellipse</b>,
 <b>Fill</b> (the bucket), <b>Gradient</b>, <b>Pick colour</b> (the eyedropper), <b>Text</b>,
 <b>Clone</b>, <b>Red-eye</b>, <b>Dodge</b>, <b>Burn</b>, the two marquee selection tools (<b>rectangle</b> and
@@ -1148,6 +1192,45 @@ auto-remove.</p>
 background remains. Switch to the <b>Eraser</b>, zoom in, set a small size, and clean them off by hand.
 For a background that is too varied for one tolerance, raise the tolerance and click each distinct region in
 turn, or paint the awkward parts away with the eraser.</p>""")]))
+
+    ch.append(("Smart Mask — cutting out tricky subjects",
+      "<p class='lede'>The Cutout tool works by colour, so it struggles with a busy background or wispy "
+      "edges like hair and foliage. <b>Smart Mask</b> takes a different approach, borrowed from Vertus "
+      "Fluid&nbsp;Mask: you simply scribble on what to keep and what to remove, and an edge-aware "
+      "engine separates the subject from the background for you.</p>", [
+      ("How Smart Mask works", f"""
+<p>You paint two kinds of rough scribble over the picture — <b>green KEEP</b> strokes over the subject and
+<b>red REMOVE</b> strokes over the background. You do not have to be neat or trace the edge; a few strokes in
+each area are enough. When you press <b>Apply</b>, the engine studies the colours and edges around your
+scribbles and works out the precise boundary for itself.</p>
+<div class="imgrow">
+{fig(IM.get('smartmask_before'), 'Scribbles only: green KEEP on the subject, red REMOVE on the background — rough strokes, not a traced edge.')}
+{fig(IM.get('smartmask_after'), 'The result: the subject cut out cleanly onto transparency (the checkerboard is “nothing here”).')}
+</div>
+{note('Smart Mask uses OpenCV’s grabCut for the sharpest, Fluid-Mask-grade edges, and the installer adds OpenCV automatically. If it is not present the tool falls back to a built-in NumPy colour model — a little softer on cluttered backgrounds, but it needs nothing extra and always works.')}"""),
+      ("Painting the scribbles", f"""
+{proc('mark your subject and background',
+  'Choose the <b>Smart Mask</b> tool (the ✎ at the foot of the tool palette).',
+  'Left-drag <b>over the subject</b> to paint green <b>KEEP</b> scribbles — a stroke or two through the middle is plenty.',
+  'Right-drag <b>over the background</b> (or switch the top toolbar to <b>Paint REMOVE</b> and left-drag) to paint red <b>REMOVE</b> scribbles.',
+  'Use the <b>size</b> box on the toolbar for a fatter or finer scribble brush, and <b>Clear scribbles</b> to start over.')}
+{tip('Scribbles float <i>above</i> the picture — they never paint on it. Add a few strokes in any area the first Apply got wrong, then Apply again; the engine refines the result from the extra guidance.')}"""),
+      ("Applying — selection or cut-out", f"""
+<p>Press <b>Apply…</b> on the toolbar (or choose <b>Image ▸ Smart Mask (cut out subject)…</b>) to open the
+dialog and turn your scribbles into a mask.</p>
+{fig(dlg('Smart Mask — cut out subject'), 'The Smart Mask dialog: an edge-feather slider, and a choice of what to do with the result.')}
+{proc('cut out a subject with Smart Mask',
+  'Scribble KEEP over the subject and REMOVE over the background, then click <b>Apply…</b>.',
+  'Set the <b>Edge feather</b> — a few pixels softens the boundary for hair or fuzzy edges; leave it at zero for a crisp cut.',
+  'Tick <b>Set the subject as the selection</b> to make the subject the active selection, so every adjustment, filter and the Crop command then affect only the subject.',
+  'Tick <b>Cut the subject out to a new layer</b> to copy the subject onto its own transparent layer, leaving the original untouched.',
+  'Click <b>Apply</b>. You can undo (' + K('Ctrl') + '+' + K('Z') + ') and try again with more scribbles at any time.')}
+{note('“Set as selection” and “Cut out to a new layer” are independent — tick either, both, or neither. The cut-out is non-destructive: the subject lands on a new layer called <b>Cut-out</b> and your original layers are left as they were.')}"""),
+      ("Feathering tricky edges", f"""
+<p>Hair, fur and foliage never have a hard edge, so a razor-sharp mask around them looks cut out with
+scissors. The <b>Edge feather</b> slider blurs the mask boundary by a few pixels, fading the subject into
+whatever you place behind it — the difference between an obvious paste-up and a believable composite.</p>
+{tip('Feather little and often: 1–3&nbsp;px suits most portraits. Too much feather eats into solid edges, so raise it only where the subject is genuinely soft.')}""")]))
 
     ch.append(("Effects",
       "<p class='lede'>The Effects menu adds a soft drop shadow or outer glow behind everything you have "
@@ -1600,7 +1683,8 @@ def build_index(numbered):
                     entries.setdefault(term, set()).add((n, anchor))
     TERMS = ["brush", "eraser", "line", "rectangle", "ellipse", "fill", "gradient", "pick colour",
              "text", "clone", "red-eye", "dodge", "burn", "selection", "marquee", "cutout",
-             "cutout studio", "transparency", "layer", "opacity", "blend", "merge", "flatten",
+             "cutout studio", "smart mask", "scribble", "feather", "grabcut", "transparency",
+             "layer", "opacity", "blend", "merge", "flatten",
              "brightness", "contrast", "levels", "hue", "saturation", "temperature", "colour balance",
              "threshold", "posterize", "greyscale", "invert", "sepia", "auto contrast", "equalize",
              "gaussian blur", "unsharp mask", "median", "sharpen", "emboss", "find edges", "contour",

@@ -36,6 +36,14 @@ distro and re-run:  apt install python3-pyside6.qtwidgets  /  dnf install python
   PYRUN="$VENV/bin/python"
   log "Private environment ready."
 fi
+# OpenCV gives the Smart Mask tool its sharpest (grabCut) cut-out edges. It's OPTIONAL:
+# the tool still works via a NumPy fallback, so a failed/offline install never aborts.
+if ! "$PYRUN" -c 'import cv2' 2>/dev/null; then
+  log "Adding OpenCV for the sharpest Smart Mask edges (optional — safe to skip)…"
+  "$PYRUN" -m pip install opencv-python-headless >/dev/null 2>&1 \
+    && log "OpenCV ready." \
+    || log "OpenCV not installed (offline?) — Smart Mask will use its built-in NumPy fallback."
+fi
 log "Installing the app"
 install -Dm755 "$SELF/paint.py" "$DATA/paint/paint.py"
 # Bundled fonts (shared across the just a... suite): a copy beside the app so it loads
