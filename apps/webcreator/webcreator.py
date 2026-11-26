@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.16-00"
+VERSION = "1.17-00"
 
 
 def _just_dir(kind):
@@ -237,7 +237,27 @@ DEF = {
     'vimeo':    dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
     'newsfeed': dict(w=480, h=560, source=None, accent='#2a7d6b', cardbg='#ffffff', ink='#1f2a30',
                      font='Noto Sans', size=15, max=0, showdate=True, showimg=True, fill='', stroke='#333333', strokeW=0, radius=0),
+    # Slider / carousel — several SLIDES, each a heading + caption + image + optional button.
+    # Unlike the plain photo gallery (which only cross-fades images), a slide carries text and
+    # a call-to-action over the image, with prev/next arrows, dots and optional auto-advance.
+    'slider':   dict(w=720, h=380, slides=[], interval=5, auto=True, fit='cover', radius=0,
+                     strokeW=0, stroke='#333333', fill='', accent='#2a7d6b', ink='#ffffff',
+                     overlay=40, font='Noto Sans', arrows=True, dots=True),
+    # PayPal buy / donate button — publishes PayPal's own hosted-button form (no server).
+    'paypal':   dict(w=200, h=60, mode='buynow', business='', hosted='', item='Item', amount='9.99',
+                     currency='GBP', font='Noto Sans'),
 }
+# A SLIDE in a slider object: heading / caption text over an image, with an optional button.
+SLIDE_DEF = dict(image=None, heading='', caption='', btn='', link='')
+# PayPal button modes: id, label, the <input name="cmd"> value PayPal expects.
+PAYPAL_MODES = [('buynow', 'Buy Now', '_xclick'), ('cart', 'Add to Cart', '_cart'),
+                ('donate', 'Donate', '_donations')]
+PAYPAL_CURRENCIES = ['GBP', 'USD', 'EUR', 'AUD', 'CAD', 'JPY', 'NZD', 'CHF', 'SEK', 'PLN']
+# Scroll-into-view animations: id, menu label, the CSS the shared observer toggles.
+SCROLL_ANIMS = [('', 'None (no animation)'), ('fade-in', 'Fade in'), ('fade-up', 'Fade up'),
+                ('fade-down', 'Fade down'), ('slide-left', 'Slide in from left'),
+                ('slide-right', 'Slide in from right'), ('zoom', 'Zoom in')]
+ANIM_LABELS = {k: v for k, v in SCROLL_ANIMS}
 SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {t} = page title)
     ('facebook', 'Facebook', '#1877f2', 'https://www.facebook.com/sharer/sharer.php?u={u}'),
     ('x', 'X (Twitter)', '#111111', 'https://twitter.com/intent/tweet?url={u}&text={t}'),
@@ -251,7 +271,7 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
 NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
-                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed')
+                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed', slider='Slider / carousel', paypal='PayPal button')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -1470,6 +1490,15 @@ def fx_css(o):
         parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
     return ('filter:' + ' '.join(parts) + ';') if parts else ''
 
+def anim_attr(o):
+    """A `data-animate` attribute for an object's scroll-into-view animation ('' if none).
+    It is emitted AFTER the style attribute so the publish `lift` regex still matches the
+    class+style pair; the shared IntersectionObserver script in page_html reads it."""
+    a = (o.get('anim') or '').strip()
+    if not a:
+        return ''
+    return f' data-animate="{esc(a)}"'
+
 # ---------------------------------------------------------------- Lines & arrowheads
 def _line_ends(o):
     """The two endpoints (x1,y1,x2,y2) of a line object within its box."""
@@ -1607,6 +1636,70 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
             p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(lr, 4, 4)
             p.setPen(QColor('#ffffff')); p.drawText(lr, Qt.AlignCenter, label)
         p.restore()
+    elif t == 'slider':
+        # Canvas shows slide 1 (image + heading/caption/button overlay) plus a slide badge.
+        slides = o.get('slides') or []
+        s0 = slides[0] if slides else None
+        path = QPainterPath(); path.addRoundedRect(r, rad, rad)
+        p.save(); p.setClipPath(path)
+        pm = pixmap_for(site, s0.get('image')) if s0 and s0.get('image') else None
+        if pm and not pm.isNull():
+            pw_, ph_ = pm.width(), pm.height(); sc = max(w / pw_, h / ph_); sw_, sh_ = w / sc, h / sc
+            p.drawPixmap(r, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+        else:
+            p.fillRect(r, QColor('#c6ccd1'))
+        # darkening scrim so overlaid text is legible
+        ov = max(0, min(100, o.get('overlay', 40)))
+        if s0 and (s0.get('heading') or s0.get('caption') or s0.get('btn')) and ov:
+            p.fillRect(r, QColor(0, 0, 0, int(ov * 255 / 100)))
+        if s0 and (s0.get('heading') or s0.get('caption') or s0.get('btn')):
+            ink = QColor(o.get('ink', '#ffffff'))
+            ty = h / 2 - 20
+            if s0.get('heading'):
+                f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(16, int(h * 0.09))); f.setBold(True); p.setFont(f)
+                p.setPen(ink); p.drawText(QRectF(20, ty, w - 40, h * 0.25), Qt.AlignCenter | Qt.TextWordWrap, s0['heading']); ty += h * 0.16
+            if s0.get('caption'):
+                f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(11, int(h * 0.05))); p.setFont(f)
+                p.setPen(ink); p.drawText(QRectF(20, ty, w - 40, h * 0.18), Qt.AlignCenter | Qt.TextWordWrap, s0['caption']); ty += h * 0.12
+            if s0.get('btn'):
+                f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(11, int(h * 0.045))); f.setBold(True); p.setFont(f)
+                fm = QFontMetrics(f); bw = fm.horizontalAdvance(s0['btn']) + 32
+                br = QRectF((w - bw) / 2, ty + 6, bw, max(26, h * 0.1))
+                p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('accent', '#2a7d6b'))); p.drawRoundedRect(br, 6, 6)
+                p.setPen(ink); p.drawText(br, Qt.AlignCenter, s0['btn'])
+        # prev/next arrow hints + dots
+        if o.get('arrows', True) and len(slides) > 1:
+            p.setPen(QColor(255, 255, 255, 230)); f = QFont(); f.setPixelSize(max(18, int(h * 0.11))); f.setBold(True); p.setFont(f)
+            p.drawText(QRectF(6, 0, 36, h), Qt.AlignCenter, '‹'); p.drawText(QRectF(w - 42, 0, 36, h), Qt.AlignCenter, '›')
+        if o.get('dots', True) and slides:
+            n = len(slides); dg = 14; tot = n * dg; dx = (w - tot) / 2
+            for i in range(n):
+                p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 235 if i == 0 else 120))
+                p.drawEllipse(QPointF(dx + i * dg + dg / 2, h - 16), 4, 4)
+        p.restore()
+        if edit:
+            f = QFont(); f.setPixelSize(12); p.setFont(f)
+            label = f'▦ Slider · {len(slides)} slide' + ('' if len(slides) == 1 else 's') if slides else 'Double-click to add slides'
+            fm = QFontMetrics(f); lw = fm.horizontalAdvance(label) + 16
+            lr = QRectF(8, 8, lw, 22)
+            p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(lr, 4, 4)
+            p.setPen(QColor('#ffffff')); p.drawText(lr, Qt.AlignCenter, label)
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+    elif t == 'paypal':
+        mode = o.get('mode', 'buynow')
+        label = dict((m[0], m[1]) for m in PAYPAL_MODES).get(mode, 'Buy Now')
+        col = QColor('#ffc439') if mode != 'donate' else QColor('#0070ba')
+        fg = QColor('#111111') if mode != 'donate' else QColor('#ffffff')
+        p.setPen(QPen(QColor('#e0a800'), 1) if mode != 'donate' else Qt.NoPen)
+        p.setBrush(col); p.drawRoundedRect(r.adjusted(.5, .5, -.5, -.5), min(rad or 8, h / 2), min(rad or 8, h / 2))
+        f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(12, int(h * 0.34))); f.setBold(True); p.setFont(f)
+        p.setPen(fg)
+        txt = 'PayPal  ' + label
+        p.drawText(r, Qt.AlignCenter, txt)
+        if edit and not o.get('business') and not o.get('hosted'):
+            f2 = QFont(); f2.setPixelSize(10); p.setFont(f2); p.setPen(QColor(0, 0, 0, 160))
+            p.drawText(QRectF(0, h - 14, w, 14), Qt.AlignCenter, 'double-click to set PayPal')
     elif t in ('text', 'artistic', 'button'):
         box()
         if not hide_text:
@@ -1924,6 +2017,46 @@ font:14px/1.4 Arial,sans-serif;text-align:center;opacity:0;visibility:hidden;tra
 .nf-date{display:block;font-size:.78em;opacity:.6;margin-bottom:6px}
 .nf-excerpt{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;font-size:.9em;line-height:1.42;opacity:.92}
 .nf-empty{display:block;padding:22px;text-align:center;opacity:.6}
+/* Slider / carousel — a translateX track of full-bleed slides with text + a CTA button. */
+.obj-slider{overflow:hidden;position:absolute}
+.obj-slider .sl-track{display:flex;width:100%;height:100%;transition:transform .5s ease}
+.obj-slider .sl-cell{position:relative;flex:0 0 100%;width:100%;height:100%;overflow:hidden}
+.obj-slider .sl-img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.obj-slider .sl-blank{background:#c6ccd1}
+.obj-slider .sl-cell::before{content:"";position:absolute;inset:0;background:rgba(0,0,0,var(--slov,.4))}
+.obj-slider .sl-cap{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+text-align:center;gap:.5em;padding:6% 8%;color:var(--slink,#fff);font-family:var(--slfont,Arial,sans-serif);z-index:2}
+.obj-slider .sl-h{font-size:clamp(20px,4vw,42px);font-weight:800;line-height:1.1;text-shadow:0 2px 12px rgba(0,0,0,.45)}
+.obj-slider .sl-c{font-size:clamp(13px,2vw,19px);max-width:36em;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+.obj-slider .sl-btn{display:inline-block;margin-top:.4em;background:var(--slacc,#2a7d6b);color:#fff;text-decoration:none;
+font-weight:700;padding:.6em 1.4em;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.obj-slider .sl-btn:hover{filter:brightness(1.07)}
+.obj-slider .sl-nav{position:absolute;top:50%;transform:translateY(-50%);z-index:3;width:42px;height:42px;border:0;border-radius:50%;
+background:rgba(0,0,0,.4);color:#fff;font-size:26px;line-height:1;cursor:pointer;display:flex;align-items:center;justify-content:center}
+.obj-slider .sl-nav:hover{background:rgba(0,0,0,.62)}
+.obj-slider .sl-prev{left:12px}.obj-slider .sl-next{right:12px}
+.obj-slider .sl-dots{position:absolute;left:0;right:0;bottom:12px;z-index:3;display:flex;gap:9px;justify-content:center}
+.obj-slider .sl-dot{width:9px;height:9px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.5);cursor:pointer;transition:background .2s}
+.obj-slider .sl-dot.on{background:#fff}
+/* PayPal buy / donate button — PayPal's own hosted-button form, posted to paypal.com. */
+.obj-paypal{display:flex;align-items:center;justify-content:center}
+.obj-paypal .pp-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:0;border-radius:6px;
+font:inherit;font-weight:700;font-size:16px;padding:11px 22px;line-height:1;width:100%;height:100%;justify-content:center}
+.obj-paypal .pp-btn .pp-logo{font-style:italic;font-weight:800}
+.obj-paypal .pp-buy{background:#ffc439;color:#111;border:1px solid #e0a800}
+.obj-paypal .pp-buy:hover{background:#f5bb2e}
+.obj-paypal .pp-donate{background:#0070ba;color:#fff}
+.obj-paypal .pp-donate:hover{background:#005ea6}
+/* Scroll-into-view animations (opt-in per object). A shared IntersectionObserver adds
+   .in when the element scrolls into view; prefers-reduced-motion disables all of it. */
+[data-animate]{opacity:0;transition:opacity .7s ease,transform .7s ease;will-change:opacity,transform}
+[data-animate].in{opacity:1;transform:none}
+[data-animate="fade-up"]{transform:translateY(34px)}
+[data-animate="fade-down"]{transform:translateY(-34px)}
+[data-animate="slide-left"]{transform:translateX(-46px)}
+[data-animate="slide-right"]{transform:translateX(46px)}
+[data-animate="zoom"]{transform:scale(.88)}
+@media(prefers-reduced-motion:reduce){[data-animate]{opacity:1!important;transform:none!important;transition:none!important}}
 .obj-table table{width:100%;height:100%;border-collapse:collapse;table-layout:fixed}
 .obj-table td{border:1px solid var(--tb);padding:0 10px}
 .obj-table tr:first-child td{background:var(--th);font-weight:700}
@@ -2424,8 +2557,102 @@ def obj_html(o, site, page, img):
                          f'{dt}<span class="nf-excerpt">{esc(it["excerpt"])}</span></span></a>')
         empty = '<span class="nf-empty">No stories yet — add news pages under this one, then publish.</span>'
         inner = '<span class="nf-scroll">' + (''.join(cards) or empty) + '</span>'
-        return f'<div class="obj obj-newsfeed" style="{st}">{inner}</div>'
-    return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}>{inner}</{tag}>'
+        return f'<div class="obj obj-newsfeed" style="{st}"{anim_attr(o)}>{inner}</div>'
+    elif t == 'slider':
+        # Self-contained CSS/JS carousel: a track of slides (image + heading/caption/button),
+        # prev/next arrows, dots, optional auto-advance, swipe-friendly (touch handlers in JS).
+        st += box_css(o) + 'overflow:hidden;'
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'cover'), 'cover')
+        ov = max(0, min(100, o.get('overlay', 40)))
+        st += (f"--slacc:{o.get('accent', '#2a7d6b')};--slink:{o.get('ink', '#ffffff')};"
+               f"--slov:{ov / 100:g};--slfont:{css_font(o.get('font', 'Noto Sans'))};")
+        slides = o.get('slides') or []
+        cells = []
+        for s in slides:
+            bg = (f'<img class="sl-img" src="{img(s["image"])}" alt="" style="object-fit:{fit}">'
+                  if s.get('image') and s['image'] in site.get('assets', {}) else '<span class="sl-img sl-blank"></span>')
+            cap = ''
+            if s.get('heading'):
+                cap += f'<span class="sl-h">{esc(s["heading"])}</span>'
+            if s.get('caption'):
+                cap += f'<span class="sl-c">{esc(s["caption"])}</span>'
+            if s.get('btn'):
+                href = '#'; tgt = ''
+                L = s.get('link') or ''
+                if isinstance(L, str) and L.strip():
+                    if L.startswith('wcpage:'):
+                        pg = next((q for q in site['pages'] if q['id'] == L[7:]), None); href = pg['file'] if pg else '#'
+                    else:
+                        href = L; tgt = ' target="_blank" rel="noopener"'
+                cap += f'<a class="sl-btn" href="{esc(href)}"{tgt}>{esc(s["btn"])}</a>'
+            cell_cap = f'<span class="sl-cap">{cap}</span>' if cap else ''
+            cells.append(f'<div class="sl-cell">{bg}{cell_cap}</div>')
+        track = f'<div class="sl-track">{"".join(cells)}</div>'
+        arrows = ''
+        if o.get('arrows', True) and len(slides) > 1:
+            arrows = (f'<button class="sl-nav sl-prev" aria-label="Previous slide">&#8249;</button>'
+                      f'<button class="sl-nav sl-next" aria-label="Next slide">&#8250;</button>')
+        dots = ''
+        if o.get('dots', True) and len(slides) > 1:
+            dots = '<div class="sl-dots">' + ''.join(
+                f'<button class="sl-dot" aria-label="Go to slide {i + 1}"></button>' for i in range(len(slides))) + '</div>'
+        auto = int((o.get('interval', 5) or 5) * 1000) if (o.get('auto', True) and len(slides) > 1) else 0
+        script = ''
+        if len(slides) > 1:
+            # Pure-vanilla carousel: translateX track, dots/arrows, auto-advance (pausable on
+            # hover), and touch-swipe. Scoped to this slider via currentScript.parentNode so no
+            # id is needed (keeps the publish `lift` class+style pass and responsive #oN ids intact).
+            script = (f'<script>(function(){{var r=document.currentScript.parentNode;if(!r)return;'
+                      'var tk=r.querySelector(".sl-track"),cells=r.querySelectorAll(".sl-cell"),'
+                      'dots=r.querySelectorAll(".sl-dot"),n=cells.length,i=0,t=null;'
+                      'function go(k){i=(k+n)%n;tk.style.transform="translateX("+(-i*100)+"%)";'
+                      'dots.forEach(function(d,j){d.classList.toggle("on",j===i)})}'
+                      'var pv=r.querySelector(".sl-prev"),nx=r.querySelector(".sl-next");'
+                      'if(pv)pv.addEventListener("click",function(){go(i-1);rs()});'
+                      'if(nx)nx.addEventListener("click",function(){go(i+1);rs()});'
+                      'dots.forEach(function(d,j){d.addEventListener("click",function(){go(j);rs()})});'
+                      f'var MS={auto};function rs(){{if(!MS)return;clearInterval(t);t=setInterval(function(){{go(i+1)}},MS)}}'
+                      'r.addEventListener("mouseenter",function(){clearInterval(t)});'
+                      'r.addEventListener("mouseleave",rs);'
+                      'var sx=0;r.addEventListener("touchstart",function(e){sx=e.touches[0].clientX},{passive:true});'
+                      'r.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-sx;'
+                      'if(Math.abs(dx)>40){go(i+(dx<0?1:-1));rs()}},{passive:true});'
+                      'go(0);rs();})();</script>')
+        return (f'<div class="obj obj-slider" style="{st}"{anim_attr(o)}>'
+                f'{track}{arrows}{dots}{script}</div>')
+    elif t == 'paypal':
+        # PayPal's own hosted-button form — posts to PayPal, no server of ours needed.
+        mode = o.get('mode', 'buynow')
+        cmd = dict((m[0], m[2]) for m in PAYPAL_MODES).get(mode, '_xclick')
+        label = dict((m[0], m[1]) for m in PAYPAL_MODES).get(mode, 'Buy Now')
+        cur = (o.get('currency') or 'GBP').upper()
+        st += (f"display:flex;align-items:center;justify-content:center;"
+               f"font-family:{css_font(o.get('font', 'Noto Sans'))};")
+        hosted = (o.get('hosted') or '').strip()
+        biz = (o.get('business') or '').strip()
+        fields = [f'<input type="hidden" name="cmd" value="{esc(cmd)}">']
+        if hosted:
+            # A hosted button id supersedes the itemised fields (PayPal stores the item server-side).
+            fields = ['<input type="hidden" name="cmd" value="_s-xclick">',
+                      f'<input type="hidden" name="hosted_button_id" value="{esc(hosted)}">']
+        else:
+            fields.append(f'<input type="hidden" name="business" value="{esc(biz)}">')
+            fields.append(f'<input type="hidden" name="currency_code" value="{esc(cur)}">')
+            if o.get('item'):
+                fields.append(f'<input type="hidden" name="item_name" value="{esc(o["item"])}">')
+            amt = (o.get('amount') or '').strip()
+            if mode == 'donate':
+                if amt: fields.append(f'<input type="hidden" name="amount" value="{esc(amt)}">')
+            else:
+                fields.append(f'<input type="hidden" name="amount" value="{esc(amt or "0.00")}">')
+        btn_cls = 'pp-donate' if mode == 'donate' else 'pp-buy'
+        inner = (''.join(fields) +
+                 f'<button type="submit" class="pp-btn {btn_cls}">'
+                 f'<span class="pp-logo">PayPal</span> {esc(label)}</button>')
+        return (f'<form class="obj obj-paypal" style="{st}" '
+                f'action="https://www.paypal.com/cgi-bin/webscr" method="post" '
+                f'target="_blank" rel="noopener"{anim_attr(o)}>{inner}</form>')
+    return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}{anim_attr(o)}>{inner}</{tag}>'
 
 def _page_text(page):
     """Plain text of a page's text objects (tags stripped, whitespace tidied)."""
@@ -2638,6 +2865,25 @@ def page_html(site, page, img):
             'function(e){e.preventDefault();open(a)})});ov.addEventListener("click",function(e){'
             'if(e.target!==im)close()});document.addEventListener("keydown",function(e){'
             'if(e.key==="Escape")close()});})();</script>')
+    # Scroll-into-view animations: one shared IntersectionObserver, emitted once per page only
+    # when an object opts in. It adds .in as each [data-animate] element scrolls into view, so
+    # elements fade/slide/zoom up on scroll. prefers-reduced-motion is respected (the observer
+    # bails out, and the CSS neutralises every rule), and a no-JS visitor still sees everything
+    # (a final fallback reveals all after load).
+    anim_js = ''
+    if any((o.get('anim') or '').strip() for o in objs):
+        anim_js = (
+            '<script>(function(){var els=document.querySelectorAll("[data-animate]");'
+            'if(!els.length)return;'
+            'if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches){'
+            'els.forEach(function(e){e.classList.add("in")});return}'
+            'if(!("IntersectionObserver"in window)){els.forEach(function(e){e.classList.add("in")});return}'
+            'var io=new IntersectionObserver(function(es){es.forEach(function(en){'
+            'if(en.isIntersecting){en.target.classList.add("in");io.unobserve(en.target)}})},'
+            '{threshold:.12,rootMargin:"0px 0px -8% 0px"});'
+            'els.forEach(function(e){io.observe(e)});'
+            'window.addEventListener("load",function(){setTimeout(function(){'
+            'els.forEach(function(e){e.classList.add("in")})},2600)});})();</script>')
     # tidy: move each object's styling into the page's style block, keep the markup plain
     rules, n = [], [0]
     def lift(mm):
@@ -2669,6 +2915,10 @@ def page_html(site, page, img):
             fstem = os.path.splitext(fhub['file'])[0]
             tags.append(f'<link rel="alternate" type="application/rss+xml" title="{esc(fhub.get("title") or site.get("name", ""))}" href="{esc(fbase + "/" + fstem + "-feed.xml")}">')
         if tags: feedlinks = '\n'.join(tags) + '\n'
+    # Global smooth scrolling (opt-in via site['smooth']) — anchor jumps glide instead of
+    # snapping. Disabled automatically for visitors who ask for reduced motion.
+    smooth_css = ('\nhtml{scroll-behavior:smooth}\n@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}'
+                  if site.get('smooth') else '')
     # --- Responsive publish (opt-in via site['responsive']) ---------------
     # The design stays a fixed-width, absolutely-positioned page; responsive
     # mode makes that whole page SCALE to fit any screen (so phones show the
@@ -2710,7 +2960,7 @@ def page_html(site, page, img):
             r = f'order:{rank};max-width:{o["w"]:g}px;'
             if t == 'shape':
                 r += 'display:none;'                                   # decorative framing — drop on mobile
-            elif t == 'gallery':
+            elif t in ('gallery', 'slider'):
                 r += f'aspect-ratio:{o["w"]:g}/{o["h"]:g};'            # keep a box for the absolute-positioned slides
             elif t == 'youtube':
                 r += 'aspect-ratio:16/9;'
@@ -2771,7 +3021,7 @@ def page_html(site, page, img):
                f'.pf-wrap{{position:relative;width:100%;overflow-x:hidden}}\n'
                f'.pf-page{{position:absolute;top:0;left:0;width:{site["width"]}px;height:{Hh}px;background:{bg};'
                f'transform-origin:top left}}\n'
-               + '\n'.join(rules) + mobile_css)
+               + '\n'.join(rules) + mobile_css + smooth_css)
         scale_js = (f'<script>(function(){{var W={site["width"]},MX=1.5,BRK={BRK},p=document.querySelector(".pf-page"),'
                     f'w=document.querySelector(".pf-wrap");function fit(){{var vw=w.clientWidth;'
                     f'if(vw<=BRK){{p.style.transform="";p.style.left="";w.style.height="";return}}'
@@ -2782,15 +3032,15 @@ def page_html(site, page, img):
                 f'<meta name="color-scheme" content="light">\n'
                 f'<title>{esc(seo_title)}</title>\n{seo}{feedlinks}<meta name="generator" content="{APP} {VERSION}">\n'
                 f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{scale_js}\n</body>\n</html>\n')
+                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{anim_js}\n{scale_js}\n</body>\n</html>\n')
     # --- Static publish (default, fixed width) ----------------------------
     css = (f'body{{background:{site.get("bg") or bg}{bgpic}}}\n.pf-page{{width:{site["width"]}px;height:{Hh}px;background:{bg}}}\n'
-           + '\n'.join(rules))
+           + '\n'.join(rules) + smooth_css)
     return (f'<!doctype html>\n<html lang="en-GB">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width={site["width"]}">\n'
             f'<meta name="color-scheme" content="light">\n'
             f'<title>{esc(seo_title)}</title>\n{seo}<meta name="generator" content="{APP} {VERSION}">\n'
             f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n</body>\n</html>\n')
+            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n{anim_js}\n</body>\n</html>\n')
 
 WEBSAFE_FONTS = {'arial', 'helvetica', 'helvetica neue', 'times new roman', 'times', 'georgia',
                  'courier new', 'courier', 'verdana', 'tahoma', 'trebuchet ms', 'segoe ui',
@@ -4486,6 +4736,8 @@ TOOLS = [
     ('audio', 'Audio', ['audio-x-generic', 'media-playback-start', 'audio-volume-high'], '♪', 'Drag to place an audio player. Choose a sound file or paste a link; it plays with the browser audio controls.'),
     ('map', 'Google Map', ['map', 'applications-geography', 'mark-location', 'find-location'], '📍', 'Drag to place an interactive Google Map, then type an address — no API key needed. Shows a pin where you are based.'),
     ('newsfeed', 'News Feed', ['application-rss+xml', 'view-list-details', 'rss'], '📰', 'Drag to place a scrolling News feed. It lists the sub-pages of the page it sits on automatically — every news story, newest first, each a card linking to its page.'),
+    ('slider', 'Slider / Carousel', ['view-presentation', 'slideshow', 'view-preview'], '▦', 'Drag to place a slider, then add slides — each with a heading, caption, picture and an optional button. It publishes as a prev/next carousel with dots and auto-advance.'),
+    ('paypal', 'PayPal Button', ['emblem-money', 'wallet-open', 'bookmark-new'], '💳', 'Drag to place a PayPal Buy Now, Add to Cart or Donate button. Set your PayPal email or hosted-button ID, the item and the price — it publishes PayPal’s own hosted-button form, no server needed.'),
 ]
 
 class LinelessTree(QTreeWidget):
@@ -6640,7 +6892,9 @@ class MainWindow(QMainWindow):
                         ' Double-click to choose its photos and timing.' if o['type'] == 'gallery' else \
                         ' Each button shares whichever page it is on. Double-click to choose the sites.' if o['type'] == 'share' else \
                         ' It updates automatically when you add or rename pages.' if o['type'] == 'nav' else \
-                        ' Double-click to choose which page’s stories it lists. New stories appear automatically.' if o['type'] == 'newsfeed' else ''
+                        ' Double-click to choose which page’s stories it lists. New stories appear automatically.' if o['type'] == 'newsfeed' else \
+                        ' Double-click to add and edit its slides.' if o['type'] == 'slider' else \
+                        ' Double-click to set the PayPal account, item and price.' if o['type'] == 'paypal' else ''
                 self.hint(f'{TYPE_NAMES[o["type"]]} selected.{extra}' + (' (Locked)' if o.get('locked') else ''))
             else:
                 self.hint(f'{len(os_)} objects selected. Drag to move them together.')
@@ -7015,6 +7269,8 @@ class MainWindow(QMainWindow):
         elif kind == 'picture': self.pick_picture(o)
         elif kind == 'lightbox': self.lightbox_dialog(o)
         elif kind == 'gallery': self.gallery_dialog(o)
+        elif kind == 'slider': self.slider_dialog(o)
+        elif kind == 'paypal': self.paypal_dialog(o)
 
     def insert_quickshape(self, key):
         c = self.view.mapToScene(self.view.viewport().rect().center())
@@ -7037,6 +7293,8 @@ class MainWindow(QMainWindow):
         elif kind == 'vimeo': self.vimeo_dialog(o)
         elif kind == 'audio': self.audio_dialog(o)
         elif kind == 'map': self.map_dialog(o)
+        elif kind == 'slider': self.slider_dialog(o)
+        elif kind == 'paypal': self.paypal_dialog(o)
 
     def launch_app(self, cmd, label):
         """Launch a sibling 'just a...' app, or explain how to install it."""
@@ -7244,6 +7502,8 @@ class MainWindow(QMainWindow):
         elif t == 'share': self.share_dialog(o)
         elif t == 'nav': self.nav_dialog(o)
         elif t == 'newsfeed': self.newsfeed_dialog(o)
+        elif t == 'slider': self.slider_dialog(o)
+        elif t == 'paypal': self.paypal_dialog(o)
 
     def start_edit(self, o, select_all=False):
         it = self.items.get(o['id'])
@@ -8132,6 +8392,162 @@ class MainWindow(QMainWindow):
             self.commit()
             o['images'] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
             o['interval'] = iv.value(); o['fade'] = fd.value()
+            self.refresh()
+
+    def slider_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QDoubleSpinBox, QCheckBox, QSpinBox, QWidget
+        slides = [copy.deepcopy(s) for s in (o.get('slides') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('Slider / Carousel'); dlg.resize(640, 560); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('Each slide shows a picture with a heading, caption and an optional button, '
+                             'in this order. The published carousel adds prev/next arrows and dots.'))
+        body = QHBoxLayout(); lay.addLayout(body, 1)
+        lst = QListWidget(); lst.setMaximumWidth(200); body.addWidget(lst)
+        # Editor panel for the selected slide.
+        panel = QWidget(); pform = QFormLayout(panel); body.addWidget(panel, 1)
+        heading = QLineEdit(); caption = QPlainTextEdit(); caption.setMaximumHeight(72)
+        btn = QLineEdit(); btn.setPlaceholderText('e.g. Learn more (leave blank for no button)')
+        linkpg = QComboBox(); linkpg.addItem('— no link / set a web address below —', None)
+        for p in self.site['pages']: linkpg.addItem(('    ' if p.get('level') else '') + p['title'], p['id'])
+        linkurl = QLineEdit(); linkurl.setPlaceholderText('https://example.org  (used if no page is chosen)')
+        imgname = QLabel('No picture chosen'); pickbtn = QPushButton('Choose Picture…')
+        cur = {'img': None}
+        def set_imgname():
+            k = cur['img']
+            imgname.setText(self.site.get('assetnames', {}).get(k, 'Picture set') if k else 'No picture chosen')
+        def pick_img():
+            pth, _ = QFileDialog.getOpenFileName(dlg, 'Slide picture', os.path.expanduser('~/Pictures'),
+                                                 'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
+            if pth:
+                uri = self.picture_uri(pth)
+                if uri:
+                    k = add_asset(self.site, uri); self.site.setdefault('assetnames', {})[k] = os.path.basename(pth)
+                    cur['img'] = k; set_imgname()
+        pickbtn.clicked.connect(pick_img)
+        imgrow = QHBoxLayout(); imgrow.addWidget(imgname, 1); imgrow.addWidget(pickbtn)
+        imgw = QWidget(); imgw.setLayout(imgrow)
+        pform.addRow('Picture:', imgw); pform.addRow('Heading:', heading); pform.addRow('Caption:', caption)
+        pform.addRow('Button text:', btn); pform.addRow('Button → page:', linkpg); pform.addRow('Button → URL:', linkurl)
+        panel.setEnabled(False)
+        active = {'i': -1}
+        def save_active():
+            i = active['i']
+            if not (0 <= i < len(slides)): return
+            L = ''
+            if linkpg.currentData(): L = 'wcpage:' + linkpg.currentData()
+            elif linkurl.text().strip(): L = linkurl.text().strip()
+            slides[i] = dict(image=cur['img'], heading=heading.text(), caption=caption.toPlainText(),
+                             btn=btn.text().strip(), link=L)
+            lst.item(i).setText(f'{i + 1}. ' + (slides[i]['heading'] or slides[i]['btn'] or 'Slide'))
+        def load_slide(i):
+            active['i'] = i
+            if not (0 <= i < len(slides)):
+                panel.setEnabled(False); return
+            panel.setEnabled(True); s = slides[i]
+            cur['img'] = s.get('image'); set_imgname()
+            heading.setText(s.get('heading', '')); caption.setPlainText(s.get('caption', '')); btn.setText(s.get('btn', ''))
+            L = s.get('link') or ''
+            if isinstance(L, str) and L.startswith('wcpage:'):
+                linkpg.setCurrentIndex(max(0, linkpg.findData(L[7:]))); linkurl.setText('')
+            else:
+                linkpg.setCurrentIndex(0); linkurl.setText(L if isinstance(L, str) else '')
+        def on_row(new_row):
+            # Persist edits to the slide we are leaving before showing the new one.
+            if active['i'] != new_row:
+                save_active()
+            load_slide(new_row)
+        lst.currentRowChanged.connect(on_row)
+        for i, s in enumerate(slides):
+            lst.addItem(f'{i + 1}. ' + (s.get('heading') or s.get('btn') or 'Slide'))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()):
+                lst.item(i).setText(f'{i + 1}. ' + (slides[i]['heading'] or slides[i]['btn'] or 'Slide'))
+        def add_slide():
+            save_active(); slides.append(copy.deepcopy(SLIDE_DEF))
+            lst.addItem(f'{lst.count() + 1}. Slide'); lst.setCurrentRow(lst.count() - 1)
+        def del_slide():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(slides):
+                slides.pop(i); lst.takeItem(i); renumber()
+                active['i'] = -1; load_slide(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(slides) and 0 <= j < len(slides):
+                slides[i], slides[j] = slides[j], slides[i]
+                it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text, ic, fn in (('Add Slide', 'list-add', add_slide), ('Remove', 'list-remove', del_slide),
+                             ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        # global options
+        opt = QFormLayout(); lay.addLayout(opt)
+        auto = QCheckBox('Advance slides automatically'); auto.setChecked(o.get('auto', True))
+        iv = QDoubleSpinBox(); iv.setRange(1, 60); iv.setSuffix(' s'); iv.setValue(o.get('interval', 5))
+        arrows = QCheckBox('Show prev / next arrows'); arrows.setChecked(o.get('arrows', True))
+        dots = QCheckBox('Show dots'); dots.setChecked(o.get('dots', True))
+        ovr = QSpinBox(); ovr.setRange(0, 90); ovr.setSuffix(' %'); ovr.setValue(int(o.get('overlay', 40)))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Button colour')
+        ink = [o.get('ink', '#ffffff')]; inkb = ColorButton(ink[0], lambda c: ink.__setitem__(0, c or '#ffffff'), 'Text colour')
+        opt.addRow('', auto); opt.addRow('Each slide for:', iv); opt.addRow('', arrows); opt.addRow('', dots)
+        opt.addRow('Image darkening:', ovr); opt.addRow('Button colour:', accb); opt.addRow('Text colour:', inkb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if slides: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_slide)
+        if dlg.exec():
+            save_active()
+            self.commit()
+            o['slides'] = slides
+            o.update(auto=auto.isChecked(), interval=iv.value(), arrows=arrows.isChecked(),
+                     dots=dots.isChecked(), overlay=ovr.value(), accent=acc[0], ink=ink[0])
+            self.refresh()
+
+    def paypal_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox
+        mode = QComboBox(); [mode.addItem(lbl, mid) for mid, lbl, _ in PAYPAL_MODES]
+        mode.setCurrentIndex(max(0, next((i for i, (mid, *_) in enumerate(PAYPAL_MODES) if mid == o.get('mode', 'buynow')), 0)))
+        biz = QLineEdit(o.get('business', '')); biz.setPlaceholderText('you@example.com  (your PayPal account email)')
+        hosted = QLineEdit(o.get('hosted', '')); hosted.setPlaceholderText('optional — a PayPal hosted button ID')
+        item = QLineEdit(o.get('item', 'Item'))
+        amount = QLineEdit(o.get('amount', '9.99')); amount.setPlaceholderText('e.g. 9.99  (blank on Donate = let the donor choose)')
+        cur = QComboBox(); cur.addItems(PAYPAL_CURRENCIES)
+        cur.setCurrentIndex(max(0, PAYPAL_CURRENCIES.index(o.get('currency', 'GBP')) if o.get('currency', 'GBP') in PAYPAL_CURRENCIES else 0))
+        note = QLabel('Enter either your PayPal email (with an item and price) or a PayPal hosted-button ID. '
+                      'The button publishes as PayPal’s own secure hosted form — payments go straight to '
+                      'PayPal, with no server of your own.'); note.setWordWrap(True); note.setStyleSheet('color:#555')
+        def upd():
+            has_hosted = bool(hosted.text().strip())
+            for w in (biz, item, amount, cur): w.setEnabled(not has_hosted)
+        hosted.textChanged.connect(lambda *_: upd()); upd()
+        dlg = form_dialog(self, 'PayPal Button',
+                          [('Button type:', mode), ('PayPal email:', biz), ('Hosted button ID:', hosted),
+                           ('Item name:', item), ('Price / amount:', amount), ('Currency:', cur)], note)
+        if dlg.exec():
+            self.commit()
+            o.update(mode=mode.currentData(), business=biz.text().strip(), hosted=hosted.text().strip(),
+                     item=item.text().strip() or 'Item', amount=amount.text().strip(), currency=cur.currentText())
+            self.refresh()
+
+    def anim_dialog(self):
+        """Set the scroll-into-view animation on the selected object(s). The effect shows in
+        Device Preview and in the published site, not on the editor canvas."""
+        from PySide6.QtWidgets import QComboBox
+        objs = self.sel_objs()
+        if not objs: return
+        combo = QComboBox(); [combo.addItem(lbl, aid) for aid, lbl in SCROLL_ANIMS]
+        cur = (objs[0].get('anim') or '')
+        combo.setCurrentIndex(max(0, next((i for i, (aid, _) in enumerate(SCROLL_ANIMS) if aid == cur), 0)))
+        dlg = form_dialog(self, 'Animate on Scroll', [('Animation:', combo)],
+                          QLabel('The element animates into view as the visitor scrolls down to it — '
+                                 'in Device Preview and on the published site. It has no effect on the '
+                                 'editor canvas, and is switched off automatically for visitors who '
+                                 'prefer reduced motion.'))
+        if dlg.exec():
+            self.commit()
+            aid = combo.currentData()
+            for o in objs:
+                if aid: o['anim'] = aid
+                else: o.pop('anim', None)
             self.refresh()
 
     def html_dialog(self, o):
@@ -9494,6 +9910,9 @@ class MainWindow(QMainWindow):
                     self._pic_adjust_menu(m, o['src'])
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
             if o['type'] in self.FX_OBJ: m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
+            m.addAction(ticon(['chronometer', 'media-playback-start'], '✦'),
+                        'Animate on Scroll…' + ('  (' + ANIM_LABELS.get(o.get('anim', ''), '') + ')' if o.get('anim') else ''),
+                        self.anim_dialog)
             m.addAction('Transform — Position & Size…', self.transform_dialog)
         else:
             m.addAction(self.a['paste']); m.addSeparator(); m.addAction(self.a['pageprops']); m.addAction(self.a['newpage'])
@@ -10237,11 +10656,15 @@ class MainWindow(QMainWindow):
         note = QLabel('Responsive keeps your exact design and shrinks the whole page to fit '
                       'narrow screens, so visitors see the full layout without side-scrolling.')
         note.setWordWrap(True); note.setStyleSheet('color:gray'); dl.addWidget(note)
+        from PySide6.QtWidgets import QCheckBox as _QCheckBox
+        smooth = _QCheckBox('Smooth scrolling — anchor jumps glide instead of snapping')
+        smooth.setChecked(bool(self.site.get('smooth'))); dl.addWidget(smooth)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText('Publish')
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); dl.addWidget(bb)
         if dlg.exec() != QDialog.Accepted: return
         self.site['responsive'] = rb_resp.isChecked()
+        self.site['smooth'] = smooth.isChecked()
         # Step 2: write the files automatically to a stable per-site folder.
         base = re.sub(r'[^A-Za-z0-9 ._-]+', '', (self.site.get('name') or 'My Site')).strip() or 'My Site'
         folder = self.site.get('publishDir')

@@ -389,6 +389,17 @@ def capture(full=True):
     drive(w2.youtube_dialog, seed(mk("youtube", 60, 60, 560, 315)))
     drive(w2.map_dialog, seed(mk("map", 60, 60, 480, 320)))
     drive(w2.newsfeed_dialog, seed(mk("newsfeed", 60, 60, 480, 420)))
+    # Slider / carousel editor — seed one slide so the editor opens on it (an empty
+    # slider adds a slide on a 0ms timer, which is fine, but a seeded one shows fields).
+    if hasattr(w2, "slider_dialog"):
+        drive(w2.slider_dialog, seed(mk("slider", 60, 60, 720, 380,
+              slides=[dict(image=None, heading="Welcome", caption="A headline over the picture",
+                           btn="Learn more", link="")])))
+    if hasattr(w2, "paypal_dialog"):
+        drive(w2.paypal_dialog, seed(mk("paypal", 60, 60, 220, 60)))
+    if hasattr(w2, "anim_dialog"):
+        seed(mk("text", 60, 60, 300, 120))   # anim_dialog acts on the current selection
+        drive(w2.anim_dialog)
     drive(w2.html_dialog, seed(mk("html", 60, 60, 300, 120)))
     drive(w2.audio_dialog, seed(mk("audio", 60, 60, 320, 54)))
     drive(w2.table_dialog, seed(mk("table", 60, 60, 480, 160)))
@@ -1052,7 +1063,38 @@ feed updates automatically.</p>
   'In the <b>News Feed</b> editor, choose the source page and how many stories to show, and whether to show each story’s date and picture.',
   'Click <b>OK</b>. Every story appears as a card, newest first.')}
 {fig(dlg('News Feed'), 'The News Feed editor: source page, maximum stories, and whether to show dates and thumbnails.')}
-{tip('<b>Insert ▸ News from a Link…</b> can create a story page straight from a web article’s address — handy for a press or blog section.')}""")]))
+{tip('<b>Insert ▸ News from a Link…</b> can create a story page straight from a web article’s address — handy for a press or blog section.')}"""),
+      ("Sliders and carousels", f"""
+<p>A <b>Slider</b> (or carousel) rotates through a sequence of full-width <b>slides</b>, each with its own
+picture, heading, caption and an optional button &mdash; the big rotating banner you see at the top of so
+many home pages. Unlike the <b>Photo Gallery</b>, which simply cross-fades a set of images, every slide here
+carries <i>text and a call to action</i> laid over the picture.</p>
+{proc('build a slider',
+  'Choose the <b>Slider / Carousel</b> tool and drag out a wide band — a hero slider is usually the full width of the page.',
+  'In the editor, click <b>Add Slide</b> for each slide. For each one, choose a <b>picture</b>, type a <b>heading</b> and a <b>caption</b>, and — if you want — some <b>button text</b> and where the button links (a page in your site, or a web address).',
+  'Reorder slides with <b>Up</b> and <b>Down</b>, or remove one with <b>Remove</b>.',
+  'Set the global options: whether it <b>advances automatically</b> and how long each slide shows, whether to show the <b>arrows</b> and <b>dots</b>, how much to <b>darken</b> the picture behind the text, and the button and text colours.',
+  'Click <b>OK</b>. The canvas shows the first slide with a small slide badge; the rotation itself runs in Device Preview and on the published site.')}
+{fig(dlg('Slider / Carousel'), 'The Slider editor: a list of slides on the left, the selected slide’s picture, heading, caption and button on the right, and the carousel’s global options below.')}
+{note('The published slider is entirely self-contained — the prev/next arrows, the dots, the auto-advance and even finger-swipe on a touchscreen all work with no external library and no server. It respects the darkening and colours you set so the text stays readable over any photo.')}
+{tip('Keep slide headings short and the pictures wide and uncluttered — a slider is a headline act, not a paragraph. Three or four strong slides beat a dozen weak ones.')}"""),
+      ("PayPal buy and donate buttons", f"""
+<p>A <b>PayPal Button</b> lets visitors pay you or donate to you directly &mdash; and because it publishes as
+PayPal&rsquo;s <i>own</i> hosted-button form, the money goes straight to PayPal with <b>no server of your own
+and no plugin</b> to maintain. It is the quickest way to take a payment on a static site.</p>
+{proc('add a PayPal button',
+  'Choose the <b>PayPal Button</b> tool and drag out a button-sized box.',
+  'In the editor, pick the <b>button type</b> — <b>Buy Now</b>, <b>Add to Cart</b> or <b>Donate</b>.',
+  'Enter either your <b>PayPal account email</b> together with an <b>item name</b>, <b>price</b> and <b>currency</b>, <i>or</i> a PayPal <b>hosted-button ID</b> (PayPal stores the item details for you).',
+  'Click <b>OK</b>. The button shows on the canvas; clicking it on the published page opens PayPal&rsquo;s secure checkout.')}
+{fig(dlg('PayPal Button'), 'The PayPal button editor: button type, your PayPal email or hosted-button ID, and the item name, price and currency.')}
+<ul>
+<li><b>Buy Now</b> &mdash; a single-item purchase; the visitor goes straight to PayPal checkout for that item.</li>
+<li><b>Add to Cart</b> &mdash; adds the item to a PayPal cart, so a visitor can buy several things together.</li>
+<li><b>Donate</b> &mdash; a donation button. Leave the amount blank to let the donor choose how much to give.</li>
+</ul>
+{note('Either route works on a plain static host. A <b>hosted-button ID</b> is the most robust — you create the button once in your PayPal dashboard and PayPal keeps the price server-side, so it cannot be tampered with in the page. The email route is quicker to set up and fine for a simple item or donation.')}
+{caution('Double-check the PayPal email and the price before you publish — a typo in the email sends the money to the wrong account.')}""")]))
 
     ch.append(("Pages, Masters and Site Structure",
       "<p class='lede'>A website is a set of linked pages that share a look. This chapter covers adding and "
@@ -1200,7 +1242,26 @@ loud message; a content page has a heading, then sections. If everything shouts,
       ("Design for the phone too", """
 <p>More than half of most sites' visitors are on a phone. Keep the important things near the top, make tap
 targets (buttons, links) big enough for a thumb, and preview on the <b>Phone</b> device before you publish.
-A responsive site handles most of this for you, but a quick look on a narrow screen always pays off.</p>""")]))
+A responsive site handles most of this for you, but a quick look on a narrow screen always pays off.</p>"""),
+      ("Scroll animations", f"""
+<p>A little motion, used sparingly, makes a page feel alive: a heading that <b>fades up</b> as you scroll to
+it, a photo that <b>slides in</b> from the side, a panel that gently <b>zooms</b> into place. WEBcreator can
+add this to <i>any</i> object &mdash; it is a per-object property, so you choose exactly what moves and how.</p>
+{proc('animate an object on scroll',
+  'Select the object you want to animate.',
+  'Right-click it and choose <b>Animate on Scroll…</b>.',
+  'Pick an effect — <b>Fade in</b>, <b>Fade up</b>, <b>Fade down</b>, <b>Slide in from left</b>, <b>Slide in from right</b> or <b>Zoom in</b> — and click <b>OK</b>.',
+  'The editor canvas does not play the animation (so your layout stays still while you work); preview it in <b>Device Preview</b> or on the published site.')}
+{fig(dlg('Animate on Scroll'), 'The Animate-on-Scroll chooser: pick how an object enters the page as the visitor scrolls to it.')}
+<p>On the published page each animated element starts hidden and plays its entrance the moment it scrolls into
+view &mdash; a modern, Squarespace-style touch that costs nothing in load time (it is one tiny shared script
+for the whole page, using the browser&rsquo;s own <code>IntersectionObserver</code>).</p>
+<h3>Smooth scrolling</h3>
+<p>There is also a site-wide <b>Smooth scrolling</b> option, offered in the <b>Publish</b> dialog. With it on,
+jumps to an anchor further down the page <i>glide</i> there instead of snapping &mdash; a nice finishing
+touch for a long one-page site with a navigation bar that links to sections.</p>
+{note('Both features respect the visitor&rsquo;s <b>&ldquo;reduce motion&rdquo;</b> accessibility setting: anyone who has asked their device to minimise animation simply sees everything appear at once, with no movement. Good motion is optional, never compulsory.')}
+{tip('Restraint wins. One or two gentle fades per screen feels polished; a page where <i>everything</i> flies in from a different direction feels like a toy. Pick one effect and reuse it.')}""")]))
 
     parts.append(("Part IV", "Templates &amp; Design", ch))
 
