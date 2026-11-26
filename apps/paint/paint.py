@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.6-00"
+VERSION = "1.7-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -384,6 +384,61 @@ class Canvas(QWidget):
         self.layers.insert(self.active + 1, Layer(s.img.copy(), s.name + ' copy', s.visible, s.opacity, s.blend,
                                                   s.mask.copy() if s.mask is not None else None))
         self.active += 1; self.update(); self.win.refresh_layers()
+
+    def _scaled_layer_image(self, path, fit='cover'):
+        """Load `path` and render it into a fresh canvas-sized ARGB32 QImage, scaled to
+        either 'cover' the document (preserve aspect, fill, centred — may crop) or 'fit'
+        it inside. Large sources are read straight into the canvas-sized buffer, so memory
+        stays bounded by the document size, not the source file. Returns None on failure."""
+        src = QImage(path)
+        if src.isNull():
+            return None
+        dw, dh = self.doc_w(), self.doc_h()
+        out = QImage(dw, dh, QImage.Format_ARGB32); out.fill(Qt.transparent)
+        sw, sh = src.width(), src.height()
+        if sw <= 0 or sh <= 0:
+            return None
+        if fit == 'fit':
+            scale = min(dw / sw, dh / sh)
+        else:  # cover
+            scale = max(dw / sw, dh / sh)
+        tw, th = max(1, round(sw * scale)), max(1, round(sh * scale))
+        ox, oy = (dw - tw) / 2.0, (dh - th) / 2.0
+        p = QPainter(out)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        p.drawImage(QRectF(ox, oy, tw, th), src, QRectF(0, 0, sw, sh))
+        p.end()
+        return out
+
+    def add_overlay_layer(self, path, blend='screen', opacity=1.0):
+        """Drop the image at `path` onto a NEW layer scaled to cover the document
+        (aspect preserved, centred), with the given blend mode and opacity. Non-
+        destructive. Returns the new Layer, or None if the image couldn't be loaded."""
+        im = self._scaled_layer_image(path, fit='cover')
+        if im is None:
+            return None
+        self.snapshot_full()
+        name = os.path.splitext(os.path.basename(path))[0] or 'Overlay'
+        layer = Layer(im, self._unique_name(name), True,
+                      max(0.0, min(1.0, opacity)), blend if blend in BLEND_NAMES else 'screen')
+        self.active += 1; self.layers.insert(self.active, layer)
+        self.update(); self.win.refresh_layers()
+        return layer
+
+    def place_texture_layer(self, path, blend='normal', opacity=1.0):
+        """Place the texture at `path` as a NEW layer scaled to cover the whole canvas
+        (aspect preserved, centred), with the given blend mode and opacity. Non-
+        destructive. Returns the new Layer, or None if the image couldn't be loaded."""
+        im = self._scaled_layer_image(path, fit='cover')
+        if im is None:
+            return None
+        self.snapshot_full()
+        name = os.path.splitext(os.path.basename(path))[0] or 'Texture'
+        layer = Layer(im, self._unique_name(name), True,
+                      max(0.0, min(1.0, opacity)), blend if blend in BLEND_NAMES else 'normal')
+        self.active += 1; self.layers.insert(self.active, layer)
+        self.update(); self.win.refresh_layers()
+        return layer
 
     def delete_layer(self):
         if len(self.layers) <= 1: return
@@ -1483,6 +1538,9 @@ class Main(QMainWindow):
         img.addAction(self.act('Flip &Horizontal', lambda: self.canvas.flip(True)))
         img.addAction(self.act('Flip &Vertical', lambda: self.canvas.flip(False)))
         img.addSeparator()
+        img.addAction(self.act('Add &Overlay…', self.add_overlay_dialog))
+        img.addAction(self.act('&Place Texture…', self.place_texture_dialog))
+        img.addSeparator()
         img.addAction(self.act('Cu&tout Studio… (remove background)', self.cutout_studio))
 
         adj = m.addMenu('&Adjust')
@@ -1811,6 +1869,107 @@ class Main(QMainWindow):
             _, w, h = PRE[preset.currentIndex()]
             self.canvas.new_image(w, h, Qt.transparent if trans.isChecked() else bg[0])
             self.path = None; self.update_title()
+
+    def add_overlay_dialog(self):
+        self._library_picker_dialog(
+            title='Add Overlay',
+            libdir=os.path.expanduser('~/.local/share/justapps/overlays'),
+            intro=('Drop a light leak, grunge, frame or bokeh overlay onto a NEW layer '
+                   '(non-destructive). It is scaled to cover the canvas; set a blend mode '
+                   'and opacity to taste, then refine with a layer mask.'),
+            libname='overlay library',
+            default_blend='screen', default_opacity=100,
+            apply_fn=self.canvas.add_overlay_layer,
+            done='Overlay added on a new layer — tweak its blend/opacity in the Layers panel.')
+
+    def place_texture_dialog(self):
+        self._library_picker_dialog(
+            title='Place Texture',
+            libdir=os.path.expanduser('~/.local/share/justapps/textures'),
+            intro=('Place a texture as a NEW layer covering the whole canvas. It lands at '
+                   'Normal / 100% so you can then blend it (Multiply, Overlay…) or mask it in.'),
+            libname='texture library',
+            default_blend='normal', default_opacity=100,
+            apply_fn=self.canvas.place_texture_layer,
+            done='Texture placed on a new layer — blend or mask it in via the Layers panel.')
+
+    def _library_picker_dialog(self, title, libdir, intro, libname,
+                               default_blend, default_opacity, apply_fn, done):
+        """Shared picker for Add Overlay / Place Texture: Browse-for-image OR a categorised
+        swatch grid reading the live library at `libdir`, plus a blend-mode and opacity
+        control. Calls apply_fn(path, blend, opacity) on OK."""
+        from PySide6.QtWidgets import (QScrollArea, QGridLayout, QToolButton, QWidget)
+        chosen = {'path': None}
+        dlg = QDialog(self); dlg.setWindowTitle(title); dlg.resize(580, 640)
+        v = QVBoxLayout(dlg)
+        lbl = QLabel(intro); lbl.setWordWrap(True); v.addWidget(lbl)
+        sel_lbl = QLabel('Nothing chosen yet.'); sel_lbl.setStyleSheet('color:#5c6b73')
+        row = QHBoxLayout(); bbrowse = QPushButton('Browse for an image…')
+        row.addWidget(bbrowse); row.addWidget(sel_lbl, 1); v.addLayout(row)
+
+        def choose(path):
+            chosen['path'] = path; sel_lbl.setText('Chosen: ' + os.path.basename(path))
+            okbtn.setEnabled(True)
+
+        def browse():
+            p, _ = QFileDialog.getOpenFileName(dlg, 'Choose an image', _just_dir('pics'),
+                                               'Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)')
+            if p: choose(p)
+        bbrowse.clicked.connect(browse)
+
+        cats = sorted([d for d in os.listdir(libdir) if os.path.isdir(os.path.join(libdir, d))]) \
+            if os.path.isdir(libdir) else []
+        if cats:
+            v.addWidget(QLabel('<b>Your %s</b> — click a swatch to use it:' % libname))
+            catcombo = QComboBox(); catcombo.addItems(cats); v.addWidget(catcombo)
+            area = QScrollArea(); area.setWidgetResizable(True); area.setMinimumHeight(300); v.addWidget(area, 1)
+            holder = QWidget(); hv = QGridLayout(holder); area.setWidget(holder)
+
+            def load_cat(cat):
+                while hv.count():
+                    it = hv.takeAt(0); w = it.widget()
+                    if w: w.deleteLater()
+                d = os.path.join(libdir, cat)
+                try:
+                    files = sorted([f for f in os.listdir(d)
+                                    if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))])[:120]
+                except OSError:
+                    files = []
+                for i, fn in enumerate(files):
+                    fp = os.path.join(d, fn)
+                    tb = QToolButton(); pm = QPixmap(fp)
+                    if not pm.isNull():
+                        pm = pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+                    tb.setIcon(QIcon(pm)); tb.setIconSize(QSize(90, 90)); tb.setToolTip(fn)
+                    tb.setCursor(Qt.PointingHandCursor); tb.setAutoRaise(True)
+                    tb.clicked.connect(lambda _=0, fp=fp: choose(fp))
+                    hv.addWidget(tb, i // 4, i % 4)
+            catcombo.currentTextChanged.connect(load_cat); load_cat(cats[0])
+        else:
+            note = QLabel('<span style="color:gray">No %s found at %s — use Browse for an '
+                          'image instead.</span>' % (libname, libdir))
+            note.setWordWrap(True); v.addWidget(note)
+
+        orow = QHBoxLayout()
+        orow.addWidget(QLabel('Blend:'))
+        blend_cb = QComboBox(); blend_cb.addItems(BLEND_NAMES)
+        blend_cb.setCurrentIndex(BLEND_NAMES.index(default_blend)); orow.addWidget(blend_cb)
+        orow.addSpacing(16); orow.addWidget(QLabel('Opacity:'))
+        op_sl = QSlider(Qt.Horizontal); op_sl.setRange(0, 100); op_sl.setValue(default_opacity)
+        orow.addWidget(op_sl, 1)
+        op_lbl = QLabel('%d%%' % default_opacity); op_lbl.setMinimumWidth(42); orow.addWidget(op_lbl)
+        op_sl.valueChanged.connect(lambda val: op_lbl.setText('%d%%' % val))
+        v.addLayout(orow)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        okbtn = bb.button(QDialogButtonBox.Ok); okbtn.setText('Add to new layer'); okbtn.setEnabled(False)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted or not chosen['path']:
+            return
+        layer = apply_fn(chosen['path'], blend_cb.currentText(), op_sl.value() / 100.0)
+        if layer is None:
+            QMessageBox.warning(self, APP, "Couldn't load that image."); return
+        self.status.showMessage(done, 4000)
 
     def open(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open image', _just_dir('pics'),

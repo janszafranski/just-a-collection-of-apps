@@ -346,6 +346,62 @@ def capture(full=True):
     except Exception as e:
         print("layers demo failed:", e)
 
+    # overlays & textures demo: build our OWN demo overlay (a diagonal light leak) and
+    # texture (a woven weave), never the user's licensed library, and show before/after
+    # of dropping each onto a scene via the real add_overlay_layer / place_texture_layer.
+    try:
+        import types as _t, tempfile as _tf
+        ow, oh = 460, 300
+        base = _scene(ow, oh)
+        IM["ovtx_before"] = _pil(base).convert("RGB")
+
+        # a light-leak overlay PNG: a warm diagonal gradient wash with soft bright streaks
+        leak = QImage(ow, oh, QImage.Format_ARGB32); leak.fill(Qt.transparent)
+        lp = QPainter(leak)
+        g = QLinearGradient(0, oh, ow, 0)
+        g.setColorAt(0.0, QColor(255, 90, 40, 0)); g.setColorAt(0.55, QColor(255, 150, 60, 150))
+        g.setColorAt(0.8, QColor(255, 225, 150, 220)); g.setColorAt(1.0, QColor(255, 255, 240, 120))
+        lp.fillRect(0, 0, ow, oh, QBrush(g))
+        lp.setPen(Qt.NoPen); lp.setBrush(QColor(255, 255, 220, 120))
+        lp.drawEllipse(QRectF(ow * 0.62, oh * 0.05, 220, 220)); lp.end()
+        tmpd = _tf.mkdtemp()
+        leakp = os.path.join(tmpd, "demo_leak.png"); leak.save(leakp)
+
+        # a texture JPG: a simple woven over/under weave in two warm tones
+        tex = QImage(360, 240, QImage.Format_RGB32); tex.fill(QColor("#c9a24b"))
+        txp = QPainter(tex); txp.setPen(Qt.NoPen)
+        cell = 24
+        for yy in range(0, 240, cell):
+            for xx in range(0, 360, cell):
+                over = ((xx // cell) + (yy // cell)) % 2 == 0
+                txp.setBrush(QColor("#a06b2e") if over else QColor("#e3c178"))
+                txp.drawRect(xx + 2, yy + 2, cell - 4, cell - 4)
+        txp.end()
+        texp = os.path.join(tmpd, "demo_weave.jpg"); tex.save(texp, "JPEG", 90)
+
+        def _throwaway_canvas(bg):
+            c = PC.Canvas.__new__(PC.Canvas)
+            c.layers = [PC.Layer(bg.convertToFormat(QImage.Format_ARGB32), "Background")]
+            c.active = 0; c.sel = None; c.undo = []; c.redo = []
+            c.update = _t.MethodType(lambda self: None, c)
+            c.snapshot_full = _t.MethodType(lambda self: None, c)
+            c.win = _t.SimpleNamespace(refresh_layers=lambda: None, update_title=lambda: None)
+            c.doc_w = _t.MethodType(lambda self: self.layers[0].img.width(), c)
+            c.doc_h = _t.MethodType(lambda self: self.layers[0].img.height(), c)
+            return c
+
+        cov = _throwaway_canvas(base)
+        cov.add_overlay_layer(leakp, "screen", 0.85)
+        IM["overlay_after"] = _pil(cov.composited()).convert("RGB")
+
+        ctx = _throwaway_canvas(base)
+        ctx.place_texture_layer(texp, "multiply", 0.7)
+        IM["texture_after"] = _pil(ctx.composited()).convert("RGB")
+        # the plain texture swatch, so the reader sees the raw tile
+        IM["texture_swatch"] = _pil(tex).convert("RGB")
+    except Exception as e:
+        print("overlay/texture demo failed:", e)
+
     # --- live window, tool palette, layers dock --------------------------
     w = _win()
     IM["workspace"] = _grab(w)
@@ -406,6 +462,8 @@ def capture(full=True):
     drive(w2.new)                 # New Image dialog
     drive(w2.cutout_studio)       # Cutout Studio
     drive(w2.export)              # Export dialog
+    drive(w2.add_overlay_dialog)  # Add Overlay picker
+    drive(w2.place_texture_dialog)  # Place Texture picker
 
     IM["_dialogs"] = dict(DGRABS)
     return IM
@@ -962,6 +1020,40 @@ lightens, <b>Overlay</b> boosts contrast, and <b>Darken</b>, <b>Lighten</b>, <b>
 give further effects.</li>
 </ul>
 {tip('A quick vignette or tint: add a layer, paint or fill it with colour, then try the <b>Multiply</b> or <b>Screen</b> blend and ease the opacity down until it looks right.')}"""),
+      ("Overlays and textures", f"""
+<p>Two commands on the <b>Image</b> menu drop a ready-made picture straight onto a <b>new layer</b> for you,
+so you can blend it over your work without disturbing anything beneath. They are the quick way to add the
+kind of finishing effect Serif's PhotoPlus called an <i>instant effect</i>.</p>
+<p><b>Image ▸ Add Overlay…</b> adds an <b>overlay</b> — a light leak, a grunge or paper grain, a decorative
+frame, a drift of bokeh. The overlay arrives on its own layer, scaled to cover the canvas, and is set to the
+<b>Screen</b> blend at full strength by default so its bright marks glow over the picture while its dark areas
+drop away. Both the dialog's <b>Browse</b> button (for any image on disk) and a <b>category + swatch grid</b>
+reading your installed overlay library are offered.</p>
+<div class="imgrow">
+{fig(IM.get('ovtx_before'), 'Before: the plain scene.')}
+{fig(IM.get('overlay_after'), 'After: a warm light-leak overlay dropped on a new layer at the Screen blend — the picture below is untouched.')}
+</div>
+{fig(dlg('Add Overlay'), 'The Add Overlay dialog: Browse for an image or click a swatch from your overlay library, then set a blend mode (Screen by default) and opacity.')}
+{proc('add an overlay',
+  'Choose <b>Image ▸ Add Overlay…</b>.',
+  'Either click <b>Browse for an image…</b> and pick a file, or choose a <b>category</b> and click a <b>swatch</b> from your overlay library.',
+  'Pick a <b>Blend</b> mode (<b>Screen</b> suits most light leaks and glows; try <b>Overlay</b> or <b>Multiply</b> for grunge and frames) and set the <b>Opacity</b>.',
+  'Click <b>Add to new layer</b>. The overlay lands on its own layer, which you can then re-blend, fade, move or mask like any other.')}
+<p><b>Image ▸ Place Texture…</b> works the same way over your <b>texture</b> library — paper, concrete, metal,
+fabric, wood and so on — but places the texture to <b>cover</b> the whole canvas at <b>Normal</b> / 100% so
+that you choose how to blend it. Set it to <b>Multiply</b> to let a grain or weave sink into the picture, or
+add a mask to show the texture only where you want it.</p>
+<div class="imgrow">
+{fig(IM.get('texture_swatch'), 'A texture tile — here a simple woven weave.')}
+{fig(IM.get('texture_after'), 'The same texture placed on a new layer and set to Multiply, so the weave grain sinks into the scene.')}
+</div>
+{fig(dlg('Place Texture'), 'The Place Texture dialog: the same browse-or-swatch picker over your texture library, placed Normal / 100% to cover the canvas.')}
+{proc('place a texture',
+  'Choose <b>Image ▸ Place Texture…</b>.',
+  'Browse for an image, or choose a category and click a swatch from your texture library.',
+  'Click <b>Add to new layer</b> — the texture covers the canvas on a new layer at Normal / 100%.',
+  'Now blend it: set the layer’s <b>blend</b> to <b>Multiply</b> or <b>Overlay</b> and ease the opacity down, or add a <b>mask</b> to reveal the texture only in places.')}
+{note('The overlay and texture libraries live outside the app, at <code>~/.local/share/justapps/overlays</code> and <code>~/.local/share/justapps/textures</code>, and are read live — nothing is copied in. If a library is not installed, the dialog still offers <b>Browse</b> so you can use your own images.')}"""),
       ("Merging and flattening", f"""
 <p><b>Layer ▸ Merge Down</b> (or the <b>⌄</b> button) fuses the active layer into the one below, baking in its
 opacity and blend. Merge when you are happy with a combination and want to simplify the stack.</p>
