@@ -160,6 +160,14 @@ def grad(c1, c2, angle=90, type="linear"):
     return dict(c1=c1, c2=c2, angle=angle, type=type)
 
 
+def nodes_obj(nodes, closed=False, stroke="#1f2a30", sw=3, fill=None, **k):
+    return dict(type="nodes", nodes=nodes, closed=closed, stroke=stroke, sw=sw, fill=fill, **k)
+
+
+def _node(x, y, hin=(0, 0), hout=(0, 0), smooth=True):
+    return dict(x=x, y=y, hin=list(hin), hout=list(hout), smooth=smooth)
+
+
 # ------------------------------------------------------------------- demo drawings
 # A hand-drawn-looking freehand wave, for the freehand/pencil illustration.
 def _wave(x0, y0, amp, length, n=60):
@@ -301,6 +309,58 @@ LOGO_STEP1 = LOGO_DEMO[:1]
 LOGO_STEP2 = LOGO_DEMO[:2]
 LOGO_STEP3 = LOGO_DEMO[:4]
 
+# --- new in 1.6: images, node/Bézier curves, PDF/print, opacity/dash/arrows/combine ----
+
+# A smooth Bézier wave drawn as a node path, next to a shape "converted to curves".
+CURVES_DEMO = [
+    nodes_obj([
+        _node(40, 160, hout=(60, -90)),
+        _node(230, 120, hin=(-70, 60), hout=(70, -60)),
+        _node(420, 170, hin=(-60, -80), hout=(0, 0), smooth=False),
+    ], closed=False, stroke="#9b3b57", sw=5),
+    # a star converted to curves (shown with its nodes implied by the smooth corners)
+    nodes_obj([
+        _node(520, 60, hout=(0, 0), smooth=False),
+        _node(600, 200, hout=(0, 0), smooth=False),
+        _node(460, 110, hout=(0, 0), smooth=False),
+        _node(640, 110, hout=(0, 0), smooth=False),
+        _node(500, 200, hout=(0, 0), smooth=False),
+    ], closed=True, stroke="#c8851b", sw=3, fill="#f4c96b"),
+]
+
+# A rounded "blob" built only from smooth Bézier nodes — what the Pen tool makes.
+BEZIER_BLOB = [
+    nodes_obj([
+        _node(130, 40, hin=(-70, 0), hout=(70, 0)),
+        _node(300, 110, hin=(0, -60), hout=(0, 60)),
+        _node(150, 210, hin=(70, 10), hout=(-70, -10)),
+        _node(30, 110, hin=(0, 60), hout=(0, -60)),
+    ], closed=True, stroke="#2a7d6b", sw=3, fill="#9fd6c9"),
+]
+
+# Opacity: three overlapping discs, each half-transparent, so the overlaps blend.
+OPACITY_DEMO = [
+    ellipse(40, 40, 160, 160, fill="#e8556b", stroke=None, sw=0, opacity=0.55),
+    ellipse(140, 40, 160, 160, fill="#5b8def", stroke=None, sw=0, opacity=0.55),
+    ellipse(90, 120, 160, 160, fill="#f4c96b", stroke=None, sw=0, opacity=0.55),
+]
+
+# Dash styles and arrowheads on lines.
+DASH_DEMO = [
+    line([(40, 50), (360, 50)], stroke="#2b3a42", sw=4),                     # solid
+    dict(type="line", pts=[(40, 110), (360, 110)], stroke="#2a7d6b", sw=4, fill=None, dash="dashed"),
+    dict(type="line", pts=[(40, 170), (360, 170)], stroke="#9b3b57", sw=4, fill=None, dash="dotted"),
+    dict(type="line", pts=[(40, 240), (360, 240)], stroke="#5b8def", sw=4, fill=None, arrow="end"),
+    dict(type="line", pts=[(40, 300), (360, 300)], stroke="#c8851b", sw=4, fill=None, arrow="both", dash="dashed"),
+]
+
+# Combine: two overlapping rounded shapes, then union / subtract / intersect of them.
+def _two(off=0):
+    return [quick("speech", 20, 30, 150, 120, fill="#9fc3d6", stroke="#2b3a42", sw=2),
+            ellipse(110, 70, 140, 120, fill="#f4c96b", stroke="#8a6d1f", sw=2)]
+
+# the booleans are rendered live from real QPainterPaths in capture()
+
 
 # ------------------------------------------------------------------- capture
 def capture(full=True):
@@ -327,6 +387,61 @@ def capture(full=True):
     IM["group_demo"] = render_drawing(GROUP_DEMO, 300, 240, px=560)
     IM["align_before"] = render_drawing(ALIGN_BEFORE, 300, 330, px=440)
     IM["align_after"] = render_drawing(ALIGN_AFTER, 300, 380, px=440)
+
+    # --- new in 1.6 ------------------------------------------------------
+    IM["curves_demo"] = render_drawing(CURVES_DEMO, 680, 240, px=860)
+    IM["bezier_blob"] = render_drawing(BEZIER_BLOB, 340, 260, px=560)
+    IM["opacity_demo"] = render_drawing(OPACITY_DEMO, 300, 300, px=520)
+    IM["dash_demo"] = render_drawing(DASH_DEMO, 400, 340, px=640)
+
+    # Combine: render union / subtract / intersect from real QPainterPaths, via the app
+    try:
+        import copy as _copy
+
+        def _combine_img(opname):
+            cw = _win2.canvas
+            shapes = _copy.deepcopy(_two())
+            for s in shapes:
+                s["layer"] = cw.active_layer
+            cw.objs = shapes
+            cw.set_selection(shapes)
+            cw.combine_selection(opname)
+            objs = _copy.deepcopy(cw.objs)
+            return render_drawing(objs, 270, 210, px=460)
+
+        _win2 = _win()
+        IM["combine_before"] = render_drawing([s | {"layer": 1} for s in _copy.deepcopy(_two())], 270, 210, px=460)
+        IM["combine_union"] = _combine_img("union")
+        IM["combine_subtract"] = _combine_img("subtract")
+        IM["combine_intersect"] = _combine_img("intersect")
+    except Exception as e:
+        print("combine render failed:", e)
+
+    # A placed image: build a tiny generated picture, embed it, render the image object.
+    try:
+        pic = QImage(220, 150, QImage.Format_ARGB32)
+        qp = QPainter(pic)
+        qp.fillRect(0, 0, 220, 150, QColor("#7cc5de"))
+        qp.setBrush(QColor("#f4c96b")); qp.setPen(QColor("#8a6d1f"))
+        qp.drawEllipse(30, 30, 90, 90)
+        qp.setBrush(QColor("#2a7d6b")); qp.setPen(QColor("#143f36"))
+        qp.drawRect(120, 60, 70, 60)
+        qp.end()
+        _pic_path = str(ROOT / "tools" / "_tmp_pic.png")
+        pic.save(_pic_path)
+        uri = DM.image_data_uri(_pic_path)
+        img_obj = dict(type="image", x=40, y=30, w=220, h=150, src=uri, stroke="#2b3a42", sw=2, fill=None)
+        framed = dict(img_obj); framed["x"] = 300
+        IM["image_demo"] = render_drawing([img_obj,
+                                           rect(300, 30, 220, 150, fill=None, stroke="#2b3a42", sw=2),
+                                           dict(type="image", x=300, y=30, w=220, h=150, src=uri, stroke=None, sw=0, fill=None, opacity=0.55)],
+                                          560, 210, px=760)
+        try:
+            os.unlink(_pic_path)
+        except OSError:
+            pass
+    except Exception as e:
+        print("image demo failed:", e)
 
     # --- QuickShape catalogue: every shape in a labelled grid ------------
     # Rendered shapes only (no text drawn via Qt — offscreen text can abort).
@@ -447,6 +562,16 @@ def capture(full=True):
     except Exception as e:
         print("seed text failed:", e)
     drive(w2.edit_text)
+    # Line Style (dashes & arrows) dialog — needs a line selected
+    try:
+        ln = line([(60, 120), (360, 120)], stroke="#2a7d6b", sw=4)
+        w2.canvas.objs.append(ln)
+        w2.canvas.sel = ln
+        for _ in range(4):
+            app.processEvents()
+    except Exception as e:
+        print("seed line failed:", e)
+    drive(w2.line_style_dialog)
 
     IM["_dialogs"] = dict(DGRABS)
     return IM
@@ -614,10 +739,10 @@ around it.</p>
       ("The tool palette", f"""
 <p>The vertical <b>tool palette</b> on the left holds the tools you draw and edit with. Click one to
 select it; it stays active until you choose another.</p>
-{fig(IM.get('toolrail'), 'The tool palette, from the top: Select, Freehand, Pen, Line, Rectangle, Ellipse and QuickShape.', 'tall')}
-<p>From the top, the tools are the <b>Select</b> pointer, <b>Freehand</b> (a pencil), the <b>Pen</b> (for
-point-by-point polylines), <b>Line</b>, <b>Rectangle</b>, <b>Ellipse</b> and <b>QuickShape</b>. Each is
-covered in detail in Part II.</p>
+{fig(IM.get('toolrail'), 'The tool palette, from the top: Select, Node, Freehand, Pen, Line, Rectangle, Ellipse, QuickShape, Text and Image.', 'tall')}
+<p>From the top, the tools are the <b>Select</b> pointer, the <b>Node</b> tool (for reshaping curves),
+<b>Freehand</b> (a pencil), the <b>Pen</b> (for Bézier curves), <b>Line</b>, <b>Rectangle</b>,
+<b>Ellipse</b>, <b>QuickShape</b>, <b>Text</b> and <b>Image</b>. Each is covered in detail in Part II.</p>
 {tip('Choosing the Select tool is the quickest way to stop drawing and go back to picking things up and moving them.')}"""),
       ("The Style toolbar", f"""
 <p>The horizontal <b>Style toolbar</b> along the top sets how the next shape will look — and restyles the
@@ -702,6 +827,59 @@ polygon, a zig-zag or a many-sided star of your own.</p>
   'To finish as a <b>closed, filled</b> shape, <b>double-click</b> — the outline joins up and fills with the current fill colour.',
   'To finish as an <b>open line</b> instead, press ' + K('Enter') + ' — the points stay joined but the shape is not closed and not filled.')}
 {note('A closed pen shape behaves like any other filled object — it takes a fill, an outline and effects. An open pen line behaves like a multi-segment line. Choose which you want by how you finish: double-click to close, ' + K('Enter') + ' to leave open.')}""")]))
+
+    ch.append(("Editing Nodes and Curves",
+      "<p class='lede'>Straight segments only take a drawing so far. The <b>Pen</b> tool draws true "
+      "<b>Bézier curves</b>, and the <b>Node</b> tool reshapes any path by dragging its nodes and control "
+      "handles — the heart of precise vector drawing. Any shape can be turned into an editable curve with "
+      "<b>Convert to Curves</b>.</p>", [
+      ("Drawing curves with the Pen", f"""
+<p>The <b>Pen</b> tool lays down a path one <b>node</b> at a time. How you place each node decides the
+shape of the curve that flows through it:</p>
+{proc('draw a Bézier curve',
+  'Choose the <b>Pen</b> tool.',
+  '<b>Click</b> to drop a <b>corner</b> node — the path turns sharply through it.',
+  '<b>Click and drag</b> to drop a <b>smooth</b> node — dragging pulls out a pair of control handles, and the path curves gracefully through the node.',
+  'Carry on clicking and dragging to build the path; a live preview follows your pointer.',
+  '<b>Double-click</b> to finish as a <b>closed, filled</b> shape, or press ' + K('Enter') + ' to finish as an <b>open</b> curve.')}
+{fig(IM.get('bezier_blob'), 'A smooth closed shape drawn entirely with the Pen — every corner is a smooth node with symmetric control handles, so the outline flows as true Bézier curves.')}
+{note('A curve drawn this way is stored as real cubic Bézier segments and exported as an SVG <b>&lt;path d="M… C…"&gt;</b>, so it stays perfectly smooth at any size and in any browser.')}"""),
+      ("Reshaping with the Node tool", f"""
+<p>The <b>Node</b> tool (second in the palette) edits an existing path. Click a node path to show its
+nodes as little squares and its control handles as small circles on stalks.</p>
+{proc('reshape a path',
+  'Choose the <b>Node</b> tool and click the path you want to edit.',
+  'Drag a <b>node</b> (a square) to move that point of the path.',
+  'Drag a <b>control handle</b> (a circle) to change how the curve bends into and out of the node — a smooth node keeps its two handles mirrored, for an unbroken curve.')}
+{fig(IM.get('curves_demo'), 'A flowing Bézier curve (left) and a star converted to an editable node path (right) — both reshape by dragging their nodes and handles.')}
+{tip('A smooth node gives a graceful, continuous curve; a corner node gives a sharp change of direction. Mix the two along one path for shapes that are part curved, part angular.')}"""),
+      ("Convert to Curves", f"""
+<p>Any ordinary object — a rectangle, an ellipse, a QuickShape, a line or a pen shape — can be turned into
+an editable node path, so you can push its outline about freely.</p>
+{proc('convert a shape to curves',
+  'Select the object with the <b>Select</b> tool.',
+  'Choose <b>Edit ▸ Convert to Curves</b> (' + K('Ctrl') + '+' + K('Shift') + '+' + K('C') + ').',
+  'The shape becomes a node path and the <b>Node</b> tool switches on, ready for you to reshape it.')}
+{note('Converting an ellipse gives four smooth nodes with Bézier handles — the mathematically exact curve — so you can pull a circle into an egg, a leaf or a teardrop. Converting a rectangle or a QuickShape gives corner nodes you can round off or drag into a new outline.')}""")]))
+
+    ch.append(("Placing Pictures",
+      "<p class='lede'>A vector drawing can hold <b>photographs and bitmaps</b> too. The <b>Image</b> tool "
+      "brings a picture onto the canvas as an object you can move, resize, rotate and layer like any "
+      "other — ideal for a logo photo, a texture, or a scan to trace over.</p>", [
+      ("Importing an image", f"""
+{proc('place a picture on the canvas',
+  'Choose the <b>Image</b> tool (the picture icon at the foot of the tool palette) and click on the canvas — or choose <b>File ▸ Import Image…</b>.',
+  'Pick a <b>PNG, JPEG, GIF, BMP</b> or <b>WebP</b> file.',
+  'The picture appears, scaled to fit the canvas and left selected, ready to position.')}
+{fig(IM.get('image_demo'), 'A placed picture (left), the same image given an outline, and a copy at reduced opacity (right) — an imported image behaves like any other object.')}
+<p>Because an image is an object, you <b>move</b> it, <b>resize</b> it by dragging its handles, <b>rotate</b>
+it, put it on a <b>layer</b>, and stack it in front of or behind your shapes.</p>"""),
+      ("How images are stored", f"""
+<p>When you import a picture, DRAWmaster <b>embeds it inside the drawing</b> — the file's data travels with
+the SVG as a self-contained <b>data URI</b>. That means a saved drawing is a single file you can move or
+share without losing its pictures.</p>
+{note('An image is written into the exported SVG as a real <b>&lt;image&gt;</b> element with its embedded data, so the drawing opens complete in a browser or another program — nothing to link, nothing to lose.')}
+{tip('Place a photo or a scanned sketch on a lower layer, drop its opacity, and draw over the top with the Pen and shapes — a quick way to trace a picture into clean vector artwork.')}""")]))
 
     ch.append(("Working with Text",
       "<p class='lede'>The <b>Text</b> tool adds <i>artistic text</i> — words that are a drawing object in "
@@ -823,6 +1001,47 @@ with its colours and angle intact.</p>"""),
 <p>To go back to a flat fill, open <b>Gradient…</b> again and click <b>Remove gradient</b> — or simply click
 the <b>Fill</b> button and pick a solid colour, which replaces the gradient.</p>
 {tip('A radial gradient from a pale centre to a deep edge gives a shape a soft, rounded, “lit” look; a linear gradient at a shallow angle makes a clean modern background bar.')}""")]))
+
+    ch.append(("Opacity, Dashes, Arrowheads and Combining Shapes",
+      "<p class='lede'>A handful of finishing controls give a drawing polish: making an object <b>see-through</b>, "
+      "styling a line as <b>dashed</b> or <b>dotted</b> or tipping it with an <b>arrowhead</b>, and welding "
+      "several shapes into one with the <b>Combine</b> commands.</p>", [
+      ("Object opacity", f"""
+<p>Every object can be made partly transparent, so whatever lies behind it shows through — useful for
+soft overlays, tints and layered washes of colour.</p>
+{proc('set an object’s opacity',
+  'Select the object with the <b>Select</b> tool.',
+  'Choose <b>Edit ▸ Opacity…</b> and set a value from <b>0</b> (invisible) to <b>100</b> (solid).',
+  'Click <b>OK</b>.')}
+{fig(IM.get('opacity_demo'), 'Three discs, each at about half opacity — where they overlap the colours blend, because each lets the others show through.')}
+{note('Opacity is saved with the object and written into the exported SVG as an <b>opacity</b> value, so it renders the same on screen, in a PNG and in a browser.')}"""),
+      ("Dashed and dotted lines", f"""
+<p>A line, a freehand or pen path, or a node path can be drawn <b>solid</b>, <b>dashed</b> or <b>dotted</b>
+— and tipped with an <b>arrowhead</b> at one or both ends, for connectors, pointers and diagrams.</p>
+{proc('style a line’s dashes and arrowheads',
+  'Select a line, a path or a node path.',
+  'Choose <b>Edit ▸ Line Style (Dashes &amp; Arrows)…</b>.',
+  'Pick a <b>dash style</b> — solid, dashed or dotted — and an <b>arrowhead</b> option — none, start, end or both ends.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Line Style — Dashes & Arrowheads'), 'The Line Style dialog sets the dash pattern and the arrowheads for the selected line or path.')}
+{fig(IM.get('dash_demo'), 'Solid, dashed and dotted lines, a line with an arrowhead at the end, and a dashed double-headed arrow.')}
+<p>The dash pattern scales with the line's width, and an arrowhead is drawn in the line's own colour — both
+are written into the exported SVG, so a dashed arrow looks the same everywhere.</p>"""),
+      ("Combining shapes", f"""
+<p>The <b>Combine</b> commands weld two or more overlapping shapes into a single editable outline, using
+the three classic boolean operations.</p>
+{proc('combine shapes',
+  'Select <b>two or more</b> overlapping shapes.',
+  'Choose <b>Arrange ▸ Combine ▸ Union</b> to merge them into one outline,',
+  '<b>Subtract</b> to cut the upper shapes out of the lowest one,',
+  'or <b>Intersect</b> to keep only the area they all share.')}
+<div class="catgrid">
+<div class="cat-card">{fig(IM.get('combine_before'), 'Two overlapping shapes.')}</div>
+<div class="cat-card">{fig(IM.get('combine_union'), 'Union — merged into one outline.')}</div>
+<div class="cat-card">{fig(IM.get('combine_subtract'), 'Subtract — the upper shape cut away.')}</div>
+<div class="cat-card">{fig(IM.get('combine_intersect'), 'Intersect — only the shared area.')}</div>
+</div>
+{note('The result is a single <b>node path</b>, so you can keep reshaping it with the Node tool, give it a gradient or an effect, or combine it again. It is the quick way to build a custom shape no single QuickShape provides.')}""")]))
 
     ch.append(("Effects: Shadow and Glow",
       "<p class='lede'>Two filter effects lift an object off the flat canvas: a <b>drop shadow</b> that "
@@ -1057,6 +1276,26 @@ a website, a chat or an email, where SVG might not be accepted.</p>
   'Do your pixel-level work there and save.')}
 {caution('This is a <b>one-way</b> trip: a drawing becomes a bitmap when it crosses to PAINTcanvas, and a bitmap cannot be broken back into editable vector shapes. Keep your SVG master so you can always go back to the editable version.')}""")]))
 
+    ch.append(("Exporting to PDF and Printing",
+      "<p class='lede'>For a page you mean to print, hand over or archive, DRAWmaster writes a <b>vector "
+      "PDF</b> — and can send the drawing straight to a <b>printer</b>. Both keep the artwork sharp: text "
+      "stays text and shapes stay crisp paths, at any size.</p>", [
+      ("Exporting a PDF", f"""
+<p>A <b>PDF</b> is the universal document format — it opens anywhere, prints faithfully, and (because
+DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoomed or scaled.</p>
+{proc('export a PDF',
+  'Choose <b>File ▸ Export PDF…</b>.',
+  'Name the file and save. The PDF is written at the canvas size, into your <i>Documents/just a…</i> folder by default.')}
+{note('The PDF is painted through the same engine that draws the screen, so every shape, gradient, effect, image and piece of text appears exactly as it does on the canvas — and text is real, selectable text in the PDF, not a picture of letters.')}
+{tip('A vector PDF is the right thing to send to a print shop or to drop into a report: it scales to any paper size without a hint of blur.')}"""),
+      ("Printing", f"""
+<p>You can also print a drawing directly from DRAWmaster.</p>
+{proc('print a drawing',
+  'Choose <b>File ▸ Print…</b> (' + K('Ctrl') + '+' + K('P') + ').',
+  'Pick your printer and page options in the print dialog.',
+  'Click <b>Print</b>. The drawing is scaled to fit the page and printed as sharp vector artwork.')}
+{caution('The drawing is sized to fit the selected paper while keeping its proportions — so a wide canvas prints landscape-wide on the page, with a margin above and below. Choose a matching paper orientation for the fullest use of the sheet.')}""")]))
+
     parts.append(("Part IV", "Output & Sharing", ch))
 
     # ============================================================ PART V (reference)
@@ -1067,13 +1306,19 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Open SVG… (Ctrl+O)</td><td>Open an SVG — editable if DRAWmaster saved it</td></tr>
 <tr><td>Save as SVG… (Ctrl+S)</td><td>Save the drawing as an editable vector SVG</td></tr>
 <tr><td>Export PNG…</td><td>Write a fixed-size bitmap PNG on a white background</td></tr>
+<tr><td>Export PDF…</td><td>Write a vector PDF at the canvas size (text stays text)</td></tr>
+<tr><td>Import Image…</td><td>Place a picture on the canvas, embedded in the drawing</td></tr>
+<tr><td>Print… (Ctrl+P)</td><td>Print the drawing as vector artwork, scaled to the page</td></tr>
 <tr><td>Edit in PAINTcanvas…</td><td>Rasterise and hand the drawing to PAINTcanvas (one-way)</td></tr>
 <tr><td>Quit</td><td>Close the program</td></tr></table>"""),
       ("Edit", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Undo (Ctrl+Z)</td><td>Reverse the last change; the history is deep</td></tr>
 <tr><td>Redo (Ctrl+Shift+Z)</td><td>Re-apply a change you undid</td></tr>
 <tr><td>Edit Text…</td><td>Change the words, font or size of the selected text object</td></tr>
-<tr><td>Gradient Fill…</td><td>Open the gradient dialog for the selected shape</td></tr></table>"""),
+<tr><td>Gradient Fill…</td><td>Open the gradient dialog for the selected shape</td></tr>
+<tr><td>Opacity…</td><td>Set the selected object’s opacity from 0 to 100%</td></tr>
+<tr><td>Line Style (Dashes &amp; Arrows)…</td><td>Dash pattern and arrowheads for a line or path</td></tr>
+<tr><td>Convert to Curves (Ctrl+Shift+C)</td><td>Turn the selected shape into an editable node path</td></tr></table>"""),
       ("Arrange", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Bring to Front (Ctrl+Shift+])</td><td>Move the selected object to the very top of the stack</td></tr>
 <tr><td>Send to Back (Ctrl+Shift+[)</td><td>Move it to the very bottom</td></tr>
@@ -1081,6 +1326,7 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Send Backward (Ctrl+[)</td><td>Move it down one step</td></tr>
 <tr><td>Group (Ctrl+G)</td><td>Bind the selected objects into one group</td></tr>
 <tr><td>Ungroup (Ctrl+Shift+G)</td><td>Break the selected group back into its objects</td></tr>
+<tr><td>Combine ▸ Union / Subtract / Intersect</td><td>Weld two or more shapes into one node path (boolean)</td></tr>
 <tr><td>Align ▸ Left / Centre / Right</td><td>Line the selection up horizontally</td></tr>
 <tr><td>Align ▸ Top / Middle / Bottom</td><td>Line the selection up vertically</td></tr>
 <tr><td>Distribute ▸ Horizontally / Vertically</td><td>Space three or more objects evenly</td></tr>
@@ -1114,6 +1360,8 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Bring to Front / Send to Back</td><td>{K('Ctrl')}+{K('Shift')}+{K(']')} · {K('Ctrl')}+{K('Shift')}+{K('[')}</td></tr>
 <tr><td>Bring Forward / Send Backward</td><td>{K('Ctrl')}+{K(']')} · {K('Ctrl')}+{K('[')}</td></tr>
 <tr><td>Group / Ungroup</td><td>{K('Ctrl')}+{K('G')} · {K('Ctrl')}+{K('Shift')}+{K('G')}</td></tr>
+<tr><td>Convert to Curves</td><td>{K('Ctrl')}+{K('Shift')}+{K('C')}</td></tr>
+<tr><td>Print</td><td>{K('Ctrl')}+{K('P')}</td></tr>
 <tr><td>Show / hide the grid</td><td>{K('Ctrl')}+{K("'")}</td></tr>
 <tr><td>Resize proportionally · snap rotation to 15°</td><td>hold {K('Shift')} while dragging a handle</td></tr>
 <tr><td>Add to / remove from a multiple selection</td><td>{K('Shift')}+click</td></tr>
@@ -1126,19 +1374,31 @@ a website, a chat or an email, where SVG might not be accepted.</p>
       ("The tools", f"""
 {fig(IM.get('toolrail'), 'The tool palette.', 'tall')}
 <table class="ref"><tr><th>Tool</th><th>Use</th></tr>
-<tr><td>Select</td><td>Pick up, move and delete objects; shows a dashed highlight</td></tr>
+<tr><td>Select</td><td>Pick up, move, resize, rotate and delete objects; shows a dashed highlight</td></tr>
+<tr><td>Node</td><td>Reshape a path by dragging its nodes and Bézier control handles</td></tr>
 <tr><td>Freehand</td><td>Draw a hand-guided path, like a pencil</td></tr>
-<tr><td>Pen</td><td>Build a polyline point by point; double-click to close and fill, Enter to leave open</td></tr>
+<tr><td>Pen</td><td>Draw Bézier curves: click for a corner node, click-drag for a smooth node; double-click to close and fill, Enter to leave open</td></tr>
 <tr><td>Line</td><td>Draw a single straight segment</td></tr>
 <tr><td>Rectangle</td><td>Drag out a rectangle</td></tr>
 <tr><td>Ellipse</td><td>Drag out an ellipse or circle</td></tr>
 <tr><td>QuickShape</td><td>Drag out the chosen ready-made shape</td></tr>
-<tr><td>Text</td><td>Click, then type a line of artistic text (font and size in the dialog)</td></tr></table>""")]))
+<tr><td>Text</td><td>Click, then type a line of artistic text (font and size in the dialog)</td></tr>
+<tr><td>Image</td><td>Click, then pick a picture file to place on the canvas</td></tr></table>""")]))
 
     ch.append(("Appendix D — Glossary", "<p class='lede'>The drawing words used in this guide.</p>", [
       ("A–Z", """<dl class="gloss">
 <dt>Alpha</dt><dd>The opacity of a colour — a low alpha makes a fill partly see-through.</dd>
+<dt>Arrowhead</dt><dd>A filled triangle placed at the start or end of a line or path, for pointers and connectors.</dd>
+<dt>Bézier curve</dt><dd>A smooth curve defined by nodes and their control handles — the mathematics behind every vector curve.</dd>
 <dt>Bitmap (raster)</dt><dd>A picture made of a grid of coloured dots, such as a PNG or a photo; it blurs when enlarged.</dd>
+<dt>Combine (boolean)</dt><dd>Weld two or more shapes into one with Union, Subtract or Intersect.</dd>
+<dt>Control handle</dt><dd>A small marker on a stalk from a node that steers how a Bézier curve bends through it.</dd>
+<dt>Convert to Curves</dt><dd>Turn a shape, line or QuickShape into an editable node path.</dd>
+<dt>Dash style</dt><dd>Whether a line is drawn solid, dashed or dotted.</dd>
+<dt>Image</dt><dd>A bitmap picture placed on the canvas as an object and embedded in the drawing.</dd>
+<dt>Node</dt><dd>A point on a path; corner nodes turn sharply, smooth nodes curve gracefully.</dd>
+<dt>Opacity</dt><dd>How solid an object is, from transparent to fully opaque; lower lets what is behind show through.</dd>
+<dt>PDF</dt><dd>A universal document format; DRAWmaster exports a vector PDF that stays sharp at any size.</dd>
 <dt>Drop shadow</dt><dd>A soft, offset copy behind an object that makes it look raised off the page.</dd>
 <dt>Align</dt><dd>Line selected objects up against a shared edge or centre.</dd>
 <dt>Distribute</dt><dd>Space three or more selected objects evenly between the outermost two.</dd>
@@ -1212,8 +1472,8 @@ complete reference — every tool, worked projects and a full menu guide — ope
 line, width, shape, effects and zoom — across the top.</p>
 {f('workspace', 'Tools on the left, the Style toolbar on top, your canvas in the middle.')}"""))
     S.append(("Meet the tools", f"""
-<p>The <b>tool palette</b> holds everything you draw with: <b>Select</b>, <b>Freehand</b>, <b>Pen</b>,
-<b>Line</b>, <b>Rectangle</b>, <b>Ellipse</b> and <b>QuickShape</b>.</p>
+<p>The <b>tool palette</b> holds everything you draw with: <b>Select</b>, <b>Node</b>, <b>Freehand</b>,
+<b>Pen</b>, <b>Line</b>, <b>Rectangle</b>, <b>Ellipse</b>, <b>QuickShape</b>, <b>Text</b> and <b>Image</b>.</p>
 {fig(IM.get('toolrail'), 'The tool palette.', 'tall')}"""))
     S.append(("Draw a shape", f"""
 <p>Choose the <b>Rectangle</b> or <b>Ellipse</b> tool and drag a box on the canvas. The shape appears in
@@ -1254,9 +1514,18 @@ pick a font and size. The <b>Gradient…</b> button fills the selected shape wit
 <b>Layers</b> panel (and the <b>Arrange</b> menu) controls which objects sit in front of which.</p>
 {f('text_demo', 'Artistic text — solid, outlined, and gradient-filled.')}
 {f('gradient_demo', 'Linear and radial gradient fills.')}"""))
-    S.append(("Save and export", f"""
+    S.append(("Curves, pictures and finishing touches", f"""
+<p>The <b>Pen</b> tool draws true <b>Bézier curves</b> — click for a corner, click-drag for a smooth
+curve; the <b>Node</b> tool reshapes any path, and <b>Edit ▸ Convert to Curves</b> turns any shape into an
+editable one. The <b>Image</b> tool (or <b>File ▸ Import Image…</b>) places a picture. And a few finishing
+controls — <b>Edit ▸ Opacity…</b>, <b>Line Style</b> (dashes and arrowheads) and
+<b>Arrange ▸ Combine</b> (union, subtract, intersect) — add the polish.</p>
+{f('bezier_blob', 'A smooth shape drawn with the Pen as Bézier curves.')}
+{f('dash_demo', 'Solid, dashed and dotted lines, and arrowheads.')}"""))
+    S.append(("Save, export and print", f"""
 <p>Choose <b>File ▸ Save as SVG…</b> ({K('Ctrl')}+{K('S')}) to keep an editable master, and
-<b>File ▸ Export PNG…</b> for a ready-to-use bitmap to drop into a document, website or email.</p>"""))
+<b>File ▸ Export PNG…</b> for a ready-to-use bitmap. For a sharp document to send or print, use
+<b>File ▸ Export PDF…</b> or <b>File ▸ Print…</b> ({K('Ctrl')}+{K('P')}) — both stay vector-crisp.</p>"""))
     S.append(("Where to go next", """
 <p>That is the whole round trip: new canvas → shapes, lines and paths → colour and effects → save and
 export. The <b>User Guide</b> covers every feature in depth, with worked projects and a full reference.

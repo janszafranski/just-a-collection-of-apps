@@ -12,9 +12,10 @@ try:
                                    QListWidget, QListWidgetItem, QLineEdit, QFontComboBox, QInputDialog)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QFont, QFontMetricsF, QPainterPath, QActionGroup, QPolygonF,
-                               QLinearGradient, QRadialGradient)
-    from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
+                               QLinearGradient, QRadialGradient, QPdfWriter, QPageSize, QPageLayout)
+    from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings, QMarginsF, QBuffer, QByteArray
     from PySide6.QtSvg import QSvgGenerator
+    from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 except ImportError:
     sys.stderr.write("just a... DRAWmaster needs PySide6 (use your distro package, not pip):\n"
                      "    sudo pacman -S --needed pyside6\n")
@@ -22,7 +23,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.5-00"
+VERSION = "1.6-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -122,13 +123,263 @@ def quickshape_path(name, w, h):
         return pp.simplified()
     pp = QPainterPath(); pp.addRect(QRectF(0, 0, w, h)); return pp
 
+# ---------------------------------------------------------------- Node / Bézier paths
+# A node path (type 'nodes') is a list of nodes, each {x, y, hin:[dx,dy], hout:[dx,dy],
+# smooth:bool}; the control handles are stored *relative* to the node point. The path is
+# built segment-by-segment with cubicTo, using each node's hout and the next node's hin.
+def node_painter_path(o):
+    """Build a QPainterPath for a node ('nodes') object from its node list."""
+    nodes = o.get('nodes') or []
+    pp = QPainterPath()
+    if not nodes:
+        return pp
+    pp.moveTo(nodes[0]['x'], nodes[0]['y'])
+    closed = o.get('closed')
+    n = len(nodes)
+    segs = n if closed else n - 1
+    for i in range(segs):
+        a = nodes[i]; b = nodes[(i + 1) % n]
+        c1 = (a['x'] + a.get('hout', [0, 0])[0], a['y'] + a.get('hout', [0, 0])[1])
+        c2 = (b['x'] + b.get('hin', [0, 0])[0], b['y'] + b.get('hin', [0, 0])[1])
+        pp.cubicTo(c1[0], c1[1], c2[0], c2[1], b['x'], b['y'])
+    if closed:
+        pp.closeSubpath()
+    return pp
+
+
+def node_svg_d(o):
+    """An SVG path 'd' string ('M .. C ..') for a node object — the browser-true form."""
+    nodes = o.get('nodes') or []
+    if not nodes:
+        return ''
+    parts = [f"M {nodes[0]['x']:.2f} {nodes[0]['y']:.2f}"]
+    closed = o.get('closed')
+    n = len(nodes)
+    segs = n if closed else n - 1
+    for i in range(segs):
+        a = nodes[i]; b = nodes[(i + 1) % n]
+        c1x = a['x'] + a.get('hout', [0, 0])[0]; c1y = a['y'] + a.get('hout', [0, 0])[1]
+        c2x = b['x'] + b.get('hin', [0, 0])[0]; c2y = b['y'] + b.get('hin', [0, 0])[1]
+        parts.append(f"C {c1x:.2f} {c1y:.2f} {c2x:.2f} {c2y:.2f} {b['x']:.2f} {b['y']:.2f}")
+    if closed:
+        parts.append('Z')
+    return ' '.join(parts)
+
+
+def nodes_from_obj(o):
+    """Convert a rect / ellipse / quick / line / poly / path into a list of Bézier nodes,
+    so 'Convert to Curves' can turn any object into an editable node path. Returns
+    (nodes, closed) — the geometry is sampled in the object's own canvas coordinates."""
+    t = o['type']
+    K = 0.5522847498  # circle→Bézier kappa
+
+    def corner(x, y):
+        return {'x': float(x), 'y': float(y), 'hin': [0.0, 0.0], 'hout': [0.0, 0.0], 'smooth': False}
+
+    if t == 'ellipse':
+        x, y, w, h = o['x'], o['y'], o['w'], o['h']; rx, ry = w / 2, h / 2
+        cx, cy = x + rx, y + ry
+        pts = [(cx + rx, cy), (cx, cy + ry), (cx - rx, cy), (cx, cy - ry)]
+        tang = [(0, ry * K), (-rx * K, 0), (0, -ry * K), (rx * K, 0)]
+        nodes = []
+        for (px, py), (tx, ty) in zip(pts, tang):
+            nodes.append({'x': px, 'y': py, 'hin': [-tx, -ty], 'hout': [tx, ty], 'smooth': True})
+        return nodes, True
+    if t == 'rect':
+        x, y, w, h = o['x'], o['y'], o['w'], o['h']
+        return [corner(x, y), corner(x + w, y), corner(x + w, y + h), corner(x, y + h)], True
+    if t == 'quick':
+        pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+        return _nodes_from_painterpath(pp)
+    if t in ('line', 'poly', 'path'):
+        pts = o.get('pts') or []
+        return [corner(px, py) for (px, py) in pts], bool(o.get('closed'))
+    return [], False
+
+
+def _nodes_from_painterpath(pp):
+    """Flatten a QPainterPath's elements into corner/curve nodes (best-effort — used when
+    converting a QuickShape, whose outline may mix lines and cubics)."""
+    nodes = []
+    i = 0
+    n = pp.elementCount()
+    pending_ctrl = []
+    closed = False
+    while i < n:
+        el = pp.elementAt(i)
+        et = el.type
+        if et == QPainterPath.MoveToElement:
+            nodes.append({'x': el.x, 'y': el.y, 'hin': [0.0, 0.0], 'hout': [0.0, 0.0], 'smooth': False})
+            i += 1
+        elif et == QPainterPath.LineToElement:
+            nodes.append({'x': el.x, 'y': el.y, 'hin': [0.0, 0.0], 'hout': [0.0, 0.0], 'smooth': False})
+            i += 1
+        elif et == QPainterPath.CurveToElement:
+            # a cubic: this element is control1, next is control2, next is the endpoint
+            c1 = el; c2 = pp.elementAt(i + 1); ep = pp.elementAt(i + 2)
+            if nodes:
+                nodes[-1]['hout'] = [c1.x - nodes[-1]['x'], c1.y - nodes[-1]['y']]
+            nodes.append({'x': ep.x, 'y': ep.y, 'hin': [c2.x - ep.x, c2.y - ep.y],
+                          'hout': [0.0, 0.0], 'smooth': True})
+            i += 3
+        else:
+            i += 1
+    # a closed QuickShape path ends near its start; drop a duplicate end node if so
+    if len(nodes) >= 2:
+        a, b = nodes[0], nodes[-1]
+        if abs(a['x'] - b['x']) < 0.5 and abs(a['y'] - b['y']) < 0.5:
+            if b.get('hin') != [0.0, 0.0]:
+                a['hin'] = b['hin']
+            nodes.pop()
+            closed = True
+        else:
+            closed = True   # QuickShapes are closed outlines
+    return nodes, closed
+
+
+# ---------------------------------------------------------------- line dashes & arrowheads
+def apply_dash(pen, style):
+    """Set a solid / dashed / dotted pattern on a pen (scaled by the pen width)."""
+    if style == 'dashed':
+        pen.setStyle(Qt.CustomDashLine); pen.setDashPattern([4, 3])
+    elif style == 'dotted':
+        pen.setStyle(Qt.CustomDashLine); pen.setDashPattern([1, 2])
+    else:
+        pen.setStyle(Qt.SolidLine)
+    return pen
+
+
+def svg_dash_attr(o):
+    """A stroke-dasharray attribute fragment for a dash style, scaled by stroke width."""
+    style = o.get('dash', 'solid'); sw = max(1, o.get('sw', 2))
+    if style == 'dashed':
+        return f' stroke-dasharray="{4 * sw},{3 * sw}"'
+    if style == 'dotted':
+        return f' stroke-dasharray="{1 * sw},{2 * sw}"'
+    return ''
+
+
+def _polyline_points(o):
+    """The ordered (x,y) points of an open-path-like object, for arrowhead placement."""
+    t = o['type']
+    if t in ('line', 'path', 'poly'):
+        return list(o.get('pts') or [])
+    if t == 'nodes':
+        return [(nd['x'], nd['y']) for nd in (o.get('nodes') or [])]
+    return []
+
+
+def _arrow_head_path(tip, frm, size):
+    """A filled triangular arrowhead QPainterPath at 'tip', pointing away from 'frm'."""
+    tx, ty = tip; fx, fy = frm
+    ang = math.atan2(ty - fy, tx - fx)
+    a1 = ang + math.radians(150); a2 = ang - math.radians(150)
+    p1 = (tx + size * math.cos(a1), ty + size * math.sin(a1))
+    p2 = (tx + size * math.cos(a2), ty + size * math.sin(a2))
+    pp = QPainterPath(); pp.moveTo(tx, ty); pp.lineTo(*p1); pp.lineTo(*p2); pp.closeSubpath()
+    return pp
+
+
+def draw_arrowheads(p, o):
+    """Draw start/end arrowheads for a line / open path / open node path, if set."""
+    which = o.get('arrow', 'none')
+    if which == 'none':
+        return
+    pts = _polyline_points(o)
+    if len(pts) < 2 or o.get('closed'):
+        return
+    size = max(8.0, (o.get('sw', 2) or 2) * 3.0)
+    col = QColor(o.get('stroke') or '#000000')
+    p.save(); p.setPen(Qt.NoPen); p.setBrush(col)
+    if which in ('end', 'both'):
+        p.drawPath(_arrow_head_path(pts[-1], pts[-2], size))
+    if which in ('start', 'both'):
+        p.drawPath(_arrow_head_path(pts[0], pts[1], size))
+    p.restore()
+
+
+def svg_arrowheads(o):
+    """SVG <path> arrowheads (filled triangles) for an open line/path — returned as a
+    string spliced into export. Mirrors draw_arrowheads for browser-true output."""
+    which = o.get('arrow', 'none')
+    if which == 'none' or o.get('closed'):
+        return ''
+    pts = _polyline_points(o)
+    if len(pts) < 2:
+        return ''
+    size = max(8.0, (o.get('sw', 2) or 2) * 3.0)
+    col = o.get('stroke') or '#000000'
+    out = []
+
+    def tri(tip, frm):
+        pp = _arrow_head_path(tip, frm, size)
+        d = []
+        for i in range(pp.elementCount()):
+            el = pp.elementAt(i)
+            d.append(('M' if el.type == QPainterPath.MoveToElement else 'L') + f' {el.x:.2f} {el.y:.2f}')
+        return f'<path d="{" ".join(d)} Z" fill="{col}" stroke="none"/>'
+
+    if which in ('end', 'both'):
+        out.append(tri(pts[-1], pts[-2]))
+    if which in ('start', 'both'):
+        out.append(tri(pts[0], pts[1]))
+    return ''.join(out)
+
+
+# ---------------------------------------------------------------- image objects
+_IMG_CACHE = {}
+
+def obj_image(o):
+    """Decode an image object's embedded data-URI (or file path) to a QImage, cached by
+    src in a side table so repeated paints don't re-decode (and so the object dict stays
+    plain/serialisable/deep-copyable — no QImage ever lives on the object)."""
+    src = o.get('src', '')
+    cached = _IMG_CACHE.get(src)
+    if isinstance(cached, QImage):
+        return cached
+    qi = QImage()
+    try:
+        if src.startswith('data:'):
+            import base64
+            head, _, b64 = src.partition(',')
+            qi.loadFromData(base64.b64decode(b64))
+        elif src:
+            qi.load(src)
+    except Exception:
+        qi = QImage()
+    if src:
+        _IMG_CACHE[src] = qi
+    return qi
+
+
+def image_data_uri(path):
+    """Read an image file and return a data: URI (keeps SVGs self-contained)."""
+    import base64, mimetypes
+    with open(path, 'rb') as fh:
+        raw = fh.read()
+    mime = mimetypes.guess_type(path)[0] or 'image/png'
+    return f'data:{mime};base64,' + base64.b64encode(raw).decode()
+
+
 # ---------------------------------------------------------------- Object effects
 def obj_silhouette(o):
     """(path in local 0-based coords, world x, world y, w, h) for drop-shadow/glow."""
     t = o['type']; pp = QPainterPath()
     if t == 'rect': pp.addRect(QRectF(0, 0, o['w'], o['h']))
     elif t == 'ellipse': pp.addEllipse(QRectF(0, 0, o['w'], o['h']))
+    elif t == 'image': pp.addRect(QRectF(0, 0, o['w'], o['h']))
     elif t == 'quick': pp = quickshape_path(o['shape'], o['w'], o['h'])
+    elif t == 'nodes':
+        from PySide6.QtGui import QPainterPathStroker
+        base = node_painter_path(o); r = obj_rect(o)
+        base = base.translated(-r.x(), -r.y())
+        if o.get('closed') and o.get('fill'):
+            pp = base
+        else:
+            stk = QPainterPathStroker(); stk.setWidth(max(2, o.get('sw', 2)))
+            stk.setCapStyle(Qt.RoundCap); stk.setJoinStyle(Qt.RoundJoin); pp = stk.createStroke(base)
+        br = pp.boundingRect()
+        return pp.translated(-br.x(), -br.y()), r.x() + br.x(), r.y() + br.y(), br.width() or 1, br.height() or 1
     elif t == 'text':
         fm = QFontMetricsF(text_font(o))
         pp.addText(0, fm.ascent(), text_font(o), o.get('text', ''))
@@ -188,11 +439,14 @@ def text_size(o):
 
 def obj_rect(o):
     t = o['type']
-    if t in ('rect', 'ellipse', 'quick'):
+    if t in ('rect', 'ellipse', 'quick', 'image'):
         return QRectF(o['x'], o['y'], o['w'], o['h']).normalized()
     if t == 'text':
         tw, th = text_size(o)
         return QRectF(o['x'], o['y'], tw, th)
+    if t == 'nodes':
+        br = node_painter_path(o).boundingRect()
+        return QRectF(br.x(), br.y(), br.width() or 1, br.height() or 1)
     xs = [p[0] for p in o['pts']]; ys = [p[1] for p in o['pts']]
     return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
 
@@ -297,9 +551,71 @@ def svg_text_el(o, idx=0):
     return defs, el
 
 
+def _rot_transform(o):
+    """ transform="rotate(a cx cy)" fragment for a rotated object, else ''."""
+    rot = obj_rot(o)
+    if not rot:
+        return ''
+    cx, cy = obj_center(o)
+    return f' transform="rotate({rot:.3f} {cx:.2f} {cy:.2f})"'
+
+
+def _opacity_attr(o):
+    op = obj_opacity(o)
+    return f' opacity="{op:.3f}"' if op < 1.0 else ''
+
+
+def svg_image_el(o):
+    """A real SVG <image href="data:..." x y width height> element for an image object."""
+    import html as _H
+    src = _H.escape(o.get('src', ''), quote=True)
+    return (f'<image href="{src}" x="{o["x"]:.2f}" y="{o["y"]:.2f}" '
+            f'width="{o["w"]:.2f}" height="{o["h"]:.2f}" preserveAspectRatio="none"'
+            f'{_rot_transform(o)}{_opacity_attr(o)}/>')
+
+
+def svg_node_el(o, idx=0):
+    """(defs, element) for a node ('nodes') object: a real <path d="M.. C..">, with its
+    fill/stroke/dash, opacity and rotation — plus any arrowheads, so it is browser-true."""
+    d = node_svg_d(o)
+    if not d:
+        return '', ''
+    g = o.get('grad'); defs = ''
+    if g and o.get('closed'):
+        gid = f'ndgrad{idx}'; defs = svg_grad_def(g, gid); fill = f'url(#{gid})'
+    else:
+        fill = (o.get('fill') if (o.get('closed') and o.get('fill')) else 'none')
+    stroke = o.get('stroke') or 'none'
+    sw = o.get('sw', 2)
+    el = (f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" '
+          f'stroke-linejoin="round" stroke-linecap="round"{svg_dash_attr(o)}'
+          f'{_rot_transform(o)}{_opacity_attr(o)}/>')
+    heads = svg_arrowheads(o)
+    if heads:
+        # wrap the arrowheads so a rotation applies to them too
+        tr = _rot_transform(o); op = _opacity_attr(o)
+        if tr or op:
+            heads = f'<g{tr}{op}>{heads}</g>'
+        el = el + heads
+    return defs, el
+
+
+def obj_opacity(o):
+    """Object opacity in 0..1 (1 if unset)."""
+    try:
+        v = float(o.get('opacity', 1) if o.get('opacity') is not None else 1)
+    except (TypeError, ValueError):
+        return 1.0
+    return max(0.0, min(1.0, v))
+
+
 def paint_object(p, o, selected=False, skip_text=False):
     a = obj_rot(o)
     rotated = bool(a)
+    op = obj_opacity(o)
+    faded = op < 1.0
+    if faded:
+        p.save(); p.setOpacity(p.opacity() * op)
     if rotated:
         # Rotate about the object's centre. QPainter transforms are captured by
         # QSvgGenerator as a <g transform="..."> too, so rotation survives SVG export
@@ -309,6 +625,8 @@ def paint_object(p, o, selected=False, skip_text=False):
     _paint_object_body(p, o, selected, skip_text)
     if rotated:
         p.restore()
+    if faded:
+        p.restore()
 
 
 def _paint_object_body(p, o, selected=False, skip_text=False):
@@ -317,6 +635,8 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
     draw_object_fx(p, o)
     pen = QPen(QColor(o['stroke']), o.get('sw', 2)) if o.get('stroke') else QPen(Qt.NoPen)
     pen.setJoinStyle(Qt.RoundJoin); pen.setCapStyle(Qt.RoundCap)
+    if o.get('stroke') and o.get('dash', 'solid') != 'solid':
+        apply_dash(pen, o.get('dash'))
     p.setPen(pen)
     p.setBrush(fill_brush(o))
     t = o['type']
@@ -324,8 +644,21 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
         p.drawRect(QRectF(o['x'], o['y'], o['w'], o['h']))
     elif t == 'ellipse':
         p.drawEllipse(QRectF(o['x'], o['y'], o['w'], o['h']))
+    elif t == 'image':
+        img = obj_image(o)
+        if not img.isNull():
+            p.drawImage(QRectF(o['x'], o['y'], o['w'], o['h']), img)
+        if o.get('stroke'):
+            p.setBrush(Qt.NoBrush); p.drawRect(QRectF(o['x'], o['y'], o['w'], o['h']))
     elif t == 'quick':
         p.save(); p.translate(o['x'], o['y']); p.drawPath(quickshape_path(o['shape'], o['w'], o['h'])); p.restore()
+    elif t == 'nodes':
+        pp = node_painter_path(o)
+        if o.get('closed') and o.get('fill'):
+            p.drawPath(pp)
+        else:
+            p.setBrush(Qt.NoBrush); p.drawPath(pp)
+        draw_arrowheads(p, o)
     elif t == 'text':
         # Draw glyphs as a filled path so a fill/gradient/outline all apply, and so
         # it renders identically offscreen (a bare QPainter.drawText can misbehave
@@ -342,6 +675,7 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
             p.drawPath(path)
         else:
             p.drawPolyline(poly) if not o.get('closed') else p.drawPolygon(poly)
+        draw_arrowheads(p, o)
     if selected:
         r = obj_rect(o).adjusted(-3, -3, 3, 3)
         sp = QPen(QColor('#2a7df0'), 1, Qt.DashLine); sp.setCosmetic(True)
@@ -368,6 +702,10 @@ class Canvas(QWidget):
         self.fill = QColor('#cfe3ef'); self.stroke = QColor('#1f2a30'); self.sw = 2
         self.quick_shape = 'star5'
         self.start = None; self.cur = None; self.drag_off = None; self.poly_pts = None
+        # Pen (Bézier) tool: nodes being laid down, and the live smooth-drag node
+        self.pen_nodes = None; self.pen_dragging = False
+        # Node tool: the path being reshaped and which node/handle is grabbed
+        self.node_obj = None; self.node_grab = None
         # transform/rubber-band drag state
         self.handle = None       # which transform handle is being dragged
         self.drag_start = None   # canvas pt where a handle/rubber drag began
@@ -561,8 +899,11 @@ class Canvas(QWidget):
 
     def _shift_obj(self, o, dx, dy):
         """Translate a single object by (dx, dy) in canvas coords."""
-        if o['type'] in ('rect', 'ellipse', 'quick', 'text'):
+        if o['type'] in ('rect', 'ellipse', 'quick', 'text', 'image'):
             o['x'] += dx; o['y'] += dy
+        elif o['type'] == 'nodes':
+            for nd in o.get('nodes', []):
+                nd['x'] += dx; nd['y'] += dy
         else:
             o['pts'] = [(x + dx, y + dy) for x, y in o['pts']]
 
@@ -630,12 +971,36 @@ class Canvas(QWidget):
             prev = {'type': 'poly', 'pts': self.poly_pts + ([self.cur] if self.cur else []),
                     'stroke': self.stroke.name(), 'sw': self.sw, 'fill': None, 'closed': False}
             paint_object(p, prev)
+        if self.tool == 'pen' and self.pen_nodes:
+            self._draw_pen_preview(p)
         self._draw_guides(p)
         if self.rubber:
             self._draw_rubber(p)
         if self.tool == 'select':
             self._draw_handles(p)
+        if self.tool == 'node' and self.node_obj is not None:
+            self._draw_node_handles(p)
         p.end()
+
+    def _draw_pen_preview(self, p):
+        """Show the Bézier being laid down: the committed nodes + a rubber segment to the
+        pointer, and the control handle while a smooth node is being dragged out."""
+        nodes = list(self.pen_nodes)
+        if self.cur and not self.pen_dragging:
+            nodes = nodes + [{'x': self.cur[0], 'y': self.cur[1], 'hin': [0, 0], 'hout': [0, 0], 'smooth': False}]
+        tmp = {'type': 'nodes', 'nodes': nodes, 'stroke': self.stroke.name(), 'sw': self.sw,
+               'fill': None, 'closed': False}
+        if len(nodes) >= 2:
+            paint_object(p, tmp)
+        pen = QPen(QColor('#2a7df0'), 1); pen.setCosmetic(True)
+        hs = 4 / max(self.zoom, 0.01)
+        for nd in self.pen_nodes:
+            p.setPen(pen); p.setBrush(QColor('#ffffff'))
+            p.drawRect(QRectF(nd['x'] - hs, nd['y'] - hs, hs * 2, hs * 2))
+            if nd.get('hout') != [0, 0]:
+                hx, hy = nd['x'] + nd['hout'][0], nd['y'] + nd['hout'][1]
+                p.drawLine(QPointF(nd['x'], nd['y']), QPointF(hx, hy))
+                p.setBrush(QColor('#2ab0e0')); p.drawEllipse(QPointF(hx, hy), hs, hs)
 
     def _draw_grid(self, p):
         pen = QPen(QColor('#d6dde2'), 1); pen.setCosmetic(True); p.setPen(pen)
@@ -713,6 +1078,148 @@ class Canvas(QWidget):
                 return k
         return None
 
+    # ---------------------------------------------------------------- node editing
+    def _draw_node_handles(self, p):
+        """For the Node tool: draw each node as a square and its control handles as
+        small circles on stalks."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return
+        nodes = o.get('nodes', [])
+        hs = 4.5 / max(self.zoom, 0.01)
+        pen = QPen(QColor('#2a7df0'), 1); pen.setCosmetic(True)
+        for nd in nodes:
+            for key, col in (('hin', '#2ab0e0'), ('hout', '#2ab0e0')):
+                h = nd.get(key, [0, 0])
+                if h != [0, 0]:
+                    hx, hy = nd['x'] + h[0], nd['y'] + h[1]
+                    p.setPen(pen); p.drawLine(QPointF(nd['x'], nd['y']), QPointF(hx, hy))
+                    p.setBrush(QColor(col)); p.drawEllipse(QPointF(hx, hy), hs * .9, hs * .9)
+        for nd in nodes:
+            p.setPen(pen); p.setBrush(QColor('#ffffff'))
+            p.drawRect(QRectF(nd['x'] - hs, nd['y'] - hs, hs * 2, hs * 2))
+
+    def _hit_node(self, pt):
+        """Return ('node', i) / ('hin', i) / ('hout', i) for a grabbed node or handle,
+        or None. Handles take priority over the node body."""
+        o = self.node_obj
+        if o is None:
+            return None
+        nodes = o.get('nodes', [])
+        tol = 7 / max(self.zoom, 0.01)
+        for i, nd in enumerate(nodes):
+            for key in ('hin', 'hout'):
+                h = nd.get(key, [0, 0])
+                if h != [0, 0]:
+                    hx, hy = nd['x'] + h[0], nd['y'] + h[1]
+                    if abs(hx - pt[0]) <= tol and abs(hy - pt[1]) <= tol:
+                        return (key, i)
+        for i, nd in enumerate(nodes):
+            if abs(nd['x'] - pt[0]) <= tol and abs(nd['y'] - pt[1]) <= tol:
+                return ('node', i)
+        return None
+
+    def drag_node(self, i, nx, ny):
+        """Programmatic/UI helper: move node i to (nx, ny), carrying its handles."""
+        o = self.node_obj
+        if o is None:
+            return
+        nodes = o.get('nodes', [])
+        if 0 <= i < len(nodes):
+            nodes[i]['x'] = nx; nodes[i]['y'] = ny
+        self.update()
+
+    def _drag_node_to(self, pt):
+        """Mouse drag for the Node tool: move the grabbed node, or reshape a handle
+        (a smooth node keeps its two handles mirrored)."""
+        o = self.node_obj
+        if o is None or self.node_grab is None:
+            return
+        kind, i = self.node_grab
+        nodes = o.get('nodes', [])
+        if not (0 <= i < len(nodes)):
+            return
+        nd = nodes[i]
+        if kind == 'node':
+            nd['x'], nd['y'] = pt[0], pt[1]
+        else:
+            dx, dy = pt[0] - nd['x'], pt[1] - nd['y']
+            nd[kind] = [dx, dy]
+            if nd.get('smooth'):
+                other = 'hout' if kind == 'hin' else 'hin'
+                nd[other] = [-dx, -dy]
+
+    def convert_to_curves(self):
+        """Turn the selected rect/ellipse/quick/line/poly/path into an editable node path."""
+        o = self.sel
+        if o is None or o not in self.objs:
+            return
+        if o.get('type') not in ('rect', 'ellipse', 'quick', 'line', 'poly', 'path'):
+            return
+        nodes, closed = nodes_from_obj(o)
+        if not nodes:
+            return
+        self.snapshot()
+        new = dict(type='nodes', nodes=nodes, closed=closed,
+                   stroke=o.get('stroke'), sw=o.get('sw', 2),
+                   fill=o.get('fill'), layer=self.obj_layer(o))
+        for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'gid', 'dash', 'arrow'):
+            if o.get(k) is not None:
+                new[k] = copy.deepcopy(o[k])
+        i = self.objs.index(o); self.objs[i] = new
+        self.set_selection([new])
+        self.node_obj = new
+        self.update()
+        return new
+
+    def combine_selection(self, op):
+        """Boolean combine 2+ selected shapes into one node path via QPainterPath
+        united / subtracted / intersected."""
+        sel = self._selection()
+        shapes = [o for o in sel if o.get('type') in ('rect', 'ellipse', 'quick', 'poly', 'nodes', 'path')]
+        if len(shapes) < 2:
+            return None
+        self.snapshot()
+        paths = [self._object_painterpath(o) for o in shapes]
+        result = paths[0]
+        for pp in paths[1:]:
+            if op == 'union':
+                result = result.united(pp)
+            elif op == 'subtract':
+                result = result.subtracted(pp)
+            elif op == 'intersect':
+                result = result.intersected(pp)
+        result = result.simplified()
+        nodes, closed = _nodes_from_painterpath(result)
+        if not nodes:
+            return None
+        base = shapes[0]
+        new = dict(type='nodes', nodes=nodes, closed=True,
+                   stroke=base.get('stroke', '#1f2a30'), sw=base.get('sw', 2),
+                   fill=base.get('fill', '#cfe3ef'), layer=self.obj_layer(base))
+        for o in shapes:
+            if o in self.objs:
+                self.objs.remove(o)
+        self.objs.append(new); self.set_selection([new]); self.update()
+        return new
+
+    def _object_painterpath(self, o):
+        """A filled QPainterPath for a shape object in canvas coordinates (for combining)."""
+        t = o['type']
+        pp = QPainterPath()
+        if t == 'rect':
+            pp.addRect(QRectF(o['x'], o['y'], o['w'], o['h']))
+        elif t == 'ellipse':
+            pp.addEllipse(QRectF(o['x'], o['y'], o['w'], o['h']))
+        elif t == 'quick':
+            pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+        elif t == 'nodes':
+            pp = node_painter_path(o)
+        elif t in ('poly', 'path'):
+            pp.addPolygon(QPolygonF([QPointF(x, y) for x, y in o['pts']]))
+            pp.closeSubpath()
+        return pp
+
     def pos(self, e):
         return (e.position().x() / self.zoom, e.position().y() / self.zoom)
 
@@ -758,14 +1265,32 @@ class Canvas(QWidget):
             self.start = pt; self.cur = pt; return
         if self.tool == 'text':
             self.win.place_text(pt); return
+        if self.tool == 'image':
+            self.win.import_image(at=pt); return
         if self.tool == 'freehand':
             self.snapshot()
             self.objs.append(dict(type='path', pts=[pt], stroke=self.stroke.name(), sw=self.sw, fill=None,
                                   closed=False, layer=self.active_layer))
             self.cur = pt; return
         if self.tool == 'pen':
-            if self.poly_pts is None: self.snapshot(); self.poly_pts = []
-            self.poly_pts.append(pt); self.cur = pt; self.update(); return
+            # Bézier pen: start a node here. A click leaves a corner node; a drag pulls out
+            # symmetric control handles (a smooth node) — finished in mouseMoveEvent.
+            if self.pen_nodes is None:
+                self.snapshot(); self.pen_nodes = []
+            self.pen_nodes.append({'x': pt[0], 'y': pt[1], 'hin': [0, 0], 'hout': [0, 0], 'smooth': False})
+            self.pen_dragging = True; self.cur = pt; self.update(); return
+        if self.tool == 'node':
+            g = self._hit_node(pt)
+            if g is not None:
+                self.node_grab = g; self.drag_start = pt; self.snapshot(); return
+            # clicking elsewhere picks a path to edit
+            hit = next((o for o in reversed(self.ordered_objs())
+                        if o.get('type') == 'nodes' and obj_hit(o, pt)), None)
+            if hit is None:
+                hit = next((o for o in reversed(self.ordered_objs()) if obj_hit(o, pt)), None)
+                if hit is not None and hit.get('type') != 'nodes':
+                    hit = None
+            self.node_obj = hit; self.node_grab = None; self.update(); return
 
     def mouseMoveEvent(self, e):
         pt = self.pos(e); self.win.set_pos(pt)
@@ -779,8 +1304,15 @@ class Canvas(QWidget):
             self.cur = pt; self.update()
         elif self.tool == 'freehand' and (e.buttons() & Qt.LeftButton) and self.objs:
             self.objs[-1]['pts'].append(pt); self.update()
-        elif self.tool == 'pen' and self.poly_pts is not None:
+        elif self.tool == 'pen' and self.pen_nodes:
+            if self.pen_dragging and (e.buttons() & Qt.LeftButton):
+                # drag out symmetric control handles on the node just placed → smooth node
+                nd = self.pen_nodes[-1]
+                dx, dy = pt[0] - nd['x'], pt[1] - nd['y']
+                nd['hout'] = [dx, dy]; nd['hin'] = [-dx, -dy]; nd['smooth'] = True
             self.cur = pt; self.update()
+        elif self.tool == 'node' and self.node_grab is not None and (e.buttons() & Qt.LeftButton):
+            self._drag_node_to(pt); self.update()
 
     def mousePressSnapMove(self): pass
 
@@ -840,13 +1372,23 @@ class Canvas(QWidget):
     def _apply_resize(self, o, orig, nx, ny, nw, nh):
         """Scale/reposition an object to the new local box (nx, ny, nw, nh)."""
         t = o['type']
-        if t in ('rect', 'ellipse', 'quick'):
+        if t in ('rect', 'ellipse', 'quick', 'image'):
             o['x'], o['y'], o['w'], o['h'] = nx, ny, nw, nh
         elif t == 'text':
             # scale the pixel size by the height change; keep the top-left anchor
             r0 = obj_rect(orig); factor = nh / (r0.height() or 1)
             o['x'], o['y'] = nx, ny
             o['size'] = max(1, int(round(orig.get('size', 48) * factor)))
+        elif t == 'nodes':
+            r0 = obj_rect(orig)
+            ox, oy = r0.x(), r0.y(); ow, oh = r0.width() or 1, r0.height() or 1
+            sx, sy = nw / ow, nh / oh
+            o['nodes'] = []
+            for nd in orig['nodes']:
+                o['nodes'].append({'x': nx + (nd['x'] - ox) * sx, 'y': ny + (nd['y'] - oy) * sy,
+                                   'hin': [nd.get('hin', [0, 0])[0] * sx, nd.get('hin', [0, 0])[1] * sy],
+                                   'hout': [nd.get('hout', [0, 0])[0] * sx, nd.get('hout', [0, 0])[1] * sy],
+                                   'smooth': nd.get('smooth', False)})
         else:
             r0 = obj_rect(orig)
             ox, oy = r0.x(), r0.y(); ow, oh = r0.width() or 1, r0.height() or 1
@@ -871,12 +1413,30 @@ class Canvas(QWidget):
             self.drag_start = None; self.update()
         elif self.tool == 'select' and self.sel is not None and self.drag_off:
             self.drag_off = None; self.drag_orig = None
+        elif self.tool == 'pen' and self.pen_dragging:
+            self.pen_dragging = False; self.update()
+        elif self.tool == 'node' and self.node_grab is not None:
+            self.node_grab = None; self.drag_start = None
+
+    def _finish_pen(self, closed):
+        """Commit the Bézier pen's nodes as a node path — closed+filled or open."""
+        if not self.pen_nodes or len(self.pen_nodes) < 2:
+            self.pen_nodes = None; self.pen_dragging = False; self.cur = None; self.update(); return
+        o = dict(type='nodes', nodes=[dict(x=n['x'], y=n['y'], hin=list(n['hin']),
+                                           hout=list(n['hout']), smooth=n['smooth']) for n in self.pen_nodes],
+                 stroke=self.stroke.name(), sw=self.sw,
+                 fill=self.fill.name() if closed else None, closed=closed, layer=self.active_layer)
+        self.objs.append(o); self.set_selection([o])
+        self.pen_nodes = None; self.pen_dragging = False; self.cur = None; self.update()
 
     def mouseDoubleClickEvent(self, e):
-        if self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
-            self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw,
-                                  fill=self.fill.name(), closed=True, layer=self.active_layer))
-            self.sel = self.objs[-1]; self.poly_pts = None; self.cur = None; self.update()
+        if self.tool == 'pen' and self.pen_nodes and len(self.pen_nodes) >= 2:
+            # the double-click fires an extra press that duplicates the last node — drop it
+            if len(self.pen_nodes) >= 2:
+                a, b = self.pen_nodes[-2], self.pen_nodes[-1]
+                if abs(a['x'] - b['x']) < 3 and abs(a['y'] - b['y']) < 3 and b['hout'] == [0, 0]:
+                    self.pen_nodes.pop()
+            self._finish_pen(closed=True)
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selection():
@@ -884,10 +1444,8 @@ class Canvas(QWidget):
             for o in self._selection():
                 if o in self.objs: self.objs.remove(o)
             self.sel = None; self.sels = []; self.update(); self.win.sync_props()
-        elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
-            self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw,
-                                  fill=None, closed=False, layer=self.active_layer))
-            self.poly_pts = None; self.cur = None; self.update()
+        elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and self.tool == 'pen' and self.pen_nodes and len(self.pen_nodes) >= 2:
+            self._finish_pen(closed=False)
 
     def apply_to_sel(self, fill=None, stroke=None, sw=None):
         sel = self._selection()
@@ -899,8 +1457,12 @@ class Canvas(QWidget):
             if sw is not None: o['sw'] = sw
         self.update()
 
-    def render_to(self, painter, skip_text=False):
+    def render_to(self, painter, skip_text=False, skip_special=False):
+        """Paint every object. For SVG export, skip_special also omits image and node
+        objects so they can be spliced as explicit <image>/<path> elements afterwards."""
         for o in self.ordered_objs():
+            if skip_special and o.get('type') in ('image', 'nodes'):
+                continue
             paint_object(painter, o, False, skip_text=skip_text)
 
     def export_svg(self, path):
@@ -908,20 +1470,34 @@ class Canvas(QWidget):
         gen = QSvgGenerator(); gen.setFileName(path); gen.setSize(QSize(self.W, self.H))
         gen.setViewBox(QRect(0, 0, self.W, self.H)); gen.setTitle('just a... DRAWmaster')
         # Embed the editable object model so DRAWmaster can re-open its own SVGs losslessly.
-        blob = base64.b64encode(json.dumps({'W': self.W, 'H': self.H, 'objs': self.objs,
+        # Strip transient keys (e.g. an image object's decoded _qimg cache) first.
+        clean = [{k: v for k, v in o.items() if not k.startswith('_')} for o in self.objs]
+        blob = base64.b64encode(json.dumps({'W': self.W, 'H': self.H, 'objs': clean,
                                              'layers': self.layers}).encode()).decode()
         gen.setDescription('justadraw1:' + blob)
         # QSvgGenerator renders shapes (gradients become <linearGradient>/<radialGradient>
         # natively) but turns glyphs into paths — so we skip text here and splice real
         # <text> elements in afterwards, in paint order, for an editable, browser-true SVG.
-        p = QPainter(gen); p.setRenderHint(QPainter.Antialiasing); self.render_to(p, skip_text=True); p.end()
-        tobjs = [o for o in self.ordered_objs() if o.get('type') == 'text']
-        if tobjs:
-            defs, els = [], []
-            for i, o in enumerate(tobjs):
+        p = QPainter(gen); p.setRenderHint(QPainter.Antialiasing)
+        self.render_to(p, skip_text=True, skip_special=True); p.end()
+        # Splice real, browser-true elements for text, images and node paths — in paint
+        # order, so they stack correctly relative to one another. (Native shapes rendered
+        # by QSvgGenerator sit below them, matching the previous text-splicing behaviour;
+        # the embedded JSON model always carries the exact z-order for re-opening.)
+        defs, els = [], []
+        for i, o in enumerate(self.ordered_objs()):
+            t = o.get('type')
+            if t == 'text':
                 d, e = svg_text_el(o, i)
-                if d: defs.append(d)
-                els.append(e)
+            elif t == 'image':
+                d, e = '', svg_image_el(o)
+            elif t == 'nodes':
+                d, e = svg_node_el(o, i)
+            else:
+                continue
+            if d: defs.append(d)
+            if e: els.append(e)
+        if els:
             inject = (f'<defs>{"".join(defs)}</defs>' if defs else '') + ''.join(els)
             try:
                 with open(path, encoding='utf-8') as fh: txt = fh.read()
@@ -959,9 +1535,10 @@ class Canvas(QWidget):
 
 
 class Main(QMainWindow):
-    TOOLS = [('select', 'Select', '⬚'), ('freehand', 'Freehand', '✎'), ('pen', 'Pen (polyline)', '✐'),
+    TOOLS = [('select', 'Select', '⬚'), ('node', 'Node (edit curves)', '⌇'),
+             ('freehand', 'Freehand', '✎'), ('pen', 'Pen (Bézier curves)', '✐'),
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
-             ('quick', 'QuickShape', '★'), ('text', 'Text', 'T')]
+             ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻')]
 
     def __init__(self):
         super().__init__()
@@ -1073,7 +1650,7 @@ class Main(QMainWindow):
         self.tg = QActionGroup(self); self.tool_acts = {}
         for tid, label, glyph in self.TOOLS:
             a = QAction(glyph_icon(glyph), label, self); a.setCheckable(True); a.setToolTip(label)
-            a.triggered.connect(lambda _=0, t=tid: setattr(self.canvas, 'tool', t)); self.tg.addAction(a); tt.addAction(a)
+            a.triggered.connect(lambda _=0, t=tid: self.set_tool(t)); self.tg.addAction(a); tt.addAction(a)
             self.tool_acts[tid] = a
             if tid == 'select': a.setChecked(True)
         self.addToolBar(Qt.LeftToolBarArea, tt)
@@ -1100,6 +1677,19 @@ class Main(QMainWindow):
                           ('100%', lambda: self.canvas.set_zoom(1.0))):
             b = QPushButton(txt); b.clicked.connect(slot); top.addWidget(b)
         self._paint_btns()
+
+    def set_tool(self, t):
+        """Switch the active tool, tidying up any tool-specific drag state."""
+        c = self.canvas
+        if c.pen_nodes and t != 'pen':
+            c.pen_nodes = None; c.pen_dragging = False; c.cur = None
+        c.tool = t
+        if t == 'node':
+            # start editing whatever is selected, if it is (or can become) a node path
+            c.node_obj = c.sel if (c.sel and c.sel.get('type') == 'nodes') else None
+        else:
+            c.node_obj = None; c.node_grab = None
+        c.update()
 
     def pick_quickshape(self, i):
         self.canvas.quick_shape = self.shape_cb.itemData(i)
@@ -1176,6 +1766,35 @@ class Main(QMainWindow):
         self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True)
         self.canvas.update(); self.refresh_layers()
 
+    # ---------------------------------------------------------------- image import
+    def import_image(self, at=None):
+        """Place a picture on the canvas as an image object. The file is embedded as a
+        data-URI so the drawing (and its SVG) stays self-contained."""
+        path, _ = QFileDialog.getOpenFileName(self, 'Import Image', _just_dir('pics'),
+                                              'Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*)')
+        if not path:
+            self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True); return
+        img = QImage(path)
+        if img.isNull():
+            QMessageBox.warning(self, APP, 'Could not read that image file.'); return
+        try:
+            uri = image_data_uri(path)
+        except OSError:
+            QMessageBox.warning(self, APP, 'Could not read that image file.'); return
+        w, h = img.width() or 1, img.height() or 1
+        # fit a large image sensibly onto the canvas, keeping its aspect ratio
+        maxw, maxh = self.canvas.W * 0.8, self.canvas.H * 0.8
+        s = min(1.0, maxw / w, maxh / h)
+        dw, dh = w * s, h * s
+        x = at[0] if at else (self.canvas.W - dw) / 2
+        y = at[1] if at else (self.canvas.H - dh) / 2
+        self.canvas.snapshot()
+        o = dict(type='image', x=x, y=y, w=dw, h=dh, src=uri, stroke=None, sw=0,
+                 fill=None, layer=self.canvas.active_layer)
+        self.canvas.objs.append(o); self.canvas.set_selection([o])
+        self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True)
+        self.canvas.update(); self.refresh_layers()
+
     def edit_text(self):
         """Re-open the text dialog on the selected text object to change its words/font/size."""
         o = self.canvas.sel
@@ -1193,7 +1812,7 @@ class Main(QMainWindow):
         """Linear or radial gradient fill for the selected shape — two colours + angle.
         Mirrors PAGEdesigner's 'grad' dict ({c1,c2,angle,type}). Cleared via Remove."""
         o = self.canvas.sel
-        if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'poly', 'text'):
+        if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'poly', 'nodes', 'text'):
             QMessageBox.information(self, APP, 'Select a shape first (rectangle, ellipse, QuickShape, '
                                    'a closed pen shape or text), then add a gradient fill.')
             return
@@ -1228,6 +1847,115 @@ class Main(QMainWindow):
         if o.get('grad'):
             self.canvas.snapshot(); o.pop('grad', None); self.canvas.update()
 
+    # ---------------------------------------------------------------- curves / combine
+    def convert_to_curves(self):
+        o = self.canvas.sel
+        if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'line', 'poly', 'path'):
+            QMessageBox.information(self, APP, 'Select a rectangle, ellipse, QuickShape, line or pen shape, '
+                                   'then Convert to Curves to edit it with the Node tool.')
+            return
+        new = self.canvas.convert_to_curves()
+        if new is not None:
+            self.canvas.tool = 'node'; self.tool_acts['node'].setChecked(True)
+            self.refresh_layers()
+
+    def combine(self, op):
+        new = self.canvas.combine_selection(op)
+        if new is None:
+            QMessageBox.information(self, APP, 'Select two or more overlapping shapes first, then Combine.')
+            return
+        self.refresh_layers()
+
+    # ---------------------------------------------------------------- opacity / dash / arrows
+    def opacity_dialog(self):
+        o = self.canvas.sel
+        if o is None:
+            QMessageBox.information(self, APP, 'Select an object first, then set its opacity.')
+            return
+        cur = int(round(obj_opacity(o) * 100))
+        n, ok = QInputDialog.getInt(self, 'Opacity', 'Opacity (0–100 %):', cur, 0, 100, 5)
+        if ok:
+            self.canvas.snapshot()
+            if n >= 100: o.pop('opacity', None)
+            else: o['opacity'] = n / 100.0
+            self.canvas.update()
+
+    def line_style_dialog(self):
+        """Dash style + arrowheads for the selected line / open path / open node path."""
+        o = self.canvas.sel
+        if o is None or o.get('type') not in ('line', 'path', 'poly', 'nodes'):
+            QMessageBox.information(self, APP, 'Select a line, a freehand/pen path or a node path first, '
+                                   'then set its dash style and arrowheads.')
+            return
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        dlg = QDialog(self); dlg.setWindowTitle('Line Style — Dashes & Arrowheads'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        dcb = QComboBox()
+        for lbl, k in (('Solid', 'solid'), ('Dashed', 'dashed'), ('Dotted', 'dotted')):
+            dcb.addItem(lbl, k)
+        dcb.setCurrentIndex(max(0, [i for i in range(dcb.count())
+                                    if dcb.itemData(i) == o.get('dash', 'solid')][0] if o.get('dash', 'solid') in
+                                   ('solid', 'dashed', 'dotted') else 0))
+        acb = QComboBox()
+        for lbl, k in (('None', 'none'), ('Start', 'start'), ('End', 'end'), ('Both ends', 'both')):
+            acb.addItem(lbl, k)
+        cur_arrow = o.get('arrow', 'none')
+        acb.setCurrentIndex(next((i for i in range(acb.count()) if acb.itemData(i) == cur_arrow), 0))
+        form.addRow('Dash style:', dcb); form.addRow('Arrowheads:', acb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        self.canvas.snapshot()
+        o['dash'] = dcb.currentData(); o['arrow'] = acb.currentData()
+        if o['dash'] == 'solid': o.pop('dash', None)
+        if o['arrow'] == 'none': o.pop('arrow', None)
+        self.canvas.update()
+
+    # ---------------------------------------------------------------- PDF & print
+    def export_pdf(self):
+        """Write a vector PDF at the canvas size, painting through paint_object so text
+        stays text and shapes stay paths."""
+        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('docs'), 'drawing')) + '.pdf'
+        path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', start, 'PDF (*.pdf)')
+        if not path: return
+        if not path.lower().endswith('.pdf'): path += '.pdf'
+        self._paint_pdf(path)
+        _justapps_recent('draw', path); self.statusBar().showMessage(f'Exported {path}', 4000)
+
+    def _paint_pdf(self, path):
+        from PySide6.QtCore import QSizeF
+        W, H = self.canvas.W, self.canvas.H
+        w = QPdfWriter(path); w.setResolution(96)
+        # page size given in points (1 pt = 1/72"); treat canvas px as points at 72dpi so the
+        # PDF page matches the canvas dimensions. ExactMatch keeps the exact W×H.
+        psize = QPageSize(QSizeF(W, H), QPageSize.Point, '', QPageSize.ExactMatch)
+        layout = QPageLayout(psize, QPageLayout.Portrait, QMarginsF(0, 0, 0, 0))
+        w.setPageLayout(layout)
+        p = QPainter(w); p.setRenderHint(QPainter.Antialiasing)
+        # device is in dots at w.resolution() dpi; points→dots factor keeps 1 canvas px = 1 pt
+        dpr = w.resolution() / 72.0
+        p.scale(dpr, dpr)
+        self.canvas.render_to(p)
+        p.end()
+
+    def print_drawing(self):
+        """Print the drawing via the system print dialog, using the same vector paint path."""
+        printer = QPrinter(QPrinter.HighResolution)
+        dlg = QPrintDialog(printer, self)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        self._paint_printer(printer)
+        self.statusBar().showMessage('Sent to printer.', 4000)
+
+    def _paint_printer(self, printer):
+        W, H = self.canvas.W, self.canvas.H
+        p = QPainter(printer); p.setRenderHint(QPainter.Antialiasing)
+        area = printer.pageRect(QPrinter.DevicePixel)
+        s = min(area.width() / W, area.height() / H)
+        p.translate(area.x(), area.y()); p.scale(s, s)
+        self.canvas.render_to(p)
+        p.end()
+
     def build_menu(self):
         m = self.menuBar()
         f = m.addMenu('&File')
@@ -1235,6 +1963,9 @@ class Main(QMainWindow):
         f.addAction(self.act('&Open SVG…', self.open_svg, QKeySequence.Open))
         f.addAction(self.act('&Save as SVG…', self.save_svg, QKeySequence.Save))
         f.addAction(self.act('&Export PNG…', self.export_png))
+        f.addAction(self.act('Export P&DF…', self.export_pdf))
+        f.addAction(self.act('&Import Image…', self.import_image))
+        f.addAction(self.act('&Print…', self.print_drawing, QKeySequence.Print))
         f.addAction(self.act('Edit in &PAINTcanvas…', self.edit_in_paint))
         f.addSeparator(); f.addAction(self.act('&Quit', self.close, QKeySequence.Quit))
         e = m.addMenu('&Edit')
@@ -1243,6 +1974,10 @@ class Main(QMainWindow):
         e.addSeparator()
         e.addAction(self.act('Edit &Text…', self.edit_text))
         e.addAction(self.act('&Gradient Fill…', self.gradient_dialog))
+        e.addAction(self.act('&Opacity…', self.opacity_dialog))
+        e.addAction(self.act('&Line Style (Dashes & Arrows)…', self.line_style_dialog))
+        e.addSeparator()
+        e.addAction(self.act('Convert to &Curves', self.convert_to_curves, QKeySequence('Ctrl+Shift+C')))
         a = m.addMenu('&Arrange')
         a.addAction(self.act('Bring to &Front', lambda: self.canvas.z_order('front'), QKeySequence('Ctrl+Shift+]')))
         a.addAction(self.act('Send to &Back', lambda: self.canvas.z_order('back'), QKeySequence('Ctrl+Shift+[')))
@@ -1251,6 +1986,10 @@ class Main(QMainWindow):
         a.addSeparator()
         a.addAction(self.act('&Group', self.canvas.group_selection, QKeySequence('Ctrl+G')))
         a.addAction(self.act('&Ungroup', self.canvas.ungroup_selection, QKeySequence('Ctrl+Shift+G')))
+        cm = a.addMenu('Com&bine')
+        cm.addAction(self.act('&Union (Add)', lambda: self.combine('union')))
+        cm.addAction(self.act('&Subtract (Front from Back)', lambda: self.combine('subtract')))
+        cm.addAction(self.act('&Intersect', lambda: self.combine('intersect')))
         al = a.addMenu('A&lign')
         for lbl, how in (('Align Left', 'left'), ('Align Centre', 'hcenter'), ('Align Right', 'right'),
                          ('Align Top', 'top'), ('Align Middle', 'vcenter'), ('Align Bottom', 'bottom')):
