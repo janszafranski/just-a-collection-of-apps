@@ -108,7 +108,9 @@
   .card.lead .name b{font-size:23px}
 
   /* install control */
-  .get{display:flex;align-items:center;gap:12px;margin-top:15px;flex-wrap:wrap}
+  .get{display:flex;align-items:flex-start;gap:18px;margin-top:15px;flex-wrap:wrap}
+  /* one install option = button with its platform label beneath; more can sit side by side (e.g. Windows) */
+  .getopt{display:flex;flex-direction:column;align-items:center;gap:6px}
   .plat{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
     color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
   .inst{font:inherit;font-weight:600;font-size:14.5px;cursor:pointer;border:0;border-radius:7px;
@@ -213,8 +215,7 @@
               you've made down the other — a Recent list and a browser of your folders, so you
               drop straight back into a project. Install this and it offers you the rest.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/collectionofapps/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/collectionofapps/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/">Details ↗</a>
             </div>
           </div>
@@ -229,8 +230,7 @@
             <p class="desc">Build a website by laying pages out — drag text, pictures and menus
               where you want them, then publish plain HTML you can upload anywhere.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/webcreator/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/webcreator/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html">Details ↗</a>
             </div>
           </div>
@@ -245,8 +245,7 @@
             <p class="desc">Lay out print documents and newsletters page by page — text that
               flows between columns, master pages, guides — then export a vector PDF.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/pagecreator/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/pagecreator/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/pagedesigner.html">Details ↗</a>
             </div>
           </div>
@@ -261,8 +260,7 @@
             <p class="desc">A layer-based photo and image editor — paint and draw, retouch
               photos, apply adjustments and filters.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/paint/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/paint/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/paintcanvas.html">Details ↗</a>
             </div>
           </div>
@@ -277,8 +275,7 @@
             <p class="desc">A vector editor — shapes, lines, freehand and a QuickShapes gallery —
               saved as scalable SVG it can re-open and keep editing.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/draw/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/draw/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/drawmaster.html">Details ↗</a>
             </div>
           </div>
@@ -313,8 +310,7 @@
               picker to restore it — KDE themes, SDDM login screens, Hyprland rices — on a fresh
               install. It also installs every tool below, and the Creative apps, from one list.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && ./scripts/install-launcher.sh && ./scripts/gui.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && ./scripts/install-launcher.sh && ./scripts/gui.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/">Details ↗</a>
             </div>
           </div>
@@ -329,8 +325,7 @@
             <p class="desc">A tremor-smoothing filter for the pointer, with a tray toggle —
               steadies a shaky hand so clicks land where you mean them.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/shakefree-mouse/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/shakefree-mouse/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/shakefree-mouse.html">Details ↗</a>
             </div>
           </div>
@@ -345,8 +340,7 @@
             <p class="desc">An AI assistant that slides in from the side of the screen — ask a
               question without leaving what you're doing.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/openclaw-flyout/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/openclaw-flyout/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/openclaw-flyout.html">Details ↗</a>
             </div>
           </div>
@@ -361,8 +355,7 @@
             <p class="desc">An Omarchy-style, categorised app launcher on <code>Super + Space</code> —
               type a few letters and go.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/omarchy-launcher/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/omarchy-launcher/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/app-launcher.html">Details ↗</a>
             </div>
           </div>
@@ -377,8 +370,7 @@
             <p class="desc">An on-screen cheat-sheet of your keyboard shortcuts — a tap away when
               you can't remember the one you want.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/keybinds/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/keybinds/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/keybinds.html">Details ↗</a>
             </div>
           </div>
@@ -393,8 +385,7 @@
             <p class="desc">App icons on the wallpaper, double-click to open — the desktop you
               remember, on a tiling Linux setup that normally has none.</p>
             <div class="get">
-              <span class="plat">Linux</span>
-              <button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/omarchy-desktop-icons/install.sh">Install</button>
+              <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/desktop-manager.git ~/system-replica && cd ~/system-replica && profiles/omarchy-desktop-icons/install.sh">Install</button><span class="plat">Linux</span></div>
               <a class="more" href="https://janszafranski.github.io/desktop-manager/desktop-icons.html">Details ↗</a>
             </div>
           </div>
