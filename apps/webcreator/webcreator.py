@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.17-02"
+VERSION = "1.18-00"
 
 
 def _just_dir(kind):
@@ -242,10 +242,45 @@ DEF = {
     # a call-to-action over the image, with prev/next arrows, dots and optional auto-advance.
     'slider':   dict(w=720, h=380, slides=[], interval=5, auto=True, fit='cover', radius=0,
                      strokeW=0, stroke='#333333', fill='', accent='#2a7d6b', ink='#ffffff',
-                     overlay=40, font='Noto Sans', arrows=True, dots=True),
+                     overlay=40, font='Noto Sans', arrows=True, dots=True, full=False, trans='slide'),
     # PayPal buy / donate button — publishes PayPal's own hosted-button form (no server).
     'paypal':   dict(w=200, h=60, mode='buynow', business='', hosted='', item='Item', amount='9.99',
                      currency='GBP', font='Noto Sans'),
+    # --- Interactive add-ons (v1.18) ----------------------------------------
+    # Text Rotator — a headline that cycles a list of phrases (fade or slide).
+    'rotator':  dict(w=460, h=70, phrases=['Design', 'Build', 'Publish'], interval=2.2, effect='fade',
+                     prefix='', suffix='', font='Noto Sans', size=34, color='#1f2a30', accent='#2a7d6b',
+                     bold=True, italic=False, align='left', lh=1.2, fill='', stroke='#333333', strokeW=0, radius=0),
+    # Accordion (FAQs) — question/answer items that expand/collapse.
+    'accordion': dict(w=520, h=280, items=[dict(q='What do you offer?', a='A short, helpful answer goes here.'),
+                                           dict(q='How much does it cost?', a='Explain your pricing here.')],
+                      multi=False, font='Noto Sans', size=16, color='#2b2b2b', accent='#2a7d6b',
+                      cardbg='#ffffff', fill='', stroke='#d4dade', strokeW=1, radius=8, openfirst=False),
+    # Animated Skills Chart — labelled progress bars that fill when scrolled into view.
+    'skills':   dict(w=440, h=260, bars=[dict(label='Design', pct=90), dict(label='Code', pct=75),
+                                         dict(label='SEO', pct=60)], font='Noto Sans', size=15,
+                     color='#2b2b2b', accent='#2a7d6b', track='#e4e9ec', showpct=True, height=18,
+                     fill='', stroke='#333333', strokeW=0, radius=0),
+    # Image Zoom — a picture that magnifies a region on hover/touch (lens or zoom).
+    'imgzoom':  dict(w=340, h=260, src=None, mode='lens', zoom=2.4, fit='cover', radius=0,
+                     strokeW=0, stroke='#333333', fill=''),
+    # 360° Image Viewer — drag (or auto-spin) through an ordered sequence of frames.
+    'spin360':  dict(w=360, h=300, frames=[], auto=False, speed=90, fit='contain', radius=0,
+                     strokeW=0, stroke='#333333', fill='#f3f6f8'),
+    # Background Video — a muted autoplay-loop section with an overlay tint + poster + content.
+    'bgvideo':  dict(w=720, h=360, src='', url='', poster=None, overlay=40, tint='#000000',
+                     heading='', caption='', btn='', btnlink='', font='Noto Sans', ink='#ffffff',
+                     accent='#2a7d6b', radius=0, strokeW=0, stroke='#333333', fill=''),
+    # Popup Contact Form — a button that opens a modal dialog carrying a contact form.
+    'popupform': dict(w=200, h=48, label='Contact us', font='Noto Sans', size=15, bold=True,
+                      color='#ffffff', fill='#2a7d6b', radius=6, strokeW=0, stroke='#333333',
+                      title='Get in touch', accent='#2a7d6b',
+                      fields=['Name', 'Email', 'Message'], submit='Send', send='netlify',
+                      formspree='', email='', formname='popup-contact',
+                      thanks='Thank you — your message has been sent.'),
+    # Back to Top — a floating button that appears after scrolling (droppable object variant).
+    'backtotop': dict(w=52, h=52, accent='#2a7d6b', ink='#ffffff', pos='right', radius=50,
+                      after=400, label=''),
 }
 # A SLIDE in a slider object: heading / caption text over an image, with an optional button.
 SLIDE_DEF = dict(image=None, heading='', caption='', btn='', link='')
@@ -271,7 +306,8 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
 NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
-                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed', slider='Slider / carousel', paypal='PayPal button')
+                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed', slider='Slider / carousel', paypal='PayPal button',
+                  rotator='Text rotator', accordion='Accordion (FAQs)', skills='Skills chart', imgzoom='Image zoom', spin360='360° viewer', bgvideo='Background video', popupform='Popup form', backtotop='Back to top')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -1910,6 +1946,139 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
                 p.drawText(QRectF(tx, cr.y() + 30, tw, cardh - 36), Qt.TextWordWrap,
                            QFontMetrics(f).elidedText(it['excerpt'] or '', Qt.ElideRight, int(tw) * 2))
                 y += cardh + gap
+    elif t == 'rotator':
+        box()
+        f = qfont(dict(o, bold=o.get('bold', True))); p.setFont(f); fm = QFontMetrics(f)
+        phrases = [x for x in (o.get('phrases') or []) if (x or '').strip()] or ['']
+        txt = (o.get('prefix') or '') + phrases[0] + (o.get('suffix') or '')
+        p.setPen(QColor(o.get('color', '#1f2a30')))
+        p.drawText(QRectF(4, 0, w - 8, h), int(_q_align(o.get('align', 'left')) | Qt.AlignVCenter), txt)
+        if edit:
+            _badge(p, w, '↻ rotator · %d' % len(phrases))
+    elif t == 'accordion':
+        f = qfont(o); p.setFont(f); fm = QFontMetrics(f); fb = QFont(f); fb.setBold(True)
+        items = o.get('items') or []; acc = QColor(o.get('accent', '#2a7d6b'))
+        y = 0.0
+        for i, it in enumerate(items):
+            rh = fm.height() + 24
+            if y + rh > h: break
+            cr = QRectF(0, y, w, rh)
+            p.setPen(QPen(QColor(o.get('stroke', '#d4dade')), 1)); p.setBrush(QColor(o.get('cardbg', '#ffffff')))
+            p.drawRoundedRect(cr.adjusted(.5, .5, -.5, -.5), 8, 8)
+            p.setFont(fb); p.setPen(QColor(o.get('color', '#2b2b2b')))
+            p.drawText(cr.adjusted(14, 0, -30, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                       QFontMetrics(fb).elidedText(it.get('q', ''), Qt.ElideRight, int(w - 48)))
+            p.setPen(acc); p.drawText(QRectF(w - 26, y, 20, rh), Qt.AlignCenter, '+')
+            y += rh + 10
+        if edit:
+            _badge(p, w, '▸ FAQ · %d' % len(items))
+    elif t == 'skills':
+        f = qfont(o); p.setFont(f); fm = QFontMetrics(f)
+        bars = o.get('bars') or []; acc = QColor(o.get('accent', '#2a7d6b')); trk = QColor(o.get('track', '#e4e9ec'))
+        bh = int(o.get('height', 18)); gap = 12
+        total = len(bars) * (bh + fm.height() + 6 + gap)
+        y = max(0, (h - total) / 2)
+        for b in bars:
+            pct = max(0, min(100, int(b.get('pct', 0))))
+            p.setPen(QColor(o.get('color', '#2b2b2b'))); p.setFont(QFont(f))
+            p.drawText(QRectF(0, y, w, fm.height()), Qt.AlignLeft, b.get('label', ''))
+            if o.get('showpct', True):
+                p.drawText(QRectF(0, y, w, fm.height()), Qt.AlignRight, f'{pct}%')
+            y += fm.height() + 5
+            p.setPen(Qt.NoPen); p.setBrush(trk); p.drawRoundedRect(QRectF(0, y, w, bh), bh / 2, bh / 2)
+            p.setBrush(acc); p.drawRoundedRect(QRectF(0, y, w * pct / 100, bh), bh / 2, bh / 2)
+            y += bh + gap
+        if edit:
+            _badge(p, w, '▮ skills · %d' % len(bars))
+    elif t == 'imgzoom':
+        path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.save(); p.setClipPath(path)
+        pm = pixmap_for(site, o.get('src')) if o.get('src') else None
+        if pm and not pm.isNull():
+            pw_, ph_ = pm.width(), pm.height()
+            if o.get('fit', 'cover') == 'contain':
+                sc = min(w / pw_, h / ph_); tw, th = pw_ * sc, ph_ * sc
+                p.fillRect(r, QColor('#f3f6f8')); p.drawPixmap(QRectF((w - tw) / 2, (h - th) / 2, tw, th), pm, QRectF(0, 0, pw_, ph_))
+            else:
+                sc = max(w / pw_, h / ph_); sw_, sh_ = w / sc, h / sc
+                p.drawPixmap(r, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+        else:
+            p.fillRect(r, QColor('#dde2e5')); p.setPen(QPen(QColor('#b5bdc2'), 1))
+            p.drawLine(r.topLeft(), r.bottomRight()); p.drawLine(r.topRight(), r.bottomLeft())
+            if edit:
+                f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#4b555b'))
+                p.drawText(QRectF(0, h / 2 - 14, w, 28), Qt.AlignCenter, 'Double-click to add a picture')
+        # a loupe ring hint
+        p.setPen(QPen(QColor(255, 255, 255, 220), 2)); p.setBrush(QColor(0, 0, 0, 30))
+        lp = min(w, h) * 0.22; p.drawEllipse(QPointF(w * 0.62, h * 0.42), lp, lp)
+        p.restore()
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '🔍 %s zoom' % o.get('mode', 'lens'))
+    elif t == 'spin360':
+        frames = [k for k in (o.get('frames') or []) if k in site.get('assets', {})]
+        p.fillRect(r, QColor(o.get('fill', '#f3f6f8')))
+        pm = pixmap_for(site, frames[0]) if frames else None
+        p.save(); path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.setClipPath(path)
+        if pm and not pm.isNull():
+            pw_, ph_ = pm.width(), pm.height(); sc = min(w / pw_, h / ph_); tw, th = pw_ * sc, ph_ * sc
+            p.drawPixmap(QRectF((w - tw) / 2, (h - th) / 2, tw, th), pm, QRectF(0, 0, pw_, ph_))
+        p.restore()
+        p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 140))
+        br = QRectF(w / 2 - 58, h - 30, 116, 22); p.drawRoundedRect(br, 11, 11)
+        f = QFont(); f.setPixelSize(12); p.setFont(f); p.setPen(QColor('#ffffff'))
+        p.drawText(br, Qt.AlignCenter, '↺ drag to rotate' if frames else 'add frames')
+        if edit:
+            _badge(p, w, '360° · %d' % len(frames))
+    elif t == 'bgvideo':
+        p.save(); path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.setClipPath(path)
+        pm = pixmap_for(site, o.get('poster')) if o.get('poster') else None
+        if pm and not pm.isNull():
+            pw_, ph_ = pm.width(), pm.height(); sc = max(w / pw_, h / ph_); sw_, sh_ = w / sc, h / sc
+            p.drawPixmap(r, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+        else:
+            p.fillRect(r, QColor('#1b2227'))
+        ov = max(0, min(100, int(o.get('overlay', 40))))
+        if ov: p.fillRect(r, QColor(QColor(o.get('tint', '#000000')).red(), QColor(o.get('tint', '#000000')).green(),
+                                    QColor(o.get('tint', '#000000')).blue(), int(ov * 255 / 100)))
+        ink = QColor(o.get('ink', '#ffffff')); ty = h / 2 - 24
+        if o.get('heading'):
+            f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(16, int(h * 0.1))); f.setBold(True); p.setFont(f)
+            p.setPen(ink); p.drawText(QRectF(20, ty, w - 40, h * 0.3), Qt.AlignCenter | Qt.TextWordWrap, o['heading']); ty += h * 0.18
+        if o.get('caption'):
+            f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(11, int(h * 0.05))); p.setFont(f)
+            p.setPen(ink); p.drawText(QRectF(20, ty, w - 40, h * 0.16), Qt.AlignCenter | Qt.TextWordWrap, o['caption'])
+        # a play glyph so it reads as video
+        p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 60))
+        p.drawEllipse(QPointF(w / 2, h - 40), 16, 16); p.setBrush(QColor('#ffffff'))
+        p.drawPolygon(QPolygonF([QPointF(w / 2 - 5, h - 48), QPointF(w / 2 - 5, h - 32), QPointF(w / 2 + 8, h - 40)]))
+        p.restore()
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '▶ bg video')
+    elif t == 'popupform':
+        box()
+        f = qfont(dict(o, bold=o.get('bold', True))); p.setFont(f); p.setPen(QColor(o.get('color', '#ffffff')))
+        p.drawText(r, Qt.AlignCenter, o.get('label') or 'Contact us')
+        if edit:
+            _badge(p, w, '◳ popup form')
+    elif t == 'backtotop':
+        acc = QColor(o.get('accent', '#2a7d6b'))
+        p.setPen(Qt.NoPen); p.setBrush(acc); p.drawEllipse(r.adjusted(1, 1, -1, -1))
+        p.setPen(QColor(o.get('ink', '#ffffff')))
+        lbl = o.get('label') or '↑'; f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(14, int(h * 0.42))); f.setBold(True); p.setFont(f)
+        p.drawText(r, Qt.AlignCenter, lbl)
+
+def _q_align(a):
+    return {'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(a, Qt.AlignLeft)
+
+def _badge(p, w, text):
+    """Small top-left badge marking an interactive add-on on the editor canvas."""
+    f = QFont(); f.setPixelSize(11); p.setFont(f); fm = QFontMetrics(f)
+    bw = fm.horizontalAdvance(text) + 14; br = QRectF(6, 6, bw, 18)
+    p.setPen(Qt.NoPen); p.setBrush(QColor(42, 125, 107, 220)); p.drawRoundedRect(br, 9, 9)
+    p.setPen(QColor('#ffffff')); p.drawText(br, Qt.AlignCenter, text)
 
 def placed(o, site, page_h):
     """A master object set to stay at the bottom of the page keeps its distance from the bottom edge."""
@@ -2038,6 +2207,75 @@ background:rgba(0,0,0,.4);color:#fff;font-size:26px;line-height:1;cursor:pointer
 .obj-slider .sl-dots{position:absolute;left:0;right:0;bottom:12px;z-index:3;display:flex;gap:9px;justify-content:center}
 .obj-slider .sl-dot{width:9px;height:9px;padding:0;border:0;border-radius:50%;background:rgba(255,255,255,.5);cursor:pointer;transition:background .2s}
 .obj-slider .sl-dot.on{background:#fff}
+/* Full-width slider: break out of the fixed canvas to span the browser viewport. */
+.obj-slider.sl-full{left:50%!important;width:100vw!important;margin-left:-50vw;max-width:none!important}
+/* Blind / venetian (cross-fade) transition: cells stack and fade in place, no track slide. */
+.obj-slider.sl-fade .sl-track{display:block;transition:none}
+.obj-slider.sl-fade .sl-cell{position:absolute;inset:0;opacity:0;transition:opacity .6s ease}
+.obj-slider.sl-fade .sl-cell:first-child,.obj-slider.sl-fade .sl-cell.sl-on{opacity:1}
+/* --- Text rotator — a headline cycling through phrases (v1.18) --- */
+.obj-rotator{overflow:hidden}
+.obj-rotator .rt-line{display:inline-block}
+.obj-rotator .rt-word{display:inline-block;color:var(--rtacc,#2a7d6b);transition:opacity .25s ease,transform .25s ease}
+.obj-rotator .rt-word.rt-out{opacity:0}
+.obj-rotator .rt-word.rt-slide.rt-out{transform:translateY(-.5em)}
+@media(prefers-reduced-motion:reduce){.obj-rotator .rt-word{transition:none}}
+/* --- Accordion (FAQs) --- */
+.obj-accordion{display:block;padding:0}
+.obj-accordion .ac-item{background:var(--accard,#fff);border:1px solid rgba(0,0,0,.1);border-radius:8px;margin:0 0 10px;overflow:hidden}
+.obj-accordion .ac-q{display:flex;width:100%;justify-content:space-between;align-items:center;gap:10px;text-align:left;font:inherit;font-weight:700;color:inherit;background:transparent;border:0;cursor:pointer;padding:13px 16px}
+.obj-accordion .ac-q:hover{color:var(--acacc,#2a7d6b)}
+.obj-accordion .ac-ic{flex:none;width:1.2em;height:1.2em;line-height:1.1;text-align:center;font-weight:700;color:var(--acacc,#2a7d6b);transition:transform .2s ease}
+.obj-accordion .ac-q[aria-expanded="true"] .ac-ic{transform:rotate(45deg)}
+.obj-accordion .ac-a{padding:0 16px}
+.obj-accordion .ac-ap{padding:0 0 14px;font-weight:400}
+.obj-accordion .ac-ap p{margin:0 0 .5em}
+/* --- Animated skills chart --- */
+.obj-skills{overflow:hidden}
+.obj-skills .sk-top{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;font-weight:600}
+.obj-skills .sk-pct{opacity:.7;font-size:.9em}
+.obj-skills .sk-track{height:var(--skh,18px);background:var(--sktrack,#e4e9ec);border-radius:999px;overflow:hidden}
+.obj-skills .sk-fill{height:100%;background:var(--skacc,#2a7d6b);border-radius:999px;transition:width 1.1s cubic-bezier(.22,.61,.36,1)}
+@media(prefers-reduced-motion:reduce){.obj-skills .sk-fill{transition:none}}
+/* --- Image zoom (lens / zoom-on-hover) --- */
+.obj-imgzoom{position:absolute}
+.obj-imgzoom .iz-img{width:100%;height:100%;display:block;transition:transform .12s ease}
+.obj-imgzoom.iz-zoom{cursor:zoom-in}
+.obj-imgzoom .iz-lens{display:none;position:absolute;width:150px;height:150px;border-radius:50%;transform:translate(-50%,-50%);pointer-events:none;box-shadow:0 0 0 2px #fff,0 4px 16px rgba(0,0,0,.35);background-repeat:no-repeat;z-index:4}
+.obj-imgzoom.iz-zoom .iz-lens{display:none!important}
+/* --- 360° image viewer --- */
+.obj-spin360{position:absolute;cursor:ew-resize;background:#f3f6f8;touch-action:none;user-select:none}
+.obj-spin360 .sp-f{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;transition:opacity .05s linear;pointer-events:none}
+.obj-spin360 .sp-hint{position:absolute;left:50%;bottom:8px;transform:translateX(-50%);background:rgba(0,0,0,.55);color:#fff;font:12px/1 Arial,sans-serif;padding:5px 10px;border-radius:999px;pointer-events:none}
+/* --- Background video section --- */
+.obj-bgvideo{position:absolute;overflow:hidden;font-family:var(--bvfont,Arial,sans-serif)}
+.obj-bgvideo .bv-v{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;display:block}
+.obj-bgvideo .bv-tint{position:absolute;inset:0;background:var(--bvtint,#000);opacity:var(--bvov,.4)}
+.obj-bgvideo .bv-cap{position:absolute;inset:0;z-index:2;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;gap:.5em;padding:6% 8%;color:var(--bvink,#fff)}
+.obj-bgvideo .bv-h{font-size:clamp(22px,4vw,44px);font-weight:800;line-height:1.1;text-shadow:0 2px 12px rgba(0,0,0,.45)}
+.obj-bgvideo .bv-c{font-size:clamp(14px,2vw,20px);max-width:38em;text-shadow:0 1px 8px rgba(0,0,0,.5)}
+.obj-bgvideo .bv-btn{display:inline-block;margin-top:.4em;background:var(--bvacc,#2a7d6b);color:#fff;text-decoration:none;font-weight:700;padding:.6em 1.4em;border-radius:7px;box-shadow:0 4px 14px rgba(0,0,0,.25)}
+.obj-bgvideo .bv-btn:hover{filter:brightness(1.07)}
+/* --- Popup contact form --- */
+.obj-popupform{display:flex}
+.obj-popupform .pf-open{font:inherit;font-weight:700;cursor:pointer;border:0;width:100%;height:100%;border-radius:inherit;background:transparent;color:inherit}
+.pf-overlay{position:fixed;inset:0;z-index:9998;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55);padding:20px}
+.pf-overlay.on{display:flex}
+.pf-overlay .pf-panel{position:relative;background:#fff;color:#222;border-radius:12px;box-shadow:0 20px 60px rgba(0,0,0,.4);padding:26px 26px 22px;width:min(440px,100%);max-height:90vh;overflow-y:auto;font:16px/1.5 Arial,sans-serif}
+.pf-overlay .pf-title{margin:0 0 14px;font-size:1.3em;color:var(--pfacc,#2a7d6b)}
+.pf-overlay .pf-close{position:absolute;top:10px;right:14px;border:0;background:transparent;font-size:28px;line-height:1;cursor:pointer;color:#888}
+.pf-overlay .pf-close:hover{color:#222}
+.pf-overlay label{display:block;margin-bottom:4px}
+.pf-overlay input,.pf-overlay textarea{display:block;width:100%;font:inherit;padding:9px 11px;margin:4px 0 12px;border:1px solid #c9d1d6;border-radius:6px}
+.pf-overlay textarea{height:96px;resize:vertical}
+.pf-overlay button[type=submit]{font:inherit;font-weight:700;padding:11px 24px;border:0;border-radius:6px;background:var(--pfacc,#2a7d6b);color:#fff;cursor:pointer}
+/* --- Back to top floating button --- */
+.obj-backtotop{position:static!important;width:0!important;height:0!important;overflow:visible;pointer-events:none}
+.obj-backtotop .bt-btn{position:fixed;bottom:24px;z-index:900;width:52px;height:52px;border:0;border-radius:50%;background:var(--btacc,#2a7d6b);color:var(--btink,#fff);font-size:22px;font-weight:700;line-height:1;cursor:pointer;box-shadow:0 6px 20px rgba(0,0,0,.28);opacity:0;visibility:hidden;transform:translateY(12px);transition:opacity .25s ease,transform .25s ease;pointer-events:auto}
+.obj-backtotop.bt-right .bt-btn{right:24px}
+.obj-backtotop.bt-left .bt-btn{left:24px}
+.obj-backtotop.bt-show .bt-btn{opacity:1;visibility:visible;transform:none}
+@media(prefers-reduced-motion:reduce){.obj-backtotop .bt-btn{transition:none}}
 /* PayPal buy / donate button — PayPal's own hosted-button form, posted to paypal.com. */
 .obj-paypal{display:flex;align-items:center;justify-content:center}
 .obj-paypal .pp-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:0;border-radius:6px;
@@ -2597,15 +2835,25 @@ def obj_html(o, site, page, img):
             dots = '<div class="sl-dots">' + ''.join(
                 f'<button class="sl-dot" aria-label="Go to slide {i + 1}"></button>' for i in range(len(slides))) + '</div>'
         auto = int((o.get('interval', 5) or 5) * 1000) if (o.get('auto', True) and len(slides) > 1) else 0
+        # Blind/venetian transition: cells cross-fade in place instead of sliding; a "full width"
+        # slider breaks out of the fixed canvas to span the browser viewport. Both are opt-in and
+        # backward-compatible (default slide/non-full behave exactly as before).
+        trans = o.get('trans', 'slide')
+        slide_cls = ' obj-slider' + (' sl-full' if o.get('full') else '') + (' sl-fade' if trans == 'blind' else '')
         script = ''
         if len(slides) > 1:
             # Pure-vanilla carousel: translateX track, dots/arrows, auto-advance (pausable on
             # hover), and touch-swipe. Scoped to this slider via currentScript.parentNode so no
             # id is needed (keeps the publish `lift` class+style pass and responsive #oN ids intact).
+            # A blind/fade slider stacks cells and toggles a .sl-on class (CSS cross-fades opacity);
+            # a sliding slider translates the track. go() branches on the data-trans flag so the one
+            # shared script serves both.
             script = (f'<script>(function(){{var r=document.currentScript.parentNode;if(!r)return;'
                       'var tk=r.querySelector(".sl-track"),cells=r.querySelectorAll(".sl-cell"),'
-                      'dots=r.querySelectorAll(".sl-dot"),n=cells.length,i=0,t=null;'
-                      'function go(k){i=(k+n)%n;tk.style.transform="translateX("+(-i*100)+"%)";'
+                      'dots=r.querySelectorAll(".sl-dot"),n=cells.length,i=0,t=null,'
+                      'fade=r.classList.contains("sl-fade");'
+                      'function go(k){i=(k+n)%n;if(fade){cells.forEach(function(c,j){c.classList.toggle("sl-on",j===i)})}'
+                      'else{tk.style.transform="translateX("+(-i*100)+"%)"}'
                       'dots.forEach(function(d,j){d.classList.toggle("on",j===i)})}'
                       'var pv=r.querySelector(".sl-prev"),nx=r.querySelector(".sl-next");'
                       'if(pv)pv.addEventListener("click",function(){go(i-1);rs()});'
@@ -2618,7 +2866,7 @@ def obj_html(o, site, page, img):
                       'r.addEventListener("touchend",function(e){var dx=e.changedTouches[0].clientX-sx;'
                       'if(Math.abs(dx)>40){go(i+(dx<0?1:-1));rs()}},{passive:true});'
                       'go(0);rs();})();</script>')
-        return (f'<div class="obj obj-slider" style="{st}"{anim_attr(o)}>'
+        return (f'<div class="obj{slide_cls}" style="{st}"{anim_attr(o)}>'
                 f'{track}{arrows}{dots}{script}</div>')
     elif t == 'paypal':
         # PayPal's own hosted-button form — posts to PayPal, no server of ours needed.
@@ -2652,6 +2900,222 @@ def obj_html(o, site, page, img):
         return (f'<form class="obj obj-paypal" style="{st}" '
                 f'action="https://www.paypal.com/cgi-bin/webscr" method="post" '
                 f'target="_blank" rel="noopener"{anim_attr(o)}>{inner}</form>')
+    elif t == 'rotator':
+        # A headline that cycles a list of phrases. The static text + the first phrase are
+        # in the markup (so a no-JS visitor and search engines see real content); a tiny
+        # scoped script fades/slides through the rest. prefers-reduced-motion freezes it.
+        st += text_css(dict(o, bold=o.get('bold', True))) + box_css(o)
+        st += f"display:flex;align-items:center;--rtacc:{o.get('accent', '#2a7d6b')};"
+        phrases = [p for p in (o.get('phrases') or []) if (p or '').strip()] or ['']
+        eff = 'fade' if o.get('effect', 'fade') == 'fade' else 'slide'
+        data = json.dumps(phrases, ensure_ascii=False)
+        ms = int(max(0.4, o.get('interval', 2.2)) * 1000)
+        pre = esc(o.get('prefix') or ''); suf = esc(o.get('suffix') or '')
+        inner = (f'<span class="rt-line">{pre}<span class="rt-word rt-{eff}">{esc(phrases[0])}</span>{suf}</span>')
+        script = ''
+        if len(phrases) > 1:
+            script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                      'var el=r.querySelector(".rt-word"),p=' + data + f',i=0,MS={ms};'
+                      'if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches)return;'
+                      'setInterval(function(){el.classList.add("rt-out");setTimeout(function(){'
+                      'i=(i+1)%p.length;el.textContent=p[i];el.classList.remove("rt-out")},260)},MS)})();</script>')
+        return f'<div class="obj obj-rotator" style="{st}"{anim_attr(o)}>{inner}{script}</div>'
+    elif t == 'accordion':
+        # Accessible FAQ list: each item is a <button aria-expanded> that toggles its panel.
+        # One-open mode is handled in JS by closing the others; markup/CSS stay the same.
+        st += text_css(o) + box_css(o)
+        st += (f"--acacc:{o.get('accent', '#2a7d6b')};--accard:{o.get('cardbg', '#ffffff')};overflow-y:auto;")
+        items = o.get('items') or []
+        openfirst = bool(o.get('openfirst'))
+        rows = []
+        for i, it in enumerate(items):
+            op = openfirst and i == 0
+            rows.append(
+                f'<div class="ac-item">'
+                f'<button type="button" class="ac-q" aria-expanded="{"true" if op else "false"}">'
+                f'<span>{esc(it.get("q", ""))}</span><span class="ac-ic" aria-hidden="true">+</span></button>'
+                f'<div class="ac-a"{"" if op else " hidden"}><div class="ac-ap">{clean_html(it.get("a", ""), site, img)}</div></div>'
+                f'</div>')
+        multi = '1' if o.get('multi') else '0'
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var multi={multi},qs=r.querySelectorAll(".ac-q");'
+                  'qs.forEach(function(q){q.addEventListener("click",function(){'
+                  'var open=q.getAttribute("aria-expanded")==="true",pan=q.nextElementSibling;'
+                  'if(!multi&&!open){qs.forEach(function(o){if(o!==q){o.setAttribute("aria-expanded","false");'
+                  'o.nextElementSibling.hidden=true}})}'
+                  'q.setAttribute("aria-expanded",open?"false":"true");pan.hidden=open})})})();</script>')
+        return f'<div class="obj obj-accordion" style="{st}"{anim_attr(o)}>{"".join(rows)}{script}</div>'
+    elif t == 'skills':
+        # Labelled progress bars that animate from 0 to their value when scrolled into view.
+        # Each bar carries data-value; a scoped observer sets the width on first sight (and a
+        # reduced-motion / no-IO fallback jumps straight to the value).
+        st += text_css(o) + box_css(o)
+        st += (f"--skacc:{o.get('accent', '#2a7d6b')};--sktrack:{o.get('track', '#e4e9ec')};"
+               f"--skh:{int(o.get('height', 18))}px;display:flex;flex-direction:column;justify-content:center;gap:12px;")
+        showpct = bool(o.get('showpct', True))
+        rows = []
+        for b in (o.get('bars') or []):
+            pct = max(0, min(100, int(b.get('pct', 0))))
+            pctl = f'<span class="sk-pct">{pct}%</span>' if showpct else ''
+            rows.append(f'<div class="sk-row"><div class="sk-top"><span class="sk-label">{esc(b.get("label", ""))}</span>{pctl}</div>'
+                        f'<div class="sk-track"><div class="sk-fill" data-value="{pct}" style="width:0%"></div></div></div>')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  'var fills=r.querySelectorAll(".sk-fill");'
+                  'function run(){fills.forEach(function(f){f.style.width=f.getAttribute("data-value")+"%"})}'
+                  'if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches||!("IntersectionObserver"in window)){run();return}'
+                  'var io=new IntersectionObserver(function(es){es.forEach(function(en){if(en.isIntersecting){run();io.disconnect()}})},{threshold:.3});'
+                  'io.observe(r)})();</script>')
+        return f'<div class="obj obj-skills" style="{st}"{anim_attr(o)}>{"".join(rows)}{script}</div>'
+    elif t == 'imgzoom':
+        # A picture that magnifies a region on hover/touch. Lens mode shows a round loupe
+        # following the pointer; zoom mode scales the whole image under the cursor. A scoped
+        # script positions the background; it degrades to a plain picture with no JS.
+        st += box_css(o) + 'overflow:hidden;'
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'cover'), 'cover')
+        mode = o.get('mode', 'lens')
+        if o.get('src'):
+            src = img(o['src'])
+            z = float(o.get('zoom', 2.4) or 2.4)
+            inner = (f'<img class="iz-img" src="{esc(src)}" alt="" style="object-fit:{fit}">'
+                     f'<span class="iz-lens" style="background-image:url({esc(src)})"></span>')
+            script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                      'var im=r.querySelector(".iz-img"),ln=r.querySelector(".iz-lens"),'
+                      f'mode="{mode}",Z={z:g};'
+                      'function at(e){var t=(e.touches&&e.touches[0])||e,b=r.getBoundingClientRect();'
+                      'var x=(t.clientX-b.left)/b.width,y=(t.clientY-b.top)/b.height;'
+                      'x=Math.max(0,Math.min(1,x));y=Math.max(0,Math.min(1,y));'
+                      'if(mode==="zoom"){im.style.transformOrigin=(x*100)+"% "+(y*100)+"%";im.style.transform="scale("+Z+")"}'
+                      'else{ln.style.display="block";ln.style.left=(x*b.width)+"px";ln.style.top=(y*b.height)+"px";'
+                      'ln.style.backgroundSize=(b.width*Z)+"px "+(b.height*Z)+"px";'
+                      'ln.style.backgroundPosition="-"+(x*b.width*Z-ln.offsetWidth/2)+"px -"+(y*b.height*Z-ln.offsetHeight/2)+"px"}}'
+                      'function off(){im.style.transform="";ln.style.display="none"}'
+                      'r.addEventListener("mousemove",at);r.addEventListener("mouseleave",off);'
+                      'r.addEventListener("touchmove",function(e){at(e);e.preventDefault()},{passive:false});'
+                      'r.addEventListener("touchend",off)})();</script>')
+            return f'<div class="obj obj-imgzoom iz-{mode}" style="{st}"{anim_attr(o)}>{inner}{script}</div>'
+        st += 'background:#dde2e5;'
+        return f'<div class="obj obj-imgzoom" style="{st}"{anim_attr(o)}></div>'
+    elif t == 'spin360':
+        # Drag (or auto-spin) through an ordered sequence of frames to rotate a product.
+        # All frames are in the markup (stacked, one visible); the script shows the frame
+        # matching the drag offset. No frames → a hint box.
+        st += box_css(o) + 'overflow:hidden;position:absolute;'
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'contain'), 'contain')
+        frames = [k for k in (o.get('frames') or []) if k in site.get('assets', {})]
+        if frames:
+            imgs = ''.join(f'<img class="sp-f" src="{img(k)}" alt="" style="object-fit:{fit};opacity:{1 if i == 0 else 0}">'
+                           for i, k in enumerate(frames))
+            auto = int(o.get('speed', 90)) if o.get('auto') else 0
+            script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                      'var fs=r.querySelectorAll(".sp-f"),n=fs.length,i=0,dragging=false,sx=0,si=0,t=null;'
+                      'function show(k){k=((k%n)+n)%n;if(k===i)return;fs[i].style.opacity=0;i=k;fs[i].style.opacity=1}'
+                      f'var AUTO={auto};function spin(){{if(AUTO)t=setInterval(function(){{show(i+1)}},AUTO)}}'
+                      'function stop(){clearInterval(t);t=null}'
+                      'function down(e){dragging=true;stop();sx=((e.touches&&e.touches[0])||e).clientX;si=i}'
+                      'function move(e){if(!dragging)return;var x=((e.touches&&e.touches[0])||e).clientX;'
+                      'show(si+Math.round((x-sx)/(r.clientWidth/n)))}'
+                      'function up(){dragging=false;spin()}'
+                      'r.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);'
+                      'r.addEventListener("touchstart",down,{passive:true});r.addEventListener("touchmove",function(e){move(e);e.preventDefault()},{passive:false});'
+                      'r.addEventListener("touchend",up);'
+                      'if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches)AUTO=0;spin()})();</script>')
+            return (f'<div class="obj obj-spin360" style="{st}"{anim_attr(o)}>{imgs}'
+                    f'<span class="sp-hint">&#8634; drag to rotate</span>{script}</div>')
+        return f'<div class="obj obj-spin360" style="{st}"{anim_attr(o)}><span class="sp-hint">360° viewer — add frames</span></div>'
+    elif t == 'bgvideo':
+        # A muted autoplay-loop <video> as a section background, with an overlay tint, a poster
+        # fallback and content (heading/caption/button) on top. Self-contained; no server.
+        st += box_css(o) + 'overflow:hidden;position:absolute;'
+        ov = max(0, min(100, int(o.get('overlay', 40))))
+        st += f"--bvov:{ov / 100:g};--bvtint:{o.get('tint', '#000000')};--bvacc:{o.get('accent', '#2a7d6b')};--bvink:{o.get('ink', '#ffffff')};--bvfont:{css_font(o.get('font', 'Noto Sans'))};"
+        vsrc = img(o['src']) if (o.get('src') and o['src'] in site.get('assets', {})) else (o.get('url') or '')
+        poster = img(o['poster']) if (o.get('poster') and o['poster'] in site.get('assets', {})) else ''
+        posat = f' poster="{esc(poster)}"' if poster else ''
+        # MIME type for the <source> so the browser knows how to play it (from the asset
+        # data-URI when embedded, else guessed from the URL's extension).
+        vtype = ''
+        if o.get('src') and o['src'] in site.get('assets', {}):
+            _m = re.match(r'data:(video/[a-z0-9+.\-]+);base64,', site['assets'][o['src']])
+            if _m: vtype = f' type="{_m.group(1)}"'
+        elif vsrc:
+            _ext = os.path.splitext(vsrc.split('?')[0])[1].lstrip('.').lower()
+            _mm = {'mp4': 'video/mp4', 'webm': 'video/webm', 'ogv': 'video/ogg', 'mov': 'video/quicktime'}.get(_ext)
+            if _mm: vtype = f' type="{_mm}"'
+        vid = (f'<video class="bv-v" autoplay muted loop playsinline preload="auto"{posat}>'
+               f'<source src="{esc(vsrc)}"{vtype}></video>' if vsrc
+               else (f'<span class="bv-v" style="background:#1b2227 url({esc(poster)}) center/cover"></span>' if poster
+                     else '<span class="bv-v" style="background:#1b2227"></span>'))
+        cap = ''
+        if o.get('heading'): cap += f'<span class="bv-h">{esc(o["heading"])}</span>'
+        if o.get('caption'): cap += f'<span class="bv-c">{esc(o["caption"])}</span>'
+        if o.get('btn'):
+            href = '#'; tgt = ''
+            L = (o.get('btnlink') or '').strip()
+            if L.startswith('wcpage:'):
+                pg = next((q for q in site['pages'] if q['id'] == L[7:]), None); href = pg['file'] if pg else '#'
+            elif L:
+                href = L; tgt = ' target="_blank" rel="noopener"'
+            cap += f'<a class="bv-btn" href="{esc(href)}"{tgt}>{esc(o["btn"])}</a>'
+        content = f'<span class="bv-cap">{cap}</span>' if cap else ''
+        return (f'<div class="obj obj-bgvideo" style="{st}"{anim_attr(o)}>{vid}'
+                f'<span class="bv-tint"></span>{content}</div>')
+    elif t == 'popupform':
+        # A button that opens a modal dialog carrying a contact form. The form reuses the
+        # same submission wiring as the Form object (Netlify / Formspree / mailto). Closes
+        # on backdrop / Esc; accessible (role=dialog, aria-modal, focus to the panel).
+        st += f"display:flex;align-items:center;justify-content:center;font-family:{css_font(o.get('font', 'Noto Sans'))};"
+        st += text_css(dict(o, align='center')) + box_css(o)
+        pid = 'pf-' + (o.get('id') or uid())
+        send = o.get('send', 'netlify')
+        fname = re.sub(r'[^A-Za-z0-9_-]+', '-', (o.get('formname') or 'popup-contact')).strip('-') or 'popup-contact'
+        fl = ''
+        for i, fld in enumerate(o.get('fields', [])):
+            big = any(k in fld.lower() for k in ('message', 'help', 'comment', 'enquiry', 'details'))
+            nm = re.sub(r'[^a-z0-9]+', '_', fld.lower()).strip('_') or f'field{i}'
+            ctl = (f'<textarea name="{nm}"></textarea>' if big
+                   else f'<input name="{nm}" type="{"email" if "email" in fld.lower() else "text"}">')
+            fl += f'<label>{esc(fld)}{ctl}</label>'
+        btn = f'<button type="submit">{esc(o.get("submit", "Send"))}</button>'
+        if send == 'netlify':
+            hidden = f'<input type="hidden" name="form-name" value="{esc(fname)}">'
+            formtag = (f'<form name="{esc(fname)}" method="post" data-netlify="true" netlify-honeypot="bot-field">'
+                       f'{hidden}<p hidden><label>Leave blank: <input name="bot-field"></label></p>{fl}{btn}</form>')
+        elif send == 'formspree' and (o.get('formspree') or '').strip():
+            formtag = f'<form action="{esc((o.get("formspree") or "").strip())}" method="post">{fl}{btn}</form>'
+        elif send == 'email' and (o.get('email') or '').strip():
+            formtag = (f'<form action="mailto:{esc((o.get("email") or "").strip())}" method="post" '
+                       f'enctype="text/plain">{fl}{btn}</form>')
+        else:
+            formtag = (f'<form method="post" action="#" '
+                       f'onsubmit="alert(\'Connect this form to a form handler (Popup form editor).\');return false">{fl}{btn}</form>')
+        modal = (f'<div class="pf-overlay" id="{pid}" role="dialog" aria-modal="true" aria-label="{esc(o.get("title") or "Contact")}" style="--pfacc:{o.get("accent", "#2a7d6b")}">'
+                 f'<div class="pf-panel"><button type="button" class="pf-close" aria-label="Close">&times;</button>'
+                 f'<h3 class="pf-title">{esc(o.get("title") or "Get in touch")}</h3>{formtag}</div></div>')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var ov=document.getElementById("{pid}"),b=r.querySelector(".pf-open");'
+                  'function open(){ov.classList.add("on");var f=ov.querySelector("input,textarea,button");if(f)f.focus()}'
+                  'function close(){ov.classList.remove("on")}'
+                  'b.addEventListener("click",open);ov.querySelector(".pf-close").addEventListener("click",close);'
+                  'ov.addEventListener("click",function(e){if(e.target===ov)close()});'
+                  'document.addEventListener("keydown",function(e){if(e.key==="Escape")close()})})();</script>')
+        return (f'<div class="obj obj-popupform" style="{st}"{anim_attr(o)}>'
+                f'<button type="button" class="pf-open">{esc(o.get("label") or "Contact us")}</button>{modal}{script}</div>')
+    elif t == 'backtotop':
+        # A droppable floating "back to top" button (there is also a site-level option). It is
+        # position:fixed, appears after scrolling past `after` px, and smooth-scrolls to the top.
+        st += f"--btacc:{o.get('accent', '#2a7d6b')};--btink:{o.get('ink', '#ffffff')};"
+        lbl = esc(o.get('label') or '')
+        arrow = lbl or '&#8593;'
+        after = int(o.get('after', 400))
+        pos = 'left' if o.get('pos') == 'left' else 'right'
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var A={after};function on(){{r.classList.toggle("bt-show",(window.scrollY||document.documentElement.scrollTop)>A)}}'
+                  'window.addEventListener("scroll",on,{passive:true});on();'
+                  'r.querySelector(".bt-btn").addEventListener("click",function(){'
+                  'var rm=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;'
+                  'window.scrollTo({top:0,behavior:rm?"auto":"smooth"})})})();</script>')
+        return (f'<div class="obj obj-backtotop bt-{pos}" style="{st}"{anim_attr(o)}>'
+                f'<button type="button" class="bt-btn" aria-label="Back to top">{arrow}</button>{script}</div>')
     return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}{anim_attr(o)}>{inner}</{tag}>'
 
 def _page_text(page):
@@ -2884,6 +3348,58 @@ def page_html(site, page, img):
             'els.forEach(function(e){io.observe(e)});'
             'window.addEventListener("load",function(){setTimeout(function(){'
             'els.forEach(function(e){e.classList.add("in")})},2600)});})();</script>')
+    # --- Site-level add-ons (v1.18): back-to-top, snow, custom scrollbar -------
+    # All three are opt-in via site[...] flags, emitted once per page only when enabled,
+    # and self-contained. Snow and the back-to-top transition respect reduced-motion.
+    extras_html, extras_css = [], []
+    if site.get('backtotop'):
+        bt = site.get('backtotop') or {}
+        acc = bt.get('accent', '#2a7d6b'); ink = bt.get('ink', '#ffffff')
+        pos = 'left' if bt.get('pos') == 'left' else 'right'
+        after = int(bt.get('after', 400))
+        extras_css.append(
+            f'#site-top{{position:fixed;bottom:24px;{pos}:24px;z-index:900;width:50px;height:50px;border:0;'
+            f'border-radius:50%;background:{acc};color:{ink};font-size:22px;font-weight:700;line-height:1;cursor:pointer;'
+            'box-shadow:0 6px 20px rgba(0,0,0,.28);opacity:0;visibility:hidden;transform:translateY(12px);'
+            'transition:opacity .25s ease,transform .25s ease}'
+            '#site-top.on{opacity:1;visibility:visible;transform:none}'
+            '@media(prefers-reduced-motion:reduce){#site-top{transition:none}}')
+        extras_html.append(
+            '<button id="site-top" type="button" aria-label="Back to top">&#8593;</button>'
+            f'<script>(function(){{var b=document.getElementById("site-top"),A={after};'
+            'function on(){b.classList.toggle("on",(window.scrollY||document.documentElement.scrollTop)>A)}'
+            'window.addEventListener("scroll",on,{passive:true});on();'
+            'b.addEventListener("click",function(){var rm=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;'
+            'window.scrollTo({top:0,behavior:rm?"auto":"smooth"})})})();</script>')
+    if site.get('snow'):
+        sn = site.get('snow') or {}
+        col = sn.get('color', '#ffffff'); dens = int(sn.get('density', 60))
+        extras_css.append('#snow-fx{position:fixed;inset:0;z-index:950;pointer-events:none}'
+                          '@media(prefers-reduced-motion:reduce){#snow-fx{display:none}}')
+        extras_html.append(
+            '<canvas id="snow-fx" aria-hidden="true"></canvas>'
+            '<script>(function(){if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches)return;'
+            'var c=document.getElementById("snow-fx"),x=c.getContext("2d"),W,Hh,'
+            f'N={dens},COL="{esc(col)}",f=[];'
+            'function sz(){W=c.width=innerWidth;Hh=c.height=innerHeight}sz();addEventListener("resize",sz);'
+            'for(var i=0;i<N;i++)f.push({x:Math.random()*W,y:Math.random()*Hh,r:1+Math.random()*3,'
+            's:.4+Math.random()*1.2,d:Math.random()*2*Math.PI});'
+            'function draw(){x.clearRect(0,0,W,Hh);x.fillStyle=COL;x.beginPath();'
+            'f.forEach(function(p){x.moveTo(p.x,p.y);x.arc(p.x,p.y,p.r,0,2*Math.PI)});x.fill();move()}'
+            'function move(){f.forEach(function(p){p.d+=.01;p.y+=p.s;p.x+=Math.sin(p.d)*.6;'
+            'if(p.y>Hh){p.y=-5;p.x=Math.random()*W}})}'
+            'setInterval(draw,33)})();</script>')
+    if site.get('scrollbar'):
+        sb = site.get('scrollbar') or {}
+        track = sb.get('track', '#eef1f4'); thumb = sb.get('thumb', '#2a7d6b'); wdt = int(sb.get('width', 12))
+        extras_css.append(
+            f'html{{scrollbar-width:thin;scrollbar-color:{thumb} {track}}}'
+            f'::-webkit-scrollbar{{width:{wdt}px;height:{wdt}px}}'
+            f'::-webkit-scrollbar-track{{background:{track}}}'
+            f'::-webkit-scrollbar-thumb{{background:{thumb};border-radius:{wdt}px}}'
+            f'::-webkit-scrollbar-thumb:hover{{filter:brightness(1.1)}}')
+    extras_js = '\n'.join(extras_html)
+    extras_css = '\n'.join(extras_css)
     # tidy: move each object's styling into the page's style block, keep the markup plain
     rules, n = [], [0]
     def lift(mm):
@@ -3021,7 +3537,7 @@ def page_html(site, page, img):
                f'.pf-wrap{{position:relative;width:100%;overflow-x:hidden}}\n'
                f'.pf-page{{position:absolute;top:0;left:0;width:{site["width"]}px;height:{Hh}px;background:{bg};'
                f'transform-origin:top left}}\n'
-               + '\n'.join(rules) + mobile_css + smooth_css)
+               + '\n'.join(rules) + mobile_css + smooth_css + ('\n' + extras_css if extras_css else ''))
         scale_js = (f'<script>(function(){{var W={site["width"]},MX=1.5,BRK={BRK},p=document.querySelector(".pf-page"),'
                     f'w=document.querySelector(".pf-wrap");function fit(){{var vw=w.clientWidth;'
                     f'if(vw<=BRK){{p.style.transform="";p.style.left="";w.style.height="";return}}'
@@ -3032,15 +3548,15 @@ def page_html(site, page, img):
                 f'<meta name="color-scheme" content="light">\n'
                 f'<title>{esc(seo_title)}</title>\n{seo}{feedlinks}<meta name="generator" content="{APP} {VERSION}">\n'
                 f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{anim_js}\n{scale_js}\n</body>\n</html>\n')
+                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n{scale_js}\n</body>\n</html>\n')
     # --- Static publish (default, fixed width) ----------------------------
     css = (f'body{{background:{site.get("bg") or bg}{bgpic}}}\n.pf-page{{width:{site["width"]}px;height:{Hh}px;background:{bg}}}\n'
-           + '\n'.join(rules) + smooth_css)
+           + '\n'.join(rules) + smooth_css + ('\n' + extras_css if extras_css else ''))
     return (f'<!doctype html>\n<html lang="en-GB">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width={site["width"]}">\n'
             f'<meta name="color-scheme" content="light">\n'
             f'<title>{esc(seo_title)}</title>\n{seo}<meta name="generator" content="{APP} {VERSION}">\n'
             f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n{anim_js}\n</body>\n</html>\n')
+            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n</body>\n</html>\n')
 
 WEBSAFE_FONTS = {'arial', 'helvetica', 'helvetica neue', 'times new roman', 'times', 'georgia',
                  'courier new', 'courier', 'verdana', 'tahoma', 'trebuchet ms', 'segoe ui',
@@ -3115,7 +3631,12 @@ def publish_site(site, folder):
             sub = 'images'; base = re.sub(r'[^A-Za-z0-9._-]+', '-', os.path.splitext(orig)[0]).strip('-') if orig else key
             name = f'images/{base or key}.{ext}'
         else:
-            sub = 'files'; name = 'files/' + re.sub(r'[^A-Za-z0-9._-]+', '-', orig or key)
+            # Non-image (e.g. a background video / audio clip): keep the original name,
+            # else coin one with an extension derived from the data-URI mime so browsers play it.
+            mv = re.match(r'data:(?:video|audio)/([a-z0-9+.\-]+);base64,', src)
+            vext = {'quicktime': 'mov', 'ogg': 'ogv', 'mpeg': 'mp3', 'mp4': 'mp4', 'webm': 'webm'}.get(mv.group(1), mv.group(1)) if mv else ''
+            fallback = (key + ('.' + vext if vext else ''))
+            sub = 'files'; name = 'files/' + re.sub(r'[^A-Za-z0-9._-]+', '-', orig or fallback)
         if name in imgs.values():
             stem, ext2 = os.path.splitext(name); name = f'{stem}-{key[:6]}{ext2}'
         os.makedirs(os.path.join(folder, sub), exist_ok=True)
@@ -4738,6 +5259,15 @@ TOOLS = [
     ('newsfeed', 'News Feed', ['application-rss+xml', 'view-list-details', 'rss'], '📰', 'Drag to place a scrolling News feed. It lists the sub-pages of the page it sits on automatically — every news story, newest first, each a card linking to its page.'),
     ('slider', 'Slider / Carousel', ['view-presentation', 'slideshow', 'view-preview'], '▦', 'Drag to place a slider, then add slides — each with a heading, caption, picture and an optional button. It publishes as a prev/next carousel with dots and auto-advance.'),
     ('paypal', 'PayPal Button', ['emblem-money', 'wallet-open', 'bookmark-new'], '💳', 'Drag to place a PayPal Buy Now, Add to Cart or Donate button. Set your PayPal email or hosted-button ID, the item and the price — it publishes PayPal’s own hosted-button form, no server needed.'),
+    (None,),
+    ('rotator', 'Text Rotator', ['format-text-bold', 'draw-text', 'view-refresh'], '↻', 'Drag to place a rotating headline that cycles through a list of phrases — great for “We Design / We Build / We Publish”. Set the phrases, speed and fade or slide.'),
+    ('accordion', 'Accordion (FAQs)', ['view-list-details', 'application-menu', 'view-list-tree'], '▸', 'Drag to place an expand/collapse list of questions and answers (FAQs). Choose one-open or multi-open; it is fully keyboard-accessible when published.'),
+    ('skills', 'Skills Chart', ['office-chart-bar', 'view-statistics', 'view-list-details'], '▮', 'Drag to place a set of labelled progress bars (label + %). Each bar animates from zero to its value when the visitor scrolls it into view.'),
+    ('imgzoom', 'Image Zoom', ['zoom-in', 'insert-image', 'image-x-generic'], '🔍', 'Drag to place a picture that magnifies on hover or touch — a lens that follows the pointer, or zoom-the-whole-image. Ideal for product and detail shots.'),
+    ('spin360', '360° Viewer', ['view-presentation', 'object-rotate-right', 'view-refresh'], '🔄', 'Drag to place a 360° product viewer. Add an ordered set of frames; visitors drag to rotate, or let it auto-spin.'),
+    ('bgvideo', 'Background Video', ['applications-multimedia', 'video-x-generic', 'media-playback-start'], '🎬', 'Drag to place a muted, looping background video with an overlay tint and a heading/caption/button on top. Choose a video file or link, plus a poster image.'),
+    ('popupform', 'Popup Form', ['view-form', 'mail-message-new', 'document-edit'], '✉', 'Drag to place a button that opens a contact form in a pop-up dialog. It uses the same submission options as the Form object (Netlify / Formspree / email).'),
+    ('backtotop', 'Back to Top', ['go-top', 'go-up', 'arrow-up'], '⤒', 'Drag to place a floating “back to top” button that appears after the visitor scrolls down and glides back to the top. (You can also switch one on site-wide when you publish.)'),
 ]
 
 class LinelessTree(QTreeWidget):
@@ -7371,6 +7901,14 @@ class MainWindow(QMainWindow):
         elif kind == 'map': self.map_dialog(o)
         elif kind == 'slider': self.slider_dialog(o)
         elif kind == 'paypal': self.paypal_dialog(o)
+        elif kind == 'rotator': self.rotator_dialog(o)
+        elif kind == 'accordion': self.accordion_dialog(o)
+        elif kind == 'skills': self.skills_dialog(o)
+        elif kind == 'imgzoom': self.imgzoom_dialog(o)
+        elif kind == 'spin360': self.spin360_dialog(o)
+        elif kind == 'bgvideo': self.bgvideo_dialog(o)
+        elif kind == 'popupform': self.popupform_dialog(o)
+        elif kind == 'backtotop': self.backtotop_dialog(o)
 
     def launch_app(self, cmd, label):
         """Launch a sibling 'just a...' app, or explain how to install it."""
@@ -7580,6 +8118,14 @@ class MainWindow(QMainWindow):
         elif t == 'newsfeed': self.newsfeed_dialog(o)
         elif t == 'slider': self.slider_dialog(o)
         elif t == 'paypal': self.paypal_dialog(o)
+        elif t == 'rotator': self.rotator_dialog(o)
+        elif t == 'accordion': self.accordion_dialog(o)
+        elif t == 'skills': self.skills_dialog(o)
+        elif t == 'imgzoom': self.imgzoom_dialog(o)
+        elif t == 'spin360': self.spin360_dialog(o)
+        elif t == 'bgvideo': self.bgvideo_dialog(o)
+        elif t == 'popupform': self.popupform_dialog(o)
+        elif t == 'backtotop': self.backtotop_dialog(o)
 
     def start_edit(self, o, select_all=False):
         it = self.items.get(o['id'])
@@ -8564,7 +9110,11 @@ class MainWindow(QMainWindow):
         ovr = QSpinBox(); ovr.setRange(0, 90); ovr.setSuffix(' %'); ovr.setValue(int(o.get('overlay', 40)))
         acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Button colour')
         ink = [o.get('ink', '#ffffff')]; inkb = ColorButton(ink[0], lambda c: ink.__setitem__(0, c or '#ffffff'), 'Text colour')
+        full = QCheckBox('Full width (span the whole browser)'); full.setChecked(bool(o.get('full')))
+        trans = QComboBox(); trans.addItems(['Slide', 'Blind (cross-fade)'])
+        trans.setCurrentIndex(1 if o.get('trans') == 'blind' else 0)
         opt.addRow('', auto); opt.addRow('Each slide for:', iv); opt.addRow('', arrows); opt.addRow('', dots)
+        opt.addRow('', full); opt.addRow('Transition:', trans)
         opt.addRow('Image darkening:', ovr); opt.addRow('Button colour:', accb); opt.addRow('Text colour:', inkb)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
@@ -8575,7 +9125,8 @@ class MainWindow(QMainWindow):
             self.commit()
             o['slides'] = slides
             o.update(auto=auto.isChecked(), interval=iv.value(), arrows=arrows.isChecked(),
-                     dots=dots.isChecked(), overlay=ovr.value(), accent=acc[0], ink=ink[0])
+                     dots=dots.isChecked(), overlay=ovr.value(), accent=acc[0], ink=ink[0],
+                     full=full.isChecked(), trans='blind' if trans.currentIndex() == 1 else 'slide')
             self.refresh()
 
     def paypal_dialog(self, o):
@@ -8602,6 +9153,294 @@ class MainWindow(QMainWindow):
             self.commit()
             o.update(mode=mode.currentData(), business=biz.text().strip(), hosted=hosted.text().strip(),
                      item=item.text().strip() or 'Item', amount=amount.text().strip(), currency=cur.currentText())
+            self.refresh()
+
+    # ----------------------------------------------- Interactive add-ons (v1.18)
+    def rotator_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QDoubleSpinBox
+        phrases = QPlainTextEdit('\n'.join(o.get('phrases', []))); phrases.setMinimumHeight(120)
+        pre = QLineEdit(o.get('prefix', '')); suf = QLineEdit(o.get('suffix', ''))
+        eff = QComboBox(); eff.addItems(['Fade', 'Slide up'])
+        eff.setCurrentIndex(0 if o.get('effect', 'fade') == 'fade' else 1)
+        iv = QDoubleSpinBox(); iv.setRange(0.4, 20); iv.setSingleStep(.1); iv.setSuffix(' s'); iv.setValue(o.get('interval', 2.2))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Rotating-word colour')
+        dlg = form_dialog(self, 'Text Rotator',
+                          [('Phrases (one per line):', phrases), ('Fixed text before:', pre),
+                           ('Fixed text after:', suf), ('Effect:', eff), ('Change every:', iv),
+                           ('Word colour:', accb)],
+                          QLabel('The heading cycles through your phrases. The fixed text stays put; '
+                                 'only the coloured word changes. Published as self-contained HTML/JS; '
+                                 'frozen for visitors who prefer reduced motion.'))
+        if dlg.exec():
+            self.commit()
+            o['phrases'] = [x.strip() for x in phrases.toPlainText().splitlines() if x.strip()] or ['Design']
+            o['prefix'] = pre.text(); o['suffix'] = suf.text()
+            o['effect'] = 'fade' if eff.currentIndex() == 0 else 'slide'
+            o['interval'] = iv.value(); o['accent'] = acc[0]
+            self.refresh()
+
+    def accordion_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox, QWidget
+        items = [dict(q=it.get('q', ''), a=it.get('a', '')) for it in (o.get('items') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('Accordion (FAQs)'); dlg.resize(620, 520); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('Each item is a question that expands to show its answer when clicked.'))
+        body = QHBoxLayout(); lay.addLayout(body, 1)
+        lst = QListWidget(); lst.setMaximumWidth(200); body.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); body.addWidget(panel, 1)
+        q = QLineEdit(); a = QPlainTextEdit(); a.setMinimumHeight(140)
+        pform.addRow('Question:', q); pform.addRow('Answer:', a); panel.setEnabled(False)
+        active = {'i': -1}
+        def save_active():
+            i = active['i']
+            if 0 <= i < len(items):
+                items[i] = dict(q=q.text(), a=a.toPlainText())
+                lst.item(i).setText(f'{i + 1}. ' + (items[i]['q'] or 'Item'))
+        def load(i):
+            active['i'] = i
+            if not (0 <= i < len(items)): panel.setEnabled(False); return
+            panel.setEnabled(True); q.setText(items[i]['q']); a.setPlainText(items[i]['a'])
+        def on_row(nr):
+            if active['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for i, it in enumerate(items): lst.addItem(f'{i + 1}. ' + (it['q'] or 'Item'))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()): lst.item(i).setText(f'{i + 1}. ' + (items[i]['q'] or 'Item'))
+        def add_it():
+            save_active(); items.append(dict(q='New question', a='')); lst.addItem(f'{lst.count() + 1}. New question'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(items): items.pop(i); lst.takeItem(i); renumber(); active['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(items) and 0 <= j < len(items):
+                items[i], items[j] = items[j], items[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        multi = QCheckBox('Allow several open at once (otherwise one at a time)'); multi.setChecked(bool(o.get('multi')))
+        openf = QCheckBox('Open the first item to begin with'); openf.setChecked(bool(o.get('openfirst')))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Accent colour')
+        opt.addRow('', multi); opt.addRow('', openf); opt.addRow('Accent colour:', accb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if items: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            o['items'] = items or [dict(q='Question', a='Answer')]
+            o.update(multi=multi.isChecked(), openfirst=openf.isChecked(), accent=acc[0])
+            self.refresh()
+
+    def skills_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox, QSpinBox, QWidget
+        bars = [dict(label=b.get('label', ''), pct=int(b.get('pct', 0))) for b in (o.get('bars') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('Skills Chart'); dlg.resize(560, 480); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('Each bar has a label and a percentage. Bars fill from zero when scrolled into view.'))
+        body = QHBoxLayout(); lay.addLayout(body, 1)
+        lst = QListWidget(); lst.setMaximumWidth(200); body.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); body.addWidget(panel, 1)
+        lab = QLineEdit(); pct = QSpinBox(); pct.setRange(0, 100); pct.setSuffix(' %')
+        pform.addRow('Label:', lab); pform.addRow('Value:', pct); panel.setEnabled(False)
+        active = {'i': -1}
+        def save_active():
+            i = active['i']
+            if 0 <= i < len(bars):
+                bars[i] = dict(label=lab.text(), pct=pct.value())
+                lst.item(i).setText(f'{bars[i]["label"] or "Skill"} — {bars[i]["pct"]}%')
+        def load(i):
+            active['i'] = i
+            if not (0 <= i < len(bars)): panel.setEnabled(False); return
+            panel.setEnabled(True); lab.setText(bars[i]['label']); pct.setValue(bars[i]['pct'])
+        def on_row(nr):
+            if active['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for b in bars: lst.addItem(f'{b["label"] or "Skill"} — {b["pct"]}%')
+        row = QHBoxLayout(); lay.addLayout(row)
+        def add_it():
+            save_active(); bars.append(dict(label='Skill', pct=70)); lst.addItem('Skill — 70%'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(bars): bars.pop(i); lst.takeItem(i); active['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(bars) and 0 <= j < len(bars):
+                bars[i], bars[j] = bars[j], bars[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j)
+        for text, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        showp = QCheckBox('Show the percentage'); showp.setChecked(o.get('showpct', True))
+        ht = QSpinBox(); ht.setRange(6, 60); ht.setSuffix(' px'); ht.setValue(int(o.get('height', 18)))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Bar colour')
+        trk = [o.get('track', '#e4e9ec')]; trkb = ColorButton(trk[0], lambda c: trk.__setitem__(0, c or '#e4e9ec'), 'Track colour')
+        opt.addRow('', showp); opt.addRow('Bar height:', ht); opt.addRow('Bar colour:', accb); opt.addRow('Track colour:', trkb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if bars: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            o['bars'] = bars or [dict(label='Skill', pct=70)]
+            o.update(showpct=showp.isChecked(), height=ht.value(), accent=acc[0], track=trk[0])
+            self.refresh()
+
+    def imgzoom_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QDoubleSpinBox
+        chosen = [o.get('src')]
+        pick = QPushButton('Choose Picture…')
+        name = QLabel(self.site.get('assetnames', {}).get(chosen[0], 'Picture set') if chosen[0] else 'No picture chosen')
+        def choose():
+            uri = self._load_image_uri('Choose the picture to magnify')
+            if uri:
+                chosen[0] = add_asset(self.site, uri); name.setText('Picture set')
+        pick.clicked.connect(choose)
+        prow = QHBoxLayout(); prow.addWidget(name, 1); prow.addWidget(pick); pw = QWidget(); pw.setLayout(prow)
+        mode = QComboBox(); mode.addItems(['Lens (magnifying loupe)', 'Zoom (scale whole image)'])
+        mode.setCurrentIndex(0 if o.get('mode', 'lens') == 'lens' else 1)
+        z = QDoubleSpinBox(); z.setRange(1.2, 6); z.setSingleStep(.1); z.setSuffix('×'); z.setValue(o.get('zoom', 2.4))
+        dlg = form_dialog(self, 'Image Zoom', [('Picture:', pw), ('Style:', mode), ('Magnification:', z)],
+                          QLabel('Shows a magnified region as the visitor hovers (or touches on mobile). '
+                                 'Great for product and detail shots.'))
+        if dlg.exec():
+            self.commit()
+            o['src'] = chosen[0]; o['mode'] = 'lens' if mode.currentIndex() == 0 else 'zoom'; o['zoom'] = z.value()
+            self.refresh()
+
+    def spin360_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox, QSpinBox
+        frames = list(o.get('frames') or [])
+        dlg = QDialog(self); dlg.setWindowTitle('360° Image Viewer'); dlg.resize(560, 460); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('Add the frames in rotation order (e.g. a turntable sequence). '
+                             'Visitors drag left/right to rotate the product.'))
+        lst = QListWidget(); lst.setIconSize(QSize(80, 60)); lst.setDragDropMode(QAbstractItemView.InternalMove); lay.addWidget(lst)
+        def add_item(key):
+            pm = pixmap_for(self.site, key)
+            it = QListWidgetItem(QIcon(pm.scaled(80, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)) if pm else QIcon(),
+                                 self.site.get('assetnames', {}).get(key, 'Frame'))
+            it.setData(Qt.UserRole, key); lst.addItem(it)
+        for k in frames: add_item(k)
+        row = QHBoxLayout(); lay.addLayout(row)
+        def add():
+            paths, _ = QFileDialog.getOpenFileNames(dlg, 'Add frames', os.path.expanduser('~/Pictures'),
+                                                    'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
+            for pth in paths:
+                uri = self.picture_uri(pth)
+                if uri:
+                    key = add_asset(self.site, uri); self.site.setdefault('assetnames', {})[key] = os.path.basename(pth); add_item(key)
+        def remove():
+            for it in lst.selectedItems(): lst.takeItem(lst.row(it))
+        for text, icon, fn in (('Add Frames…', 'list-add', add), ('Remove', 'list-remove', remove)):
+            b = QPushButton(ticon([icon], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        auto = QCheckBox('Auto-spin when idle'); auto.setChecked(bool(o.get('auto')))
+        sp = QSpinBox(); sp.setRange(20, 400); sp.setSuffix(' ms/frame'); sp.setValue(int(o.get('speed', 90)))
+        opt.addRow('', auto); opt.addRow('Auto-spin speed:', sp)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if lst.count() == 0: QTimer.singleShot(0, add)
+        if dlg.exec():
+            self.commit()
+            o['frames'] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
+            o['auto'] = auto.isChecked(); o['speed'] = sp.value()
+            self.refresh()
+
+    def bgvideo_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QSpinBox
+        chosen = [o.get('src', '')]
+        pick = QPushButton(self.site.get('assetnames', {}).get(chosen[0], 'Choose video file…') if chosen[0] else 'Choose video file…')
+        url = QLineEdit(o.get('url', '')); url.setPlaceholderText('…or paste a video URL (mp4/webm)')
+        def choose():
+            path, _ = QFileDialog.getOpenFileName(self, 'Choose background video', os.path.expanduser('~'),
+                                                  'Video (*.mp4 *.webm *.ogv *.mov);;All files (*)')
+            if not path: return
+            with open(path, 'rb') as fh: data = fh.read()
+            ext = os.path.splitext(path)[1].lower().lstrip('.')
+            mime = {'mp4': 'mp4', 'webm': 'webm', 'ogv': 'ogg', 'mov': 'quicktime'}.get(ext, ext)
+            key = add_asset(self.site, f'data:video/{mime};base64,' + base64.b64encode(data).decode())
+            self.site.setdefault('assetnames', {})[key] = os.path.basename(path)
+            chosen[0] = key; pick.setText(os.path.basename(path)); url.clear()
+        pick.clicked.connect(choose)
+        poster = [o.get('poster')]
+        pbtn = QPushButton('Choose poster image…' if not poster[0] else 'Poster set — change…')
+        def choose_poster():
+            uri = self._load_image_uri('Choose the poster / fallback image')
+            if uri: poster[0] = add_asset(self.site, uri); pbtn.setText('Poster set — change…')
+        pbtn.clicked.connect(choose_poster)
+        heading = QLineEdit(o.get('heading', '')); caption = QLineEdit(o.get('caption', ''))
+        btn = QLineEdit(o.get('btn', '')); btnlink = QLineEdit(o.get('btnlink', '')); btnlink.setPlaceholderText('https://…')
+        ov = QSpinBox(); ov.setRange(0, 90); ov.setSuffix(' %'); ov.setValue(int(o.get('overlay', 40)))
+        tint = [o.get('tint', '#000000')]; tintb = ColorButton(tint[0], lambda c: tint.__setitem__(0, c or '#000000'), 'Overlay tint')
+        ink = [o.get('ink', '#ffffff')]; inkb = ColorButton(ink[0], lambda c: ink.__setitem__(0, c or '#ffffff'), 'Text colour')
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Button colour')
+        dlg = form_dialog(self, 'Background Video',
+                          [('Video file:', pick), ('…or video URL:', url), ('Poster image:', pbtn),
+                           ('Heading:', heading), ('Caption:', caption), ('Button text:', btn), ('Button → URL:', btnlink),
+                           ('Overlay darkening:', ov), ('Overlay tint:', tintb), ('Text colour:', inkb), ('Button colour:', accb)],
+                          QLabel('A muted, looping video fills the section as a background, with your '
+                                 'heading/caption/button on top. The poster shows before the video loads '
+                                 'and on devices that block autoplay. Published fully self-contained.'))
+        if dlg.exec():
+            self.commit()
+            o['src'] = chosen[0] if chosen[0] in self.site.get('assets', {}) else ''
+            o['url'] = url.text().strip(); o['poster'] = poster[0]
+            o.update(heading=heading.text(), caption=caption.text(), btn=btn.text().strip(),
+                     btnlink=btnlink.text().strip(), overlay=ov.value(), tint=tint[0], ink=ink[0], accent=acc[0])
+            self.refresh()
+
+    def popupform_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox
+        label = QLineEdit(o.get('label', 'Contact us'))
+        title = QLineEdit(o.get('title', 'Get in touch'))
+        fields = QPlainTextEdit('\n'.join(o.get('fields', []))); fields.setMinimumHeight(110)
+        sub = QLineEdit(o.get('submit', 'Send'))
+        modes = [('netlify', 'Netlify Forms (recommended when published to Netlify)'),
+                 ('formspree', 'Formspree (paste your form endpoint)'),
+                 ('email', 'Email the visitor’s own mail app (mailto:)')]
+        send = QComboBox(); send.addItems([lbl for _, lbl in modes])
+        send.setCurrentIndex(next((i for i, (k, _) in enumerate(modes) if k == o.get('send', 'netlify')), 0))
+        fname = QLineEdit(o.get('formname', 'popup-contact'))
+        fspree = QLineEdit(o.get('formspree', '')); fspree.setPlaceholderText('https://formspree.io/f/xxxxxxxx')
+        email = QLineEdit(o.get('email', '')); email.setPlaceholderText('you@example.com')
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Accent colour')
+        note = QLabel(); note.setWordWrap(True); note.setStyleSheet('color:#555')
+        def upd():
+            k = modes[send.currentIndex()][0]
+            fname.setEnabled(k == 'netlify'); fspree.setEnabled(k == 'formspree'); email.setEnabled(k == 'email')
+            note.setText('The form opens in a pop-up dialog and submits the same way as a normal Form object. '
+                         'It closes on the backdrop or Esc.')
+        send.currentIndexChanged.connect(lambda *_: upd()); upd()
+        dlg = form_dialog(self, 'Popup Contact Form',
+                          [('Button text:', label), ('Dialog title:', title), ('Fields (one per line):', fields),
+                           ('Submit button:', sub), ('When submitted:', send), ('Form name (Netlify):', fname),
+                           ('Formspree endpoint:', fspree), ('Send to email:', email), ('Accent colour:', accb)], note)
+        if dlg.exec():
+            self.commit()
+            o['label'] = label.text().strip() or 'Contact us'; o['title'] = title.text().strip() or 'Get in touch'
+            o['fields'] = [x.strip() for x in fields.toPlainText().splitlines() if x.strip()] or ['Name', 'Email', 'Message']
+            o['submit'] = sub.text() or 'Send'; o['send'] = modes[send.currentIndex()][0]
+            o['formname'] = fname.text().strip() or 'popup-contact'; o['formspree'] = fspree.text().strip()
+            o['email'] = email.text().strip(); o['accent'] = acc[0]
+            self.refresh()
+
+    def backtotop_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QSpinBox
+        pos = QComboBox(); pos.addItems(['Bottom right', 'Bottom left'])
+        pos.setCurrentIndex(0 if o.get('pos', 'right') == 'right' else 1)
+        after = QSpinBox(); after.setRange(50, 4000); after.setSingleStep(50); after.setSuffix(' px'); after.setValue(int(o.get('after', 400)))
+        lab = QLineEdit(o.get('label', '')); lab.setPlaceholderText('leave blank for an ↑ arrow')
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Button colour')
+        ink = [o.get('ink', '#ffffff')]; inkb = ColorButton(ink[0], lambda c: ink.__setitem__(0, c or '#ffffff'), 'Icon colour')
+        dlg = form_dialog(self, 'Back to Top', [('Position:', pos), ('Appear after:', after),
+                          ('Label (optional):', lab), ('Button colour:', accb), ('Icon colour:', inkb)],
+                          QLabel('A floating button that appears once the visitor scrolls down past the chosen '
+                                 'distance, and glides the page back to the top. You can also switch one on '
+                                 'for the whole site when you publish.'))
+        if dlg.exec():
+            self.commit()
+            o['pos'] = 'right' if pos.currentIndex() == 0 else 'left'
+            o['after'] = after.value(); o['label'] = lab.text().strip(); o['accent'] = acc[0]; o['ink'] = ink[0]
             self.refresh()
 
     def anim_dialog(self):
@@ -10735,12 +11574,55 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QCheckBox as _QCheckBox
         smooth = _QCheckBox('Smooth scrolling — anchor jumps glide instead of snapping')
         smooth.setChecked(bool(self.site.get('smooth'))); dl.addWidget(smooth)
+        # Site-wide add-ons (v1.18): back-to-top, snow, custom scrollbar. Each a tick plus a
+        # small "Options…" button; stored as site[...] dicts (None/absent = off).
+        from PySide6.QtWidgets import QHBoxLayout as _QHBoxLayout, QPushButton as _QPushButton
+        btt = _QCheckBox('Floating “back to top” button on every page')
+        btt.setChecked(bool(self.site.get('backtotop')))
+        snow = _QCheckBox('Falling-snow effect (festive overlay)')
+        snow.setChecked(bool(self.site.get('snow')))
+        sbar = _QCheckBox('Custom scrollbar colours')
+        sbar.setChecked(bool(self.site.get('scrollbar')))
+        # temp holders so Options… edits survive even if the box is re-ticked
+        tmp = {'backtotop': dict(self.site.get('backtotop') or {}),
+               'snow': dict(self.site.get('snow') or {}),
+               'scrollbar': dict(self.site.get('scrollbar') or {})}
+        def _bt_opts():
+            from PySide6.QtWidgets import QComboBox as _C, QSpinBox as _S
+            d = tmp['backtotop']; pos = _C(); pos.addItems(['Bottom right', 'Bottom left'])
+            pos.setCurrentIndex(0 if d.get('pos', 'right') == 'right' else 1)
+            af = _S(); af.setRange(50, 4000); af.setSingleStep(50); af.setSuffix(' px'); af.setValue(int(d.get('after', 400)))
+            ac = [d.get('accent', '#2a7d6b')]; acb = ColorButton(ac[0], lambda c: ac.__setitem__(0, c or '#2a7d6b'), 'Button colour')
+            ik = [d.get('ink', '#ffffff')]; ikb = ColorButton(ik[0], lambda c: ik.__setitem__(0, c or '#ffffff'), 'Icon colour')
+            od = form_dialog(self, 'Back to Top — site-wide', [('Position:', pos), ('Appear after:', af), ('Button colour:', acb), ('Icon colour:', ikb)])
+            if od.exec():
+                tmp['backtotop'] = dict(pos='right' if pos.currentIndex() == 0 else 'left', after=af.value(), accent=ac[0], ink=ik[0]); btt.setChecked(True)
+        def _snow_opts():
+            from PySide6.QtWidgets import QSpinBox as _S
+            d = tmp['snow']; dn = _S(); dn.setRange(10, 300); dn.setValue(int(d.get('density', 60)))
+            cl = [d.get('color', '#ffffff')]; clb = ColorButton(cl[0], lambda c: cl.__setitem__(0, c or '#ffffff'), 'Snow colour')
+            od = form_dialog(self, 'Snow Effect', [('Flakes:', dn), ('Colour:', clb)])
+            if od.exec():
+                tmp['snow'] = dict(density=dn.value(), color=cl[0]); snow.setChecked(True)
+        def _sb_opts():
+            from PySide6.QtWidgets import QSpinBox as _S
+            d = tmp['scrollbar']; wd = _S(); wd.setRange(4, 28); wd.setSuffix(' px'); wd.setValue(int(d.get('width', 12)))
+            tr = [d.get('track', '#eef1f4')]; trb = ColorButton(tr[0], lambda c: tr.__setitem__(0, c or '#eef1f4'), 'Track colour')
+            th = [d.get('thumb', '#2a7d6b')]; thb = ColorButton(th[0], lambda c: th.__setitem__(0, c or '#2a7d6b'), 'Thumb colour')
+            od = form_dialog(self, 'Custom Scrollbar', [('Width:', wd), ('Track colour:', trb), ('Thumb colour:', thb)])
+            if od.exec():
+                tmp['scrollbar'] = dict(width=wd.value(), track=tr[0], thumb=th[0]); sbar.setChecked(True)
+        for cb, fn in ((btt, _bt_opts), (snow, _snow_opts), (sbar, _sb_opts)):
+            r = _QHBoxLayout(); r.addWidget(cb, 1); ob = _QPushButton('Options…'); ob.clicked.connect(fn); r.addWidget(ob); dl.addLayout(r)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Ok).setText('Publish')
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); dl.addWidget(bb)
         if dlg.exec() != QDialog.Accepted: return
         self.site['responsive'] = rb_resp.isChecked()
         self.site['smooth'] = smooth.isChecked()
+        self.site['backtotop'] = tmp['backtotop'] if btt.isChecked() else None
+        self.site['snow'] = tmp['snow'] if snow.isChecked() else None
+        self.site['scrollbar'] = tmp['scrollbar'] if sbar.isChecked() else None
         # Step 2: write the files automatically to a stable per-site folder.
         base = re.sub(r'[^A-Za-z0-9 ._-]+', '', (self.site.get('name') or 'My Site')).strip() or 'My Site'
         folder = self.site.get('publishDir')

@@ -195,6 +195,25 @@ TEXT_DEMO = [
     ("text", 40, 526, 850, 30, dict(pad=0, size=12, color="#5c6b73", html="<p>Artistic text is a single line you scale freely &mdash; ideal for titles and mastheads; it stays sharp on the web as real text.</p>")),
 ]
 
+# Interactive add-ons showcase (v1.18): the new object types, labelled.
+ADDONS_DEMO = [
+    ("artistic", 40, 24, 760, 48, dict(html="<p>Interactive add-ons</p>", size=30, color="#1f2a30", bold=True)),
+    ("rotator", 40, 96, 460, 64, dict(phrases=["Design", "Build", "Publish"], size=30, bold=True,
+                                      color="#1f2a30", accent="#2a7d6b", prefix="We ")),
+    ("text", 520, 112, 400, 40, dict(pad=0, size=13, color="#5c6b73", html="<p>A text rotator cycles a headline through a list of phrases.</p>")),
+    ("accordion", 40, 182, 420, 220, dict(items=[dict(q="What do you offer?", a="A helpful answer."),
+                                                 dict(q="How much does it cost?", a="Explain pricing."),
+                                                 dict(q="Where are you based?", a="Here.")], accent="#2a7d6b")),
+    ("skills", 490, 182, 430, 220, dict(bars=[dict(label="Design", pct=92), dict(label="Development", pct=78),
+                                              dict(label="SEO", pct=64)], accent="#2a7d6b", track="#e4e9ec")),
+    ("imgzoom", 40, 430, 260, 200, dict(fill="#cfe0e6", stroke="#9fb8c0", strokeW=1, mode="lens")),
+    ("spin360", 320, 430, 260, 200, dict(fill="#f3f6f8", frames=[])),
+    ("bgvideo", 600, 430, 320, 200, dict(heading="On video", caption="Content over a looping clip", overlay=45)),
+    ("popupform", 40, 662, 200, 50, dict(label="Contact us", fill="#2a7d6b", color="#ffffff", bold=True)),
+    ("backtotop", 280, 660, 54, 54, dict(accent="#2a7d6b", ink="#ffffff")),
+    ("text", 360, 672, 560, 40, dict(pad=0, size=13, color="#5c6b73", html="<p>A pop-up form and a floating “back to top” button — plus site-wide snow and custom scrollbars.</p>")),
+]
+
 COLOUR_DEMO = [
     ("artistic", 40, 24, 700, 48, dict(html="<p>Colour, gradients &amp; transparency</p>", size=28, color="#1f2a30", bold=True)),
     ("shape", 40, 96, 240, 150, dict(shape="rect", fill="#2a7d6b", strokeW=0)),
@@ -226,6 +245,7 @@ def capture(full=True):
     IM["build2"] = render_page(HOME[:7], w=960, h=460, px=840)
     IM["build3"] = render_page(HOME[:12], w=960, h=720, px=840)
     IM["webobj"] = render_page(WEBOBJ, w=960, h=880, px=900)
+    IM["addons"] = render_page(ADDONS_DEMO, w=960, h=740, px=900)
     IM["shapes"] = render_page(SHAPES_DEMO, w=960, h=600, px=880)
     IM["textpage"] = render_page(TEXT_DEMO, w=960, h=580, px=880)
     IM["colourpage"] = render_page(COLOUR_DEMO, w=960, h=620, px=880)
@@ -397,6 +417,29 @@ def capture(full=True):
                            btn="Learn more", link="")])))
     if hasattr(w2, "paypal_dialog"):
         drive(w2.paypal_dialog, seed(mk("paypal", 60, 60, 220, 60)))
+    # Interactive add-ons (v1.18) — each takes the object it edits.
+    if hasattr(w2, "rotator_dialog"):
+        drive(w2.rotator_dialog, seed(mk("rotator", 60, 60, 460, 70,
+              phrases=["Design", "Build", "Publish"])))
+    if hasattr(w2, "accordion_dialog"):
+        drive(w2.accordion_dialog, seed(mk("accordion", 60, 60, 520, 280,
+              items=[dict(q="What do you offer?", a="A helpful answer."),
+                     dict(q="How much is it?", a="Explain pricing here.")])))
+    if hasattr(w2, "skills_dialog"):
+        drive(w2.skills_dialog, seed(mk("skills", 60, 60, 440, 260,
+              bars=[dict(label="Design", pct=90), dict(label="Code", pct=75)])))
+    if hasattr(w2, "imgzoom_dialog"):
+        drive(w2.imgzoom_dialog, seed(mk("imgzoom", 60, 60, 340, 260, src="_placeholder")))
+    if hasattr(w2, "spin360_dialog"):
+        # seed a frame so the editor opens without the 0ms "Add frames" file dialog.
+        drive(w2.spin360_dialog, seed(mk("spin360", 60, 60, 360, 300, frames=["_placeholder"])))
+    if hasattr(w2, "bgvideo_dialog"):
+        drive(w2.bgvideo_dialog, seed(mk("bgvideo", 60, 60, 720, 360,
+              heading="Welcome", caption="A headline over the video")))
+    if hasattr(w2, "popupform_dialog"):
+        drive(w2.popupform_dialog, seed(mk("popupform", 60, 60, 200, 48)))
+    if hasattr(w2, "backtotop_dialog"):
+        drive(w2.backtotop_dialog, seed(mk("backtotop", 60, 60, 52, 52)))
     if hasattr(w2, "anim_dialog"):
         seed(mk("text", 60, 60, 300, 120))   # anim_dialog acts on the current selection
         drive(w2.anim_dialog)
@@ -1076,7 +1119,7 @@ carries <i>text and a call to action</i> laid over the picture.</p>
   'Set the global options: whether it <b>advances automatically</b> and how long each slide shows, whether to show the <b>arrows</b> and <b>dots</b>, how much to <b>darken</b> the picture behind the text, and the button and text colours.',
   'Click <b>OK</b>. The canvas shows the first slide with a small slide badge; the rotation itself runs in Device Preview and on the published site.')}
 {fig(dlg('Slider / Carousel'), 'The Slider editor: a list of slides on the left, the selected slide’s picture, heading, caption and button on the right, and the carousel’s global options below.')}
-{note('The published slider is entirely self-contained — the prev/next arrows, the dots, the auto-advance and even finger-swipe on a touchscreen all work with no external library and no server. It respects the darkening and colours you set so the text stays readable over any photo.')}
+{note('The published slider is entirely self-contained — the prev/next arrows, the dots, the auto-advance and even finger-swipe on a touchscreen all work with no external library and no server. It respects the darkening and colours you set so the text stays readable over any photo. You can also set it to span the <b>full width</b> of the browser and choose a <b>blind (cross-fade)</b> transition instead of the sliding default.')}
 {tip('Keep slide headings short and the pictures wide and uncluttered — a slider is a headline act, not a paragraph. Three or four strong slides beat a dozen weak ones.')}"""),
       ("PayPal buy and donate buttons", f"""
 <p>A <b>PayPal Button</b> lets visitors pay you or donate to you directly &mdash; and because it publishes as
@@ -1095,6 +1138,98 @@ and no plugin</b> to maintain. It is the quickest way to take a payment on a sta
 </ul>
 {note('Either route works on a plain static host. A <b>hosted-button ID</b> is the most robust — you create the button once in your PayPal dashboard and PayPal keeps the price server-side, so it cannot be tampered with in the page. The email route is quicker to set up and fine for a simple item or donation.')}
 {caution('Double-check the PayPal email and the price before you publish — a typo in the email sends the money to the wrong account.')}""")]))
+
+    ch.append(("Interactive Extras",
+      "<p class='lede'>Beyond the everyday web objects, WEBcreator ships a set of <b>interactive add-ons</b> "
+      "&mdash; the kind of flourishes that usually need a plug-in or a third-party pack. Each one is a native "
+      "object you drop on the page and edit in a dialog, and each publishes as <b>self-contained HTML, CSS and "
+      "JavaScript</b>: no library to load, no account, no server. Animations switch themselves off for visitors "
+      "who ask for reduced motion.</p>", [
+      ("The add-ons at a glance", f"""
+<p>You will find these on the tool palette and under <b>Insert</b>, below the standard web objects. Drop one
+on the page, then double-click it to open its editor.</p>
+{fig(IM.get('addons'), 'The interactive add-ons: a text rotator, an accordion of FAQs, an animated skills chart, an image-zoom frame, a 360° viewer, a background-video band, a pop-up-form button and a floating “back to top” button.')}
+<ul>
+<li><b>Text Rotator</b> &mdash; a headline that cycles through a list of phrases;</li>
+<li><b>Accordion (FAQs)</b> &mdash; expand/collapse questions and answers;</li>
+<li><b>Skills Chart</b> &mdash; labelled bars that fill as they scroll into view;</li>
+<li><b>Image Zoom</b> &mdash; a picture that magnifies on hover or touch;</li>
+<li><b>360° Viewer</b> &mdash; drag to rotate a product through a set of frames;</li>
+<li><b>Background Video</b> &mdash; a looping video behind your content;</li>
+<li><b>Popup Form</b> &mdash; a button that opens a contact form in a dialog;</li>
+<li><b>Back to Top</b> &mdash; a floating button that glides the page to the top.</li>
+</ul>
+{note('Snow, a custom scrollbar and a site-wide “back to top” button are <i>site-level</i> options — you switch them on in the Publish dialog (see Part VI), not by dropping an object.')}"""),
+      ("Text rotator", f"""
+<p>A <b>Text Rotator</b> is a headline that cycles through several phrases &mdash; &ldquo;We <b>Design</b> &hellip;
+We <b>Build</b> &hellip; We <b>Publish</b>&rdquo; &mdash; to make a banner feel alive.</p>
+{proc('add a rotating headline',
+  'Choose the <b>Text Rotator</b> tool and drag out a headline-sized box.',
+  'Type your <b>phrases, one per line</b>. Add any <b>fixed text</b> that should stay put before or after the changing word.',
+  'Pick the <b>effect</b> (fade or slide), how often it <b>changes</b>, and the colour of the rotating word.',
+  'Click <b>OK</b>. The canvas shows the first phrase with a badge; the cycling runs on the published page.')}
+{fig(dlg('Text Rotator'), 'The Text Rotator editor: the list of phrases, optional fixed text, the fade/slide effect, the interval and the word colour.')}
+{tip('The fixed text and the first phrase are real text in the page, so search engines and no-JavaScript visitors still see a sensible headline.')}"""),
+      ("Accordion (FAQs)", f"""
+<p>An <b>Accordion</b> is a list of questions that expand to reveal their answers &mdash; the standard way to
+present a FAQ without a wall of text.</p>
+{proc('build an FAQ accordion',
+  'Choose the <b>Accordion</b> tool and drag out a column.',
+  'Click <b>Add</b> for each item and fill in the <b>question</b> and its <b>answer</b>.',
+  'Choose whether <b>several items may be open at once</b> or just one, and whether the <b>first item starts open</b>.',
+  'Set the accent colour and click <b>OK</b>.')}
+{fig(dlg('Accordion (FAQs)'), 'The Accordion editor: the list of items on the left, the selected question and answer on the right, with the one-open / multi-open choice below.')}
+{note('The published accordion is fully keyboard-accessible: each question is a real button that announces whether it is expanded, so it works with screen readers and the Tab key.')}"""),
+      ("Animated skills chart", f"""
+<p>A <b>Skills Chart</b> is a set of labelled progress bars &mdash; &ldquo;Design 90%&rdquo;, &ldquo;SEO 60%&rdquo;
+&mdash; and each bar <b>animates up from zero</b> the moment it scrolls into view.</p>
+{proc('add an animated skills chart',
+  'Choose the <b>Skills Chart</b> tool and drag out a box.',
+  'Click <b>Add</b> for each bar and give it a <b>label</b> and a <b>value</b> (0–100%).',
+  'Choose whether to <b>show the percentage</b>, set the <b>bar height</b> and the bar and track colours.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Skills Chart'), 'The Skills Chart editor: a list of bars, the selected bar’s label and value, and the display options.')}"""),
+      ("Image zoom and the 360° viewer", f"""
+<p>Two add-ons bring products to life. <b>Image Zoom</b> magnifies part of a picture as the visitor hovers
+(or touches on a phone): a <i>lens</i> loupe that follows the pointer, or a <i>zoom</i> that scales the whole
+image under the cursor. The <b>360° Viewer</b> lets a visitor <b>drag to rotate</b> a product through an ordered
+set of frames (a turntable sequence), with an optional auto-spin.</p>
+{proc('set up image zoom',
+  'Choose the <b>Image Zoom</b> tool, drag out a frame and choose the picture.',
+  'Pick the <b>lens</b> or <b>zoom</b> style and the <b>magnification</b>, then click <b>OK</b>.')}
+{fig(dlg('Image Zoom'), 'The Image Zoom editor: the picture, the lens-or-zoom style and the magnification.')}
+{proc('set up a 360° viewer',
+  'Choose the <b>360° Viewer</b> tool and drag out a box.',
+  'Click <b>Add Frames…</b> and choose the pictures <i>in rotation order</i>.',
+  'Optionally switch on <b>auto-spin</b> and set its speed, then click <b>OK</b>.')}
+{fig(dlg('360° Image Viewer'), 'The 360° viewer editor: the ordered list of frames and the auto-spin options.')}
+{tip('For a smooth 360° spin, use evenly-spaced frames (24 or 36 shots around the object work well) all cropped to the same size.')}"""),
+      ("Background video", f"""
+<p>A <b>Background Video</b> is a muted, looping clip that fills a band of the page, with your heading,
+caption and button laid over it &mdash; the moving-hero look, done self-contained.</p>
+{proc('add a background video',
+  'Choose the <b>Background Video</b> tool and drag out a wide band.',
+  'Choose a <b>video file</b> (it is embedded in the site) or paste a video <b>URL</b>, and pick a <b>poster image</b> shown before it plays.',
+  'Type a <b>heading</b>, <b>caption</b> and optional <b>button</b>, and set the overlay darkening, tint and text colours.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Background Video'), 'The Background Video editor: the video file or URL, the poster image, the overlaid text and the overlay/tint colours.')}
+{caution('Browsers only autoplay a video if it is muted — which is exactly how WEBcreator publishes it. The poster image is shown on devices that block autoplay, so always set one. Keep the clip short and compressed; a background video is decoration, not a feature film.')}"""),
+      ("Pop-up contact form and Back to Top", f"""
+<p>A <b>Popup Form</b> is a button that opens a contact form in a modal dialog &mdash; handy when you want a
+&ldquo;Contact us&rdquo; call-to-action without a whole form sitting on the page. It uses the <i>same</i>
+submission options as the ordinary Form object (Netlify Forms, Formspree or the visitor&rsquo;s own email), and
+closes on the backdrop or the Esc key. A <b>Back to Top</b> button floats in a corner, appears once the visitor
+scrolls down, and glides the page back to the top.</p>
+{proc('add a pop-up contact form',
+  'Choose the <b>Popup Form</b> tool and drag out a button.',
+  'Set the <b>button text</b> and the <b>dialog title</b>, list the <b>fields</b>, and choose <b>when submitted</b> (Netlify, Formspree or email) exactly as for a normal form.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Popup Contact Form'), 'The Popup Form editor: the button text, dialog title, fields and the same submission choices as the Form object.')}
+{proc('add a back-to-top button',
+  'Choose the <b>Back to Top</b> tool and drop it anywhere (its position is fixed on screen, not on the page).',
+  'Choose the <b>corner</b>, how far down it <b>appears</b>, an optional label and its colours, then click <b>OK</b>.')}
+{fig(dlg('Back to Top'), 'The Back to Top editor: the corner, the scroll distance before it appears, and the button colours.')}
+{note('Prefer one button for the whole site? Leave the object out and switch on the site-wide version in the Publish dialog instead — along with the snow effect and a custom scrollbar.')}""")]))
 
     ch.append(("Pages, Masters and Site Structure",
       "<p class='lede'>A website is a set of linked pages that share a look. This chapter covers adding and "
