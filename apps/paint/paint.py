@@ -2,7 +2,7 @@
 # just a... PAINTcanvas — a tiny raster (bitmap) image editor: paint, erase, draw shapes,
 # fill, pick colours, add text, and save a PNG/JPG. The photo-editing companion to
 # just a... PAGEcreator / WEBcreator (and the vector sibling of just a... DRAW).
-import sys, os
+import sys, os, math, random
 
 try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QToolBar, QColorDialog,
@@ -12,7 +12,8 @@ try:
                                    QDockWidget, QListWidget, QListWidgetItem)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QCursor, QFont, QPainterPath, QActionGroup,
-                               QLinearGradient, QTransform)
+                               QLinearGradient, QRadialGradient, QConicalGradient, QPolygonF,
+                               QTransform)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
 except ImportError:
     sys.stderr.write("just a... PAINTcanvas needs PySide6 (use your distro package, not pip):\n"
@@ -21,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.8-00"
+VERSION = "1.9-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -481,6 +482,225 @@ def flt_detail(p):    return p.filter(ImageFilter.DETAIL)
 def flt_emboss(p):    return _merge_a(p, p.convert('RGB').filter(ImageFilter.EMBOSS))
 def flt_edges(p):     return _merge_a(p, p.convert('RGB').filter(ImageFilter.FIND_EDGES))
 def flt_contour(p):   return _merge_a(p, p.convert('RGB').filter(ImageFilter.CONTOUR))
+
+
+# ----------------------------------------------------------------------------
+# Lens Flare — a clean-room Knoll-Light-Factory-style flare renderer.
+#
+# A flare is a bright light source at (lx, ly) that scatters a chain of lens
+# artefacts along the axis running from the source, through the frame centre and
+# out the far side: a glowing core, star spikes / streaks, a string of hexagonal
+# and circular iris (aperture) reflections at decreasing size and opacity, an
+# optional rainbow (diffraction) ring and a faint halo. Everything is drawn onto
+# a transparent ARGB32 image with QPainter, meant to be composited Screen over the
+# picture. It's all gradients and polygons — fast at normal canvas sizes.
+# ----------------------------------------------------------------------------
+
+# Preset parameter bundles for the dialog. Each is a full `params` dict; the
+# dialog fills missing keys from LENS_FLARE_DEFAULTS.
+LENS_FLARE_DEFAULTS = {
+    'brightness': 1.0,     # master gain, ~0.2..2.0
+    'scale': 1.0,          # overall size multiplier, ~0.4..2.0
+    'hue': 42.0,           # tint hue in degrees (0 red, 42 warm gold, 210 blue)
+    'warmth': 0.5,         # 0 = white/neutral core, 1 = fully tinted
+    'spikes': True,        # star spikes / streaks from the source
+    'spike_count': 6,      # number of radial spikes
+    'anamorphic': False,   # extra long horizontal streak (cinematic)
+    'reflections': True,   # chain of iris reflections along the axis
+    'rainbow': False,      # diffraction (hue-swept) ring near the axis
+    'halo': True,          # faint ring around the frame centre
+    'seed': 7,             # arrangement seed (reflection placement/tint)
+}
+
+LENS_FLARE_PRESETS = {
+    'Subtle': {'brightness': 0.6, 'scale': 0.85, 'hue': 44, 'warmth': 0.45,
+               'spikes': True, 'spike_count': 4, 'anamorphic': False,
+               'reflections': True, 'rainbow': False, 'halo': True, 'seed': 3},
+    'Sunny': {'brightness': 1.15, 'scale': 1.1, 'hue': 40, 'warmth': 0.7,
+              'spikes': True, 'spike_count': 8, 'anamorphic': False,
+              'reflections': True, 'rainbow': True, 'halo': True, 'seed': 7},
+    'Anamorphic': {'brightness': 1.0, 'scale': 1.0, 'hue': 205, 'warmth': 0.8,
+                   'spikes': True, 'spike_count': 2, 'anamorphic': True,
+                   'reflections': True, 'rainbow': False, 'halo': True, 'seed': 11},
+    'Sci-fi': {'brightness': 1.3, 'scale': 1.25, 'hue': 190, 'warmth': 0.85,
+               'spikes': True, 'spike_count': 12, 'anamorphic': True,
+               'reflections': True, 'rainbow': True, 'halo': True, 'seed': 19},
+}
+
+
+def _flare_tint(hue, warmth, light=0.55):
+    """A tint colour from hue (deg) and warmth (0 neutral white .. 1 saturated)."""
+    c = QColor()
+    c.setHslF((hue % 360) / 360.0, max(0.0, min(1.0, warmth)), max(0.0, min(1.0, light)))
+    return c
+
+
+def render_lens_flare(w, h, lx, ly, params=None):
+    """Render a lens flare over a transparent `w`x`h` ARGB32 QImage and return it.
+
+    The light source sits at (lx, ly); artefacts stream along the axis from the
+    source through the image centre. `params` keys (see LENS_FLARE_DEFAULTS) tune
+    brightness, scale, hue/warmth, spike count and which elements are drawn. The
+    result is transparent except for the flare, so composite it Screen / Add over
+    the picture. Uses only QPainter — no Pillow required."""
+    p = dict(LENS_FLARE_DEFAULTS); p.update(params or {})
+    out = QImage(int(w), int(h), QImage.Format_ARGB32); out.fill(Qt.transparent)
+    q = QPainter(out)
+    q.setRenderHint(QPainter.Antialiasing, True)
+    q.setCompositionMode(QPainter.CompositionMode_Plus)   # lights add up
+
+    cx, cy = w / 2.0, h / 2.0
+    lx = float(lx); ly = float(ly)
+    diag = (w * w + h * h) ** 0.5
+    bright = max(0.0, float(p['brightness']))
+    scale = max(0.05, float(p['scale']))
+    hue = float(p['hue']); warmth = max(0.0, min(1.0, float(p['warmth'])))
+    unit = diag * 0.06 * scale                      # base element radius
+
+    def a(x):                                        # clamp an alpha 0..255
+        return int(max(0, min(255, round(x * bright))))
+
+    # --- glow core: a bright near-white centre fading through the tint ---
+    core_r = unit * 2.4
+    g = QRadialGradient(QPointF(lx, ly), core_r)
+    tint = _flare_tint(hue, warmth)
+    inner = QColor(255, 255, 255, a(255))
+    mid = QColor(tint.red(), tint.green(), tint.blue(), a(150))
+    g.setColorAt(0.0, inner)
+    g.setColorAt(0.18, QColor(255, 255, 255, a(200)))
+    g.setColorAt(0.5, mid)
+    g.setColorAt(1.0, QColor(tint.red(), tint.green(), tint.blue(), 0))
+    q.setBrush(QBrush(g)); q.setPen(Qt.NoPen)
+    q.drawEllipse(QPointF(lx, ly), core_r, core_r)
+
+    # a tight hot centre on top
+    g2 = QRadialGradient(QPointF(lx, ly), unit * 0.7)
+    g2.setColorAt(0.0, QColor(255, 255, 255, a(255)))
+    g2.setColorAt(1.0, QColor(255, 255, 255, 0))
+    q.setBrush(QBrush(g2)); q.drawEllipse(QPointF(lx, ly), unit * 0.7, unit * 0.7)
+
+    # --- star spikes / streaks radiating from the source ---
+    if p['spikes']:
+        n = max(1, int(p['spike_count']))
+        base_len = unit * 5.5
+        for i in range(n):
+            ang = (math.pi * i / n) + 0.3      # spikes come in opposite pairs
+            dx, dy = math.cos(ang), math.sin(ang)
+            length = base_len * (0.7 + 0.6 * ((i * 37) % 10) / 10.0)
+            _draw_spike(q, lx, ly, dx, dy, length, unit * 0.12, tint, a(170))
+            _draw_spike(q, lx, ly, -dx, -dy, length, unit * 0.12, tint, a(170))
+        # a short fat 4-way glint
+        for dx, dy in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            _draw_spike(q, lx, ly, dx, dy, unit * 2.6, unit * 0.22,
+                        QColor(255, 255, 255), a(150))
+
+    # --- anamorphic horizontal streak (cinematic blue bar) ---
+    if p['anamorphic']:
+        streak_len = w * 0.9
+        lg = QLinearGradient(QPointF(lx - streak_len, ly), QPointF(lx + streak_len, ly))
+        bar = _flare_tint(hue if warmth > 0 else 205, max(0.6, warmth), 0.6)
+        for pos, al in ((0.0, 0), (0.5, a(130)), (1.0, 0)):
+            c = QColor(bar); c.setAlpha(al if pos == 0.5 else 0); lg.setColorAt(pos, c)
+        q.setBrush(QBrush(lg)); q.setPen(Qt.NoPen)
+        q.drawRect(QRectF(lx - streak_len, ly - unit * 0.14, streak_len * 2, unit * 0.28))
+
+    # --- chain of iris reflections along source -> centre -> far side ---
+    if p['reflections']:
+        rng = random.Random(int(p['seed']))
+        axis_dx, axis_dy = cx - lx, cy - ly
+        # parametric spots along the axis: t=0 at source, t=1 at centre, >1 beyond.
+        spots = [0.45, 0.75, 1.0, 1.28, 1.6, 1.95, 2.35]
+        for i, t in enumerate(spots):
+            x = lx + axis_dx * t
+            y = ly + axis_dy * t
+            # size shrinks then the far discs grow a little — natural-looking
+            sz = unit * (1.5 - 0.28 * i) if i < 4 else unit * (0.5 + 0.22 * (i - 3))
+            sz = max(unit * 0.3, abs(sz)) * (0.8 + rng.random() * 0.5)
+            op = a((0.5 - 0.045 * i) * 140)
+            if op <= 0:
+                continue
+            spot_hue = (hue + rng.uniform(-60, 90)) % 360
+            col = _flare_tint(spot_hue, min(1.0, warmth + 0.2), 0.55)
+            if i % 2 == 0:
+                _draw_hexagon(q, x, y, sz, col, op, rng.uniform(0, math.pi))
+            else:
+                _draw_soft_disc(q, x, y, sz, col, op)
+
+    # --- rainbow diffraction ring (hue-swept arc near the axis) ---
+    if p['rainbow']:
+        rx = lx + (cx - lx) * 1.15
+        ry = ly + (cy - ly) * 1.15
+        _draw_rainbow_ring(q, rx, ry, unit * 2.2, a(90))
+
+    # --- faint halo ring around the frame centre ---
+    if p['halo']:
+        halo_r = unit * 3.6
+        hg = QRadialGradient(QPointF(cx, cy), halo_r)
+        ht = _flare_tint(hue, warmth * 0.7, 0.5)
+        hg.setColorAt(0.0, QColor(ht.red(), ht.green(), ht.blue(), 0))
+        hg.setColorAt(0.82, QColor(ht.red(), ht.green(), ht.blue(), 0))
+        hg.setColorAt(0.9, QColor(ht.red(), ht.green(), ht.blue(), a(70)))
+        hg.setColorAt(1.0, QColor(ht.red(), ht.green(), ht.blue(), 0))
+        q.setBrush(QBrush(hg)); q.setPen(Qt.NoPen)
+        q.drawEllipse(QPointF(cx, cy), halo_r, halo_r)
+
+    q.end()
+    return out
+
+
+def _draw_spike(q, x, y, dx, dy, length, halfw, color, alpha):
+    """A tapered needle of light from (x,y) in direction (dx,dy)."""
+    nx, ny = -dy, dx                                 # perpendicular
+    tip = QPointF(x + dx * length, y + dy * length)
+    base_l = QPointF(x + nx * halfw, y + ny * halfw)
+    base_r = QPointF(x - nx * halfw, y - ny * halfw)
+    poly = QPolygonF([base_l, tip, base_r])
+    lg = QLinearGradient(QPointF(x, y), tip)
+    c0 = QColor(color); c0.setAlpha(alpha)
+    c1 = QColor(color); c1.setAlpha(0)
+    lg.setColorAt(0.0, c0); lg.setColorAt(1.0, c1)
+    q.setBrush(QBrush(lg)); q.setPen(Qt.NoPen)
+    q.drawPolygon(poly)
+
+
+def _draw_hexagon(q, x, y, r, color, alpha, rot=0.0):
+    """A flat, slightly soft-edged hexagonal iris reflection."""
+    pts = []
+    for k in range(6):
+        ang = rot + math.pi / 3.0 * k
+        pts.append(QPointF(x + math.cos(ang) * r, y + math.sin(ang) * r))
+    poly = QPolygonF(pts)
+    g = QRadialGradient(QPointF(x, y), r)
+    c_in = QColor(color); c_in.setAlpha(alpha)
+    c_edge = QColor(color); c_edge.setAlpha(int(alpha * 0.85))
+    c_out = QColor(color); c_out.setAlpha(0)
+    g.setColorAt(0.0, c_in); g.setColorAt(0.75, c_edge); g.setColorAt(1.0, c_out)
+    q.setBrush(QBrush(g)); q.setPen(QPen(QColor(color.red(), color.green(), color.blue(),
+                                               int(alpha * 0.6)), max(1.0, r * 0.04)))
+    q.drawPolygon(poly)
+
+
+def _draw_soft_disc(q, x, y, r, color, alpha):
+    """A soft circular reflection (fuzzy aperture ghost)."""
+    g = QRadialGradient(QPointF(x, y), r)
+    c_in = QColor(color); c_in.setAlpha(alpha)
+    c_mid = QColor(color); c_mid.setAlpha(int(alpha * 0.4))
+    c_out = QColor(color); c_out.setAlpha(0)
+    g.setColorAt(0.0, c_in); g.setColorAt(0.6, c_mid); g.setColorAt(1.0, c_out)
+    q.setBrush(QBrush(g)); q.setPen(Qt.NoPen)
+    q.drawEllipse(QPointF(x, y), r, r)
+
+
+def _draw_rainbow_ring(q, x, y, r, alpha):
+    """A thin hue-swept diffraction ring (clean-room — a conical sweep, masked to a
+    ring band by stroking a circle)."""
+    cg = QConicalGradient(QPointF(x, y), 0)
+    for k in range(13):
+        c = QColor(); c.setHslF((k / 12.0) % 1.0, 0.9, 0.55); c.setAlpha(alpha)
+        cg.setColorAt(k / 12.0, c)
+    pen = QPen(QBrush(cg), max(2.0, r * 0.14)); pen.setCapStyle(Qt.FlatCap)
+    q.setBrush(Qt.NoBrush); q.setPen(pen)
+    q.drawEllipse(QPointF(x, y), r, r)
 
 
 BLENDS = {
@@ -1449,6 +1669,177 @@ class AdjustDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class FlarePreview(QWidget):
+    """A scaled preview of the composited image with the flare drawn on top (Screen),
+    plus a draggable crosshair marking the light source. Dragging it calls `moved(x, y)`
+    with document-space coordinates."""
+    def __init__(self, base, moved):
+        super().__init__()
+        self.base = base                 # composited document QImage (RGB-ish)
+        self.flare = None                # current flare QImage (document size) or None
+        self.moved = moved
+        self.lx = base.width() * 0.33
+        self.ly = base.height() * 0.3
+        self.setMinimumSize(360, 260)
+        self.setCursor(Qt.CrossCursor)
+
+    def set_flare(self, flare):
+        self.flare = flare; self.update()
+
+    def set_light(self, lx, ly):
+        self.lx = lx; self.ly = ly; self.update()
+
+    def _rect(self):
+        bw, bh = self.base.width(), self.base.height()
+        s = min(self.width() / bw, self.height() / bh)
+        dw, dh = bw * s, bh * s
+        ox, oy = (self.width() - dw) / 2, (self.height() - dh) / 2
+        return QRectF(ox, oy, dw, dh), s
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.fillRect(self.rect(), QColor('#14181d'))
+        r, s = self._rect()
+        p.drawImage(r, self.base, QRectF(0, 0, self.base.width(), self.base.height()))
+        if self.flare is not None:
+            p.setCompositionMode(QPainter.CompositionMode_Screen)
+            p.drawImage(r, self.flare, QRectF(0, 0, self.flare.width(), self.flare.height()))
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        # crosshair at the light source
+        mx = r.x() + self.lx * s; my = r.y() + self.ly * s
+        p.setPen(QPen(QColor(0, 0, 0, 160), 3)); self._cross(p, mx, my)
+        p.setPen(QPen(QColor(255, 255, 255, 230), 1)); self._cross(p, mx, my)
+        p.end()
+
+    def _cross(self, p, mx, my):
+        p.drawEllipse(QPointF(mx, my), 9, 9)
+        p.drawLine(QPointF(mx - 14, my), QPointF(mx + 14, my))
+        p.drawLine(QPointF(mx, my - 14), QPointF(mx, my + 14))
+
+    def _to_doc(self, pt):
+        r, s = self._rect()
+        x = (pt.x() - r.x()) / max(1e-6, s)
+        y = (pt.y() - r.y()) / max(1e-6, s)
+        x = max(0, min(self.base.width(), x)); y = max(0, min(self.base.height(), y))
+        return x, y
+
+    def mousePressEvent(self, e):
+        self.lx, self.ly = self._to_doc(e.position()); self.moved(self.lx, self.ly)
+
+    def mouseMoveEvent(self, e):
+        if e.buttons() & Qt.LeftButton:
+            self.lx, self.ly = self._to_doc(e.position()); self.moved(self.lx, self.ly)
+
+
+class LensFlareDialog(QDialog):
+    """Knoll-Light-Factory-style Lens Flare studio: a live preview of the picture with
+    the flare composited Screen, a draggable light-source marker (or X/Y sliders),
+    brightness / size / hue / warmth sliders, element toggles, and presets. On OK the
+    flare lands on its own non-destructive Screen layer."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Lens Flare'); self.resize(760, 520)
+        w, h = self.canvas.doc_w(), self.canvas.doc_h()
+        self.params = dict(LENS_FLARE_DEFAULTS)
+        self._busy = False
+
+        top = QHBoxLayout(self)
+        base = self.canvas.composited().convertToFormat(QImage.Format_ARGB32)
+        self.preview = FlarePreview(base, self._light_moved)
+        top.addWidget(self.preview, 1)
+
+        panel = QVBoxLayout(); top.addLayout(panel)
+        panel.addWidget(QLabel('<b>Lens Flare</b>'))
+
+        self.preset_cb = QComboBox(); self.preset_cb.addItem('— Preset —')
+        for name in LENS_FLARE_PRESETS: self.preset_cb.addItem(name)
+        self.preset_cb.currentTextChanged.connect(self._apply_preset)
+        panel.addWidget(self.preset_cb)
+
+        form = QFormLayout(); panel.addLayout(form)
+        self.sx = self._slider(0, w, int(self.preview.lx)); form.addRow('Light X:', self._wrap(self.sx))
+        self.sy = self._slider(0, h, int(self.preview.ly)); form.addRow('Light Y:', self._wrap(self.sy))
+        self.sx.valueChanged.connect(self._slider_light)
+        self.sy.valueChanged.connect(self._slider_light)
+        self.sb = self._slider(10, 200, 100); form.addRow('Brightness:', self._wrap(self.sb))
+        self.ss = self._slider(40, 200, 100); form.addRow('Size:', self._wrap(self.ss))
+        self.sh = self._slider(0, 359, int(self.params['hue'])); form.addRow('Hue:', self._wrap(self.sh))
+        self.sw = self._slider(0, 100, int(self.params['warmth'] * 100)); form.addRow('Warmth:', self._wrap(self.sw))
+        self.spc = self._slider(1, 16, int(self.params['spike_count'])); form.addRow('Spikes:', self._wrap(self.spc))
+        for s in (self.sb, self.ss, self.sh, self.sw, self.spc):
+            s.valueChanged.connect(self._refresh)
+
+        self.cb_spikes = QCheckBox('Star spikes'); self.cb_spikes.setChecked(True)
+        self.cb_refl = QCheckBox('Reflections'); self.cb_refl.setChecked(True)
+        self.cb_rain = QCheckBox('Rainbow ring')
+        self.cb_halo = QCheckBox('Halo'); self.cb_halo.setChecked(True)
+        self.cb_ana = QCheckBox('Anamorphic streak')
+        for cb in (self.cb_spikes, self.cb_refl, self.cb_rain, self.cb_halo, self.cb_ana):
+            cb.toggled.connect(self._refresh); panel.addWidget(cb)
+
+        hint = QLabel('Drag the crosshair on the preview to place the light.')
+        hint.setWordWrap(True); hint.setStyleSheet('color:#889'); panel.addWidget(hint)
+        panel.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Add flare layer')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); panel.addWidget(bb)
+        self._refresh()
+
+    def _slider(self, lo, hi, val):
+        s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(val); return s
+
+    def _wrap(self, s):
+        w = QWidget(); w.setMinimumWidth(200); lay = QHBoxLayout(w)
+        lay.setContentsMargins(0, 0, 0, 0); lay.addWidget(s); return w
+
+    def _light_moved(self, lx, ly):
+        if self._busy: return
+        self._busy = True
+        self.sx.setValue(int(lx)); self.sy.setValue(int(ly))
+        self._busy = False
+        self._refresh()
+
+    def _slider_light(self):
+        if self._busy: return
+        self.preview.set_light(self.sx.value(), self.sy.value())
+        self._refresh()
+
+    def _apply_preset(self, name):
+        if name not in LENS_FLARE_PRESETS: return
+        self._busy = True
+        pr = LENS_FLARE_PRESETS[name]
+        self.sb.setValue(int(pr['brightness'] * 100)); self.ss.setValue(int(pr['scale'] * 100))
+        self.sh.setValue(int(pr['hue'])); self.sw.setValue(int(pr['warmth'] * 100))
+        self.spc.setValue(int(pr['spike_count']))
+        self.cb_spikes.setChecked(pr['spikes']); self.cb_refl.setChecked(pr['reflections'])
+        self.cb_rain.setChecked(pr['rainbow']); self.cb_halo.setChecked(pr['halo'])
+        self.cb_ana.setChecked(pr['anamorphic'])
+        self.params['seed'] = pr['seed']
+        self._busy = False
+        self._refresh()
+
+    def _collect(self):
+        return {
+            'brightness': self.sb.value() / 100.0, 'scale': self.ss.value() / 100.0,
+            'hue': float(self.sh.value()), 'warmth': self.sw.value() / 100.0,
+            'spikes': self.cb_spikes.isChecked(), 'spike_count': self.spc.value(),
+            'anamorphic': self.cb_ana.isChecked(), 'reflections': self.cb_refl.isChecked(),
+            'rainbow': self.cb_rain.isChecked(), 'halo': self.cb_halo.isChecked(),
+            'seed': self.params.get('seed', 7),
+        }
+
+    def _refresh(self):
+        if self._busy: return
+        self.params = self._collect()
+        w, h = self.canvas.doc_w(), self.canvas.doc_h()
+        self.preview.set_flare(render_lens_flare(w, h, self.sx.value(), self.sy.value(), self.params))
+
+    def accept(self):
+        self.win.apply_lens_flare(self.sx.value(), self.sy.value(), self._collect())
+        super().accept()
+
+
 class CurveWidget(QWidget):
     """A small editable tone curve: draggable control points over a 0–255 diagonal.
     Points are stored in curve space (x,y both 0..255, origin bottom-left). Emits via
@@ -1875,6 +2266,8 @@ class Main(QMainWindow):
         img.addSeparator()
         img.addAction(self.act('Cu&tout Studio… (remove background)', self.cutout_studio))
         img.addAction(self.act('Smart &Mask (cut out subject)…', self.smart_mask_apply))
+        img.addSeparator()
+        img.addAction(self.act('Lens &Flare…', self.dlg_lens_flare))
 
         adj = m.addMenu('&Adjust')
         adj.addAction(self.act('&Brightness / Contrast…', self.dlg_brightness))
@@ -2116,6 +2509,23 @@ class Main(QMainWindow):
         if not dlg.exec(): return
         if glow: self.canvas.apply_fx(col[0], bl.value(), 0, 0, op.value(), twice=True)
         else: self.canvas.apply_fx(col[0], bl.value(), dx.value(), dy.value(), op.value())
+
+    def dlg_lens_flare(self):
+        """Open the Lens Flare studio (live preview over the composited image)."""
+        LensFlareDialog(self).exec()
+
+    def apply_lens_flare(self, lx, ly, params):
+        """Composite a lens flare onto a NEW 'screen'-blend layer at (lx, ly).
+        Non-destructive: snapshots, inserts a fresh layer above the active one,
+        paints the flare into it and refreshes. Returns the new Layer."""
+        c = self.canvas
+        w, h = c.doc_w(), c.doc_h()
+        flare = render_lens_flare(w, h, lx, ly, params)
+        c.snapshot_full()
+        layer = Layer(flare, c._unique_name('Lens Flare'), True, 1.0, 'screen')
+        c.active += 1; c.layers.insert(c.active, layer)
+        c.update(); self.refresh_layers()
+        return layer
 
     # ---- PhotoPlus-style adjustments, filters, image ops ----
     def _need_pil(self):

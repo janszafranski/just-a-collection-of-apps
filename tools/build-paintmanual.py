@@ -364,6 +364,30 @@ def capture(full=True):
     except Exception as e:
         print("effects demo failed:", e)
 
+    # lens-flare demo: a self-made dusk scene, before and after a warm 'Sunny' flare
+    # composited Screen onto its own layer (exactly what the dialog's OK does).
+    try:
+        lfw, lfh = 480, 300
+        scn = _blank(lfw, lfh, None)
+        p = QPainter(scn); p.setPen(Qt.NoPen)
+        sky = QLinearGradient(0, 0, 0, lfh)
+        sky.setColorAt(0.0, QColor("#2a3b6b")); sky.setColorAt(0.55, QColor("#8a5a7a"))
+        sky.setColorAt(1.0, QColor("#d98a52"))
+        p.fillRect(QRectF(0, 0, lfw, lfh), QBrush(sky))
+        p.setBrush(QColor("#1b2030")); p.drawRect(QRectF(0, lfh * 0.72, lfw, lfh * 0.28))  # dark foreground
+        p.end()
+        IM["flare_before"] = _pil(scn).convert("RGB")
+        lx, ly = int(lfw * 0.68), int(lfh * 0.28)
+        pr = dict(PC.LENS_FLARE_DEFAULTS); pr.update(PC.LENS_FLARE_PRESETS["Sunny"])
+        flare = PC.render_lens_flare(lfw, lfh, lx, ly, pr)
+        cv = PC.Canvas.__new__(PC.Canvas)
+        cv.layers = [PC.Layer(scn.copy(), "Background"),
+                     PC.Layer(flare, "Lens Flare", True, 1.0, "screen")]
+        cv.active = 1
+        IM["flare_after"] = _pil(cv.composited()).convert("RGB")
+    except Exception as e:
+        print("lens flare demo failed:", e)
+
     # layers demo: two stacked layers (scene + a translucent coloured wash).
     try:
         lw, lh = 420, 280
@@ -493,6 +517,7 @@ def capture(full=True):
     drive(w2.dlg_median)
     drive(w2._fx_dialog, "shadow")
     drive(w2._fx_dialog, "glow")
+    drive(w2.dlg_lens_flare)      # Image ▸ Lens Flare… studio
     drive(w2.new)                 # New Image dialog
     drive(w2.cutout_studio)       # Cutout Studio
     try:                          # Smart Mask — seed scribbles so the dialog (not the hint) opens
@@ -1233,8 +1258,9 @@ whatever you place behind it — the difference between an obvious paste-up and 
 {tip('Feather little and often: 1–3&nbsp;px suits most portraits. Too much feather eats into solid edges, so raise it only where the subject is genuinely soft.')}""")]))
 
     ch.append(("Effects",
-      "<p class='lede'>The Effects menu adds a soft drop shadow or outer glow behind everything you have "
-      "drawn — the finishing touch that lifts a logo or a cut-out subject off the page.</p>", [
+      "<p class='lede'>The finishing touches: a soft drop shadow or outer glow behind everything you have "
+      "drawn to lift a logo or cut-out subject off the page, and a photographic lens flare dropped over the "
+      "whole picture.</p>", [
       ("Drop Shadow", f"""
 <p>A <b>drop shadow</b> casts a soft, offset shadow of the drawing’s opaque pixels behind them, giving a
 sense of depth.</p>
@@ -1253,8 +1279,27 @@ edge, or making a subject pop against a dark background.</p>
   'Choose <b>Effects ▸ Outer Glow…</b>.',
   'Set the <b>Blur</b> (how far the glow spreads), the <b>Strength</b> and a <b>Colour</b>.',
   'Click <b>OK</b>.')}"""),
+      ("Lens flare", f"""
+<p>A <b>lens flare</b> drops a bright light source into the picture — the glowing core, radiating star
+spikes, a chain of hexagonal and circular lens reflections streaming across the frame, an optional rainbow
+diffraction ring and a soft halo — the kind of sunlight-in-the-lens look you see in photographs and films.
+It lives on <b>Image ▸ Lens Flare…</b> and is applied on its own layer, so the picture underneath is never
+altered.</p>
+{fig(dlg('Lens Flare'), 'The Lens Flare studio: a live preview of your picture with the flare on top, a draggable light marker, a preset menu, and brightness / size / hue / warmth sliders with element toggles.')}
+<p>The dialog shows a <b>live preview</b> of your picture with the flare composited over it. Drag the
+crosshair to place the light source, or type positions into the <b>Light X</b> / <b>Light Y</b> sliders.</p>
+{proc('add a lens flare',
+  'Choose <b>Image ▸ Lens Flare…</b>.',
+  'Pick a <b>Preset</b> to start — <b>Subtle</b> for a gentle glint, <b>Sunny</b> for a warm daylight flare, <b>Anamorphic</b> for the wide blue streak of a cinema lens, or <b>Sci-fi</b> for a bright, busy spread.',
+  'Drag the crosshair on the preview to place the light (the upper third of the frame usually looks most natural).',
+  'Tune <b>Brightness</b> and <b>Size</b>, and shift the <b>Hue</b> and <b>Warmth</b> to match the light in your photo.',
+  'Turn individual elements on or off — <b>Star spikes</b>, <b>Reflections</b>, <b>Rainbow ring</b>, <b>Halo</b> and the <b>Anamorphic streak</b>.',
+  'Click <b>Add flare layer</b>.')}
+{fig(IM.get('flare_before'), 'Before: a plain dusk scene.')}
+{fig(IM.get('flare_after'), 'After: a warm Sunny flare, placed upper-right, on its own Screen layer — the scene below is untouched.')}
+{note('The flare arrives on a new layer set to the <b>Screen</b> blend, so only its bright parts show and the picture beneath stays intact. Lower that layer’s <b>Opacity</b> in the Layers panel to dial the whole effect back, or hide and delete the layer to remove it.')}"""),
       ("Working on transparency", f"""
-{caution('Both effects show <i>through</i> transparent areas, so they only look right on a layer that has transparency around the artwork. Start from <b>File ▸ New</b> with a <b>Transparent background</b>, or cut the backdrop away first — otherwise the shadow or glow has nowhere to show.')}
+{caution('The drop shadow and outer glow show <i>through</i> transparent areas, so they only look right on a layer that has transparency around the artwork. Start from <b>File ▸ New</b> with a <b>Transparent background</b>, or cut the backdrop away first — otherwise the shadow or glow has nowhere to show. (The lens flare is different: it floats over whatever is beneath it, so it works on any picture.)')}
 <p>So the natural workflow is: make or cut out a subject on transparency, then apply the shadow or glow, then
 place the result on its new background.</p>""")]))
 
