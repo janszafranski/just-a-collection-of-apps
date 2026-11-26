@@ -201,6 +201,25 @@ def capture(full=True):
     IM["charts"] = page_img(CHART_DEMO, px=860)
     IM["colourpage"] = page_img(COLOUR_DEMO, px=860)
 
+    # picture / texture fill demo (uses the app banner as a sample texture)
+    try:
+        tex = ""
+        bp = OUT / "banner.png"
+        if bp.exists():
+            b = io.BytesIO(); Image.open(str(bp)).convert("RGB").save(b, "JPEG", quality=80)
+            tex = "data:image/jpeg;base64," + base64.b64encode(b.getvalue()).decode()
+        BIT = [
+            ("artistic", 40, 28, 640, 44, dict(html="<p>Picture &amp; texture fills</p>", size=28, color="#243137", bold=True)),
+            ("shape", 40, 108, 300, 236, dict(shape="star5", fillimg=tex, fillmode="stretch", stroke="#1f2a30", strokeW=3)),
+            ("shape", 380, 108, 360, 112, dict(shape="rect", fillimg=tex, fillmode="stretch", strokeW=0, radius=12)),
+            ("shape", 380, 236, 360, 108, dict(shape="rect", fillimg=tex, fillmode="tile", strokeW=0, radius=12)),
+            ("text", 40, 352, 300, 24, dict(pad=0, size=12, color="#5c6b73", align="center", html="<p>Stretched into a QuickShape</p>")),
+            ("text", 380, 352, 360, 24, dict(pad=0, size=12, color="#5c6b73", html="<p>Stretched (top) and tiled (bottom)</p>")),
+        ]
+        IM["bitmap_demo"] = page_img(BIT, w=794, h=404, px=860)
+    except Exception as e:
+        print("bitmap demo failed:", e)
+
     # --- QuickShape catalogue: all shapes in a labelled grid --------------
     qs = PC.QUICKSHAPES
     grid, cols, cw, ch = [], 4, 185, 150
@@ -294,6 +313,7 @@ def capture(full=True):
     drive(w2.transform_dialog)
     drive(w2.effects_dialog)
     drive(w2.gradient_dialog, "linear")
+    drive(w2.replace_colour_dialog)
     drive(w2.guides_dialog)
     drive(w2.spell_dialog)
     drive(w2.insert_asset_dialog)   # this one .show()s rather than .exec()s
@@ -786,6 +806,27 @@ soft panel behind text.</p>
   'Choose a <b>start</b> and <b>end</b> colour, and for a linear gradient, an <b>angle</b>.',
   'Click <b>OK</b>. The gradient scales with the object as you resize it.')}
 {fig(dlg('Linear Gradient', 'Radial Gradient', 'Gradient'), 'The gradient dialog: a start colour, an end colour and an angle.')}"""),
+      ("Picture and texture fills", f"""
+<p>A shape need not be filled with a flat colour or a gradient — it can be filled with a <b>picture</b>.
+Drop a photo into a heading banner, a paper texture behind a certificate, a pattern inside a star.</p>
+{proc('fill a shape with a picture',
+  'Select the shape (or a text box or button).',
+  'Choose <b>Format ▸ Picture Fill…</b> and pick an image file.',
+  'Choose how it should fit — <b>Stretch to fill</b> the shape, or <b>Tile</b> it (repeat the picture).',
+  'Click <b>OK</b>. The outline, corners and any shadow or glow still apply over the top.')}
+{fig(IM.get('bitmap_demo'), 'The same star and banner filled with a picture — stretched (left) and tiled (right).')}
+{tip('To go back to a plain colour, choose <b>Format ▸ Remove Picture Fill</b>.')}"""),
+      ("Replacing a colour everywhere", f"""
+<p>Change your mind about a colour after building a whole publication? You do not have to re-select every
+object. <b>Replace Colour</b> swaps one colour for another across every page at once — fills, outlines,
+text, gradients, tables and charts included.</p>
+{proc('replace a colour across the whole publication',
+  'Choose <b>Format ▸ Replace Colour…</b>.',
+  'From the list of colours actually used in the document, click the one you want to change (each shows how many times it is used).',
+  'Pick the colour to change it to.',
+  'Click <b>Replace</b>. Every instance updates at once — and Undo (' + K('Ctrl') + '+' + K('Z') + ') reverts it if you change your mind.')}
+{fig(dlg('Replace Colour'), 'Replace Colour lists every colour in use; pick one and the colour to change it to.')}
+{note('This is the quick way to re-brand a finished document, or to fix a colour that prints differently from how it looked on screen.')}"""),
       ("Transparency", """
 <p><b>Transparency</b> lets what is behind an object show through it. A half-transparent coloured
 rectangle laid over a photo makes a tint you can read white text on; a faint shape becomes a watermark.
@@ -1274,6 +1315,12 @@ dl.gloss dt{font-weight:700;margin-top:.7em;color:#17323a} dl.gloss dd{margin:.1
 .catgrid.assets{grid-template-columns:repeat(3,1fr)}
 .cat-card figure.f{margin:0}
 .cat-card.asset figure.f img{background:#fff;object-fit:contain;max-height:150px}
+/* back-of-book index */
+.index{columns:2;gap:30px}
+.idx-let{font-weight:800;color:var(--accent);font-size:1.1rem;margin:.7em 0 .15em;break-after:avoid}
+ul.idx{list-style:none;padding:0;margin:0 0 .5em}
+ul.idx li{margin:.12em 0;font-size:.92rem;break-inside:avoid;padding-left:1.1em;text-indent:-1.1em}
+ul.idx a{color:var(--accent);text-decoration:none}
 """
 
 COVER_CSS = """
@@ -1366,6 +1413,46 @@ See <b>Help ▸ User Guide</b> for the full manual.</footer>
     print("wrote quickstart.html:", len(doc) // 1024, "KiB,", len(S), "sections")
 
 
+def build_index(numbered):
+    """A back-of-book index: every section heading plus a curated term list, each
+    linked to the chapter/section that covers it, grouped A–Z."""
+    import re as _re
+    from collections import defaultdict
+    entries = {}
+    secs = []
+    for _pt, _pb, pc in numbered:
+        for (n, title, intro, secitems) in pc:
+            for si, (h, b) in enumerate(secitems, 1):
+                anchor = f"c{n}s{si}"
+                plain = _re.sub(r"<[^>]+>", " ", h + " " + b)
+                secs.append((n, anchor, plain))
+                term = _re.sub(r"\s+", " ", h).strip().rstrip("…").strip()
+                if term and len(term) < 46:
+                    entries.setdefault(term, set()).add((n, anchor))
+    TERMS = ["drop cap", "master page", "text frame", "artistic text", "gradient fill", "bitmap fill",
+             "picture fill", "replace colour", "QR code", "mail merge", "calendar", "chart", "table",
+             "bleed", "crop marks", "preflight", "colour scheme", "swatch", "transparency", "QuickShape",
+             "asset", "template", "eBook", "EPUB", "PDF", "spell check", "page number", "align", "group",
+             "lock", "guides", "drop shadow", "outer glow", "text wrap", "crop", "picture frame",
+             "Startup Assistant", "rulers", "margins", "booklet"]
+    for t in TERMS:
+        for (n, anchor, plain) in secs:
+            if _re.search(r"\b" + _re.escape(t) + r"\b", plain, _re.I):
+                entries.setdefault(t[0].upper() + t[1:], set()).add((n, anchor))
+                break
+    groups = defaultdict(list)
+    for term in sorted(entries, key=lambda s: s.lower()):
+        refs = sorted(entries[term])
+        links = ", ".join(f'<a href="#{a}">Ch&nbsp;{n}</a>' for (n, a) in refs)
+        letter = term[0].upper() if term[:1].isalpha() else "#"
+        groups[letter].append(f"<li>{H.escape(term)} &nbsp;{links}</li>")
+    out = ['<div class="index">']
+    for letter in sorted(groups):
+        out.append(f'<div class="idx-let">{letter}</div><ul class="idx">{"".join(groups[letter])}</ul>')
+    out.append("</div>")
+    return "".join(out)
+
+
 def build_manual(IM):
     parts = manual_parts(IM)
     # number chapters sequentially across parts
@@ -1399,6 +1486,12 @@ def build_manual(IM):
             for si, (h, b) in enumerate(secs, 1):
                 body.append(f'<h3 id="c{n}s{si}">{H.escape(h)}</h3>\n{b}')
             body.append("</section>")
+
+    # back-of-book index
+    toc.append('<li class="part-h">Index</li>')
+    body.append('<section class="part"><div class="pn">Reference</div><div class="pt">Index</div><div class="prule"></div></section>')
+    body.append(f'<section class="chapter"><div class="chrule"><span class="cn">Reference</span>'
+                f'<h2 id="bookindex">Index</h2></div>{build_index(numbered)}</section>')
 
     doc = f"""<!DOCTYPE html><html lang="en-GB"><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">

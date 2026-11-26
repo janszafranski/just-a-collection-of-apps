@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.18-02"
+VERSION = "1.19-00"
 
 
 def _just_dir(kind):
@@ -1312,7 +1312,30 @@ def obj_pen(o):
         pn.setJoinStyle(Qt.MiterJoin); return pn
     return QPen(Qt.NoPen)
 
+def pixmap_from_src(src):
+    """A QPixmap from a data: URI or a file path (None if it can't be loaded)."""
+    if not src:
+        return None
+    pm = QPixmap()
+    try:
+        if src.startswith('data:'):
+            pm.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
+        else:
+            pm.load(src)
+    except Exception:
+        return None
+    return pm if not pm.isNull() else None
+
+
 def obj_brush(o):
+    img = o.get('fillimg')
+    if img:
+        pm = pixmap_from_src(img)
+        if pm:
+            if o.get('fillmode') == 'tile':
+                return QBrush(pm)   # repeats at natural size
+            w = max(1, int(round(o['w']))); h = max(1, int(round(o['h'])))
+            return QBrush(pm.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
     g = o.get('grad')
     if g:
         w, h = o['w'], o['h']
@@ -1326,6 +1349,54 @@ def obj_brush(o):
         lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
         return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
+
+
+# --------------------------------------------------- global colour find/replace
+_HEXRE = re.compile(r'#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?\b')
+
+
+def norm_hex(c):
+    """Normalise a colour to lower-case 6-digit #rrggbb, or None if it isn't a hex colour."""
+    if not isinstance(c, str):
+        return None
+    c = c.strip()
+    m = re.fullmatch(r'#([0-9a-fA-F]{3})', c)
+    if m:
+        return '#' + ''.join(ch * 2 for ch in m.group(1)).lower()
+    if re.fullmatch(r'#[0-9a-fA-F]{6}', c):
+        return c.lower()
+    return None
+
+
+def map_colors(site, fn):
+    """Call fn(hex)->hex on every colour used anywhere in the publication (object
+    fills, strokes, text, gradients, table/chart/nav colours, page backgrounds and
+    the palette). Used for both scanning (fn records) and replacing (fn swaps)."""
+    SCALAR = ('fill', 'stroke', 'color', 'head', 'accent', 'accentInk', 'cardbg',
+              'ink', 'dark', 'light', 'axis', 'grid')
+    for cont in site.get('masters', []) + site.get('pages', []):
+        if norm_hex(cont.get('bg')):
+            cont['bg'] = fn(cont['bg'])
+        for o in cont.get('objects', []):
+            for k in SCALAR:
+                if norm_hex(o.get(k)):
+                    o[k] = fn(o[k])
+            g = o.get('grad')
+            if isinstance(g, dict):
+                for ck in ('c1', 'c2'):
+                    if norm_hex(g.get(ck)):
+                        g[ck] = fn(g[ck])
+            cols = o.get('colors')
+            if isinstance(cols, list):
+                o['colors'] = [fn(c) if norm_hex(c) else c for c in cols]
+            h = o.get('html')
+            if isinstance(h, str) and '#' in h:
+                o['html'] = _HEXRE.sub(lambda m: fn(m.group(0)) if norm_hex(m.group(0)) else m.group(0), h)
+    if norm_hex(site.get('bg')):
+        site['bg'] = fn(site['bg'])
+    pal = site.get('palette')
+    if isinstance(pal, list):
+        site['palette'] = [fn(c) if norm_hex(c) else c for c in pal]
 
 def nav_items(site, o=None):
     if o and o.get('pages'):
@@ -1472,6 +1543,16 @@ def shape_svg(o):
                     f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
                     f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
         fill = f'url(#{gid})'
+    elif o.get('fillimg'):
+        pid = 'qsp_' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', 'x')))
+        if o.get('fillmode') == 'tile':
+            t = min(w, h) / 3 or 1
+            defs = (f'<pattern id="{pid}" patternUnits="userSpaceOnUse" width="{t:g}" height="{t:g}">'
+                    f'<image href="{o["fillimg"]}" width="{t:g}" height="{t:g}" preserveAspectRatio="xMidYMid slice"/></pattern>')
+        else:   # stretch to fill the whole shape
+            defs = (f'<pattern id="{pid}" patternContentUnits="objectBoundingBox" width="1" height="1">'
+                    f'<image href="{o["fillimg"]}" width="1" height="1" preserveAspectRatio="none"/></pattern>')
+        fill = f'url(#{pid})'
     elif o.get('fill'):
         fill = o['fill']
     stroke = ''
@@ -2333,7 +2414,12 @@ def text_css(o):
 
 def box_css(o):
     s = ''
-    if o.get('fill'): s += f"background:{o['fill']};"
+    if o.get('fillimg'):
+        if o.get('fillmode') == 'tile':
+            s += f"background-image:url({o['fillimg']});background-repeat:repeat;"
+        else:
+            s += f"background-image:url({o['fillimg']});background-size:cover;background-position:center;background-repeat:no-repeat;"
+    elif o.get('fill'): s += f"background:{o['fill']};"
     if o.get('strokeW', 0) > 0 and o.get('stroke'): s += f"border:{o['strokeW']}px {o.get('dash', 'solid')} {o['stroke']};"
     if o.get('radius'): s += f"border-radius:{o['radius']}px;"
     return s
@@ -6174,6 +6260,10 @@ class MainWindow(QMainWindow):
         style_acts = [self.act(n, lambda _=False, n=n: self.apply_text_style(n), None, None) for n in TEXT_STYLE_PRESETS]
         menu('F&ormat', [a['bold'], a['italic'], a['underline'], None, a['aleft'], a['acenter'], a['aright'], a['ajust'],
                          None, ('Text Styles', style_acts), ('Lists / Bullets', list_sub), None,
+                         self.act('&Replace Colour…', lambda: self.replace_colour_dialog(), None, ['color-picker', 'gtk-select-color', 'preferences-desktop-color']),
+                         self.act('&Picture Fill…', lambda: self.bitmap_fill_dialog(), None, ['insert-image', 'fill-color', 'view-preview']),
+                         self.act('Remove Picture Fill', lambda: self.clear_fill_image(), None, None),
+                         None,
                          self.act('Chec&k Spelling…', lambda: self.spell_dialog(), 'F7', ['tools-check-spelling', 'gtk-spell-check']),
                          a['pageprops']])
         al = [self.act(n, lambda _=False, k=k: self.align(k), None, ic) for k, n, ic in (
@@ -9318,6 +9408,89 @@ class MainWindow(QMainWindow):
         for o in objs: o['wrap'] = v
         self.refresh()
         self.hint('Overlapping frame text now wraps around this object.' if v else 'Text wrap turned off.')
+
+    def replace_colour_dialog(self):
+        """Find a colour used anywhere in the publication and replace it everywhere."""
+        from PySide6.QtWidgets import QListWidget, QListWidgetItem, QHBoxLayout, QVBoxLayout
+        used = {}
+        def rec(c):
+            n = norm_hex(c)
+            if n:
+                used[n] = used.get(n, 0) + 1
+            return c
+        map_colors(self.site, rec)
+        if not used:
+            self.hint('No colours found to replace.'); return
+        dlg = QDialog(self); dlg.setWindowTitle('Replace Colour'); dlg.resize(440, 460)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('<b>Replace a colour everywhere.</b> Pick a colour used in this publication, '
+                           'then the colour to change it to. It is swapped on every page at once.'))
+        lst = QListWidget()
+        for hx, ct in sorted(used.items(), key=lambda kv: -kv[1]):
+            it = QListWidgetItem(f'   {hx}      used {ct}×'); it.setData(Qt.UserRole, hx)
+            pm = QPixmap(26, 26); pm.fill(QColor(hx)); it.setIcon(QIcon(pm))
+            lst.addItem(it)
+        lst.setCurrentRow(0); v.addWidget(lst, 1)
+        to = ['#000000']
+        row = QHBoxLayout(); row.addWidget(QLabel('Change to:'))
+        row.addWidget(ColorButton(to[0], lambda c: to.__setitem__(0, c or '#000000'), 'New colour'))
+        row.addStretch(); v.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Replace')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if not dlg.exec() or not lst.currentItem():
+            return
+        src = lst.currentItem().data(Qt.UserRole); dst = to[0]
+        if norm_hex(src) == norm_hex(dst):
+            return
+        self.commit()
+        n = [0]
+        def swap(c):
+            if norm_hex(c) == norm_hex(src):
+                n[0] += 1; return dst
+            return c
+        map_colors(self.site, swap)
+        self.refresh()
+        self.hint(f'Replaced {src} with {dst} in {n[0]} place(s).')
+
+    def bitmap_fill_dialog(self):
+        """Fill the selected shape(s) with a picture or texture, stretched or tiled."""
+        import base64, mimetypes
+        from PySide6.QtWidgets import QComboBox
+        objs = [o for o in self.sel_objs() if o['type'] in ('shape', 'text', 'button')]
+        if not objs:
+            self.hint('Select a shape, text box or button first, then choose a picture fill.'); return
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose a fill picture', _just_dir('pics'),
+                                              'Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)')
+        if not path:
+            return
+        try:
+            data = open(path, 'rb').read()
+        except Exception as e:
+            QMessageBox.warning(self, APP, f'Could not read that image:\n{e}'); return
+        mime = mimetypes.guess_type(path)[0] or 'image/png'
+        uri = 'data:%s;base64,%s' % (mime, base64.b64encode(data).decode())
+        mode = QComboBox(); mode.addItem('Stretch to fill the shape', 'stretch'); mode.addItem('Tile (repeat the picture)', 'tile')
+        d = form_dialog(self, 'Picture Fill', [('How should it fit?', mode)],
+                        QLabel('The picture fills the shape instead of a flat colour. Everything else — '
+                               'outline, shadow, corners — still applies.'))
+        if not d.exec():
+            return
+        self.commit()
+        for o in objs:
+            o['fillimg'] = uri; o['fillmode'] = mode.currentData()
+        self.refresh()
+        self.hint('Picture fill applied — use Format ▸ Remove Picture Fill to go back to a colour.')
+
+    def clear_fill_image(self):
+        objs = [o for o in self.sel_objs() if o.get('fillimg')]
+        if not objs:
+            self.hint('Nothing selected has a picture fill.'); return
+        self.commit()
+        for o in objs:
+            o.pop('fillimg', None); o.pop('fillmode', None)
+        self.refresh()
+        self.hint('Picture fill removed.')
 
     def guides_dialog(self):
         """Column/row guides laid inside the page margin — the DTP layout grid.
