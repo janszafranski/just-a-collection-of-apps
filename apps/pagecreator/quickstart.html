@@ -14,9 +14,11 @@ p{max-width:68ch} ul,ol,dl{max-width:68ch} li{margin:.22em 0}
 code{background:var(--band);padding:1px 5px;border-radius:4px;font-size:.92em}
 kbd{display:inline-block;background:#f6f8f9;border:1px solid #c4ced4;border-bottom-width:2px;
   border-radius:5px;padding:0 6px;font:600 .82em/1.5 "Noto Sans",sans-serif;color:#2b3a42;white-space:nowrap}
-figure.f{margin:1.3em 0;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--band)}
+figure.f{margin:1.3em auto;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--band);max-width:470px}
 figure.f img{width:100%;display:block}
-figure.f.tall{max-width:120px;margin:1.2em 0}
+/* the tool rail is a tall, thin strip: cap it by HEIGHT so it can't balloon down the page */
+figure.f.tall{max-width:none;width:max-content;margin:1.2em auto}
+figure.f.tall img{width:auto;max-height:430px}
 figcaption{font-size:.85rem;color:var(--mute);padding:8px 12px;background:var(--band);border-top:1px solid var(--line)}
 .fig-missing{color:#b24;font-size:.85rem;border:1px dashed #c99;padding:8px;border-radius:6px;margin:1em 0}
 /* procedures */
@@ -39,7 +41,7 @@ dl.gloss dt{font-weight:700;margin-top:.7em;color:#17323a} dl.gloss dd{margin:.1
 /* catalogue grids */
 .catgrid{display:grid;grid-template-columns:repeat(2,1fr);gap:16px;margin:1em 0}
 .catgrid.assets{grid-template-columns:repeat(3,1fr)}
-.cat-card figure.f{margin:0}
+.cat-card figure.f{margin:0;max-width:none}
 .cat-card.asset figure.f img{background:#fff;object-fit:contain;max-height:150px}
 /* back-of-book index */
 .index{columns:2;gap:30px}
