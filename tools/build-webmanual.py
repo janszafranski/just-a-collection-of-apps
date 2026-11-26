@@ -383,6 +383,9 @@ def capture(full=True):
     drive(w2.gallery_dialog, seed(mk("gallery", 60, 60, 600, 320, images=["_placeholder"])))
     drive(w2.search_dialog, seed(mk("search", 60, 60, 360, 46)))
     drive(w2.form_dialog, seed(mk("form", 60, 60, 360, 300)))
+    # Rollover / pop-up editor for a picture (needs a picture selected).
+    if hasattr(w2, "rollover_dialog"):
+        drive(w2.rollover_dialog, seed(mk("picture", 60, 60, 240, 170, src="_placeholder")))
     drive(w2.youtube_dialog, seed(mk("youtube", 60, 60, 560, 315)))
     drive(w2.map_dialog, seed(mk("map", 60, 60, 480, 320)))
     drive(w2.newsfeed_dialog, seed(mk("newsfeed", 60, 60, 480, 420)))
@@ -815,6 +818,23 @@ part of a photo, use the <b>Crop</b> tool:</p>
   'Switch back to the Pointer. The hidden area is kept, so you can re-crop later.')}
 {fig(dlg('Crop Picture'), 'The Crop Picture tool trims a photo without discarding the hidden part.')}
 <p>Round the frame's corners or give it an outline from the panels to finish it off.</p>"""),
+      ("Rollovers and pop-ups", f"""
+<p>A <b>rollover</b> makes a picture react when a visitor points at it. WEBcreator gives any picture two
+kinds of rollover, and both are self-contained &mdash; they work on the published page with no scripts and
+no server:</p>
+<ul>
+<li><b>Rollover image</b> &mdash; a second picture that fades in while the mouse is over the frame (and swaps
+back when it leaves). Perfect for &ldquo;on / off&rdquo; buttons, before/after shots or a highlight state.</li>
+<li><b>Pop-up rollover</b> &mdash; a small panel (a thumbnail, a caption, or both) that pops up above the
+picture on hover &mdash; a tooltip-style label or a preview.</li>
+</ul>
+{proc('give a picture a rollover',
+  'Place a picture and choose its main image.',
+  'Select it and click the <b>Rollover</b> tool on the left-hand rail (or right-click the picture &#9656; <b>Rollover and Pop-up&hellip;</b>).',
+  'Choose a <b>Rollover image</b> to swap in on hover, and/or a <b>pop-up</b> image and <b>caption</b>.',
+  'Click <b>OK</b>. A small <i>rollover</i> badge marks the picture on the canvas; preview the effect in the browser via Device Preview or by publishing.')}
+{fig(dlg('Rollover and Pop-up'), 'The Rollover editor: a hover image swap, plus an optional pop-up image and caption.')}
+{note('The main image is what shows on the editing canvas; the hover swap and pop-up appear on the live site. The rollover also triggers on keyboard focus, so it stays accessible.')}"""),
       ("Lightbox images", """
 <p>A <b>Lightbox Image</b> is a thumbnail that, when a visitor clicks it, opens the full-size picture in a
 dark overlay over the page &mdash; the familiar way to show a gallery of photos without sending the visitor
@@ -952,7 +972,15 @@ so adding or renaming a page updates every nav bar at once.</p>
   'Choose a <b>style</b> — pills, underline or plain — and whether it runs across (horizontal) or down (vertical).',
   'Set the font, size and accent colour, then click <b>OK</b>.')}
 {fig(dlg('Navigation Bar'), 'The Navigation Bar editor: style, orientation, font and accent colour. The links themselves come from your pages.')}
-{note('A sub-page (a page nested under another in the Site panel) shows as a drop-down under its parent, so a deep site still gets a tidy menu.')}"""),
+<h3>Multi-level drop-down menus</h3>
+<p>When your site has <b>sub-pages</b>, the navigation bar nests them automatically as <b>drop-down menus</b>.
+A top-level page that has sub-pages shows a small &#9662; arrow; hovering (or tabbing to) it reveals its
+sub-pages beneath.</p>
+{proc('build a drop-down menu',
+  'Add the parent page as usual (for example <b>Services</b>).',
+  'Add each child with <b>Insert &#9656; Page</b> and tick <b>&ldquo;Make it a sub-page&rdquo;</b> — it nests under the page above it.',
+  'That is all: the navigation bar builds the drop-down by itself, both in automatic mode and when you hand-pick pages in the editor.')}
+{note('The drop-down is pure HTML and CSS — no scripts — so it works on every browser and is keyboard-accessible (it opens on focus as well as hover). On a phone the whole menu, sub-pages included, folds into the slide-in hamburger panel.')}"""),
       ("Buttons", f"""
 <p>A <b>Button</b> is a styled call to action that links somewhere &mdash; “Get a quote”, “Buy now”,
 “Download”.</p>
@@ -966,9 +994,25 @@ so adding or renaming a page updates every nav bar at once.</p>
 {proc('add a contact form',
   'Choose the <b>Form</b> tool and drag out its size.',
   'In the <b>Edit Form</b> editor, list the fields you want (one per line) — for example Name, Email, Message.',
-  'Set the <b>submit button</b> text, then click <b>OK</b>.')}
-{fig(dlg('Edit Form', 'Form'), 'The form editor: list the fields and name the submit button.')}
-{note('A form needs somewhere to send its answers once the site is live. WEBcreator publishes the form ready to wire up to a free form-handling service — see the troubleshooting appendix.')}"""),
+  'Set the <b>submit button</b> text.',
+  'Choose <b>When submitted</b> — how the form actually sends (see below) — then click <b>OK</b>.')}
+{fig(dlg('Edit Form', 'Form'), 'The form editor: list the fields, name the submit button and choose how the form sends.')}
+<h3>Making the form actually send</h3>
+<p>A published form needs somewhere to deliver its answers. WEBcreator writes the correct code for whichever
+of these three you pick in <b>When submitted</b> &mdash; all three work on a plain static host, with no server
+to run:</p>
+<ul>
+<li><b>Netlify Forms</b> <i>(recommended)</i> &mdash; if you publish to Netlify (WEBcreator's built-in
+publish target), this is <b>zero setup</b>. WEBcreator adds the <code>data-netlify</code> marker and a hidden
+form name; Netlify captures every submission and lists it in your dashboard under <b>Forms</b>. Just give the
+form a <b>name</b> so you can tell several forms apart.</li>
+<li><b>Formspree</b> &mdash; create a free form at formspree.io, copy its <b>endpoint URL</b>
+(<code>https://formspree.io/f/&hellip;</code>) and paste it in. Submissions are emailed to you. Good when you
+publish somewhere other than Netlify.</li>
+<li><b>Email (mailto)</b> &mdash; opens the <i>visitor's own</i> email program with the answers filled in.
+It works anywhere and needs no account, but relies on the visitor having email set up on their device.</li>
+</ul>
+{note('Each field is published with a proper <code>name</code> so the service knows which answer is which. If you leave the handler unconfigured, the form stays inert (it shows a reminder) rather than silently losing messages.')}"""),
       ("Search box", f"""
 <p>A <b>Search Box</b> lets a visitor find anything on your site.</p>
 {proc('add a search box',

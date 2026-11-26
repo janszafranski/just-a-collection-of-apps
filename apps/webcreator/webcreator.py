@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.15-00"
+VERSION = "1.16-00"
 
 
 def _just_dir(kind):
@@ -216,7 +216,8 @@ DEF = {
                      bold=True, italic=False, underline=False, fill='', stroke='#333333', strokeW=0, radius=0),
     'shape':    dict(w=200, h=140, shape='rect', fill='#9fc3d6', stroke='#2b3a42', strokeW=0, radius=0, dash='solid'),
     'line':     dict(w=240, h=2, stroke='#2b3a42', strokeW=2, flip=False, dash='solid'),
-    'picture':  dict(w=320, h=220, src=None, fit='cover', radius=0, strokeW=0, stroke='#333333', fill=''),
+    'picture':  dict(w=320, h=220, src=None, fit='cover', radius=0, strokeW=0, stroke='#333333', fill='',
+                     rollover=None, popup=None, popuptext=''),
     'lightbox': dict(w=320, h=220, src=None, full=None, fit='cover', radius=0, strokeW=0, stroke='#333333', fill='', caption=''),
     'nav':      dict(w=420, h=40, style='pills', orient='h', align='left', font='Noto Sans', size=15, bold=False, color='#1f2a30',
                      accent='#2a7d6b', accentInk='#ffffff', fill=''),
@@ -227,7 +228,8 @@ DEF = {
     'html':     dict(w=300, h=120, code='<p style="font:14px sans-serif">Your HTML here</p>'),
     'gallery':  dict(w=600, h=300, images=[], interval=5, fade=0.5, fit='cover', radius=0, strokeW=0, stroke='#333333', fill=''),
     'share':    dict(w=480, h=40, nets=['facebook', 'x', 'linkedin', 'email'], style='colour', font='Arial', size=14, radius=6, gap=8),
-    'form':     dict(w=360, h=300, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', fields=['Name', 'Email', 'Message'], submit='Send'),
+    'form':     dict(w=360, h=300, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', fields=['Name', 'Email', 'Message'], submit='Send',
+                     send='netlify', formspree='', email='', formname='contact', thanks='Thank you — your message has been sent.'),
     'search':   dict(w=360, h=46, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', placeholder='Search this site…', submit='Search', provider='google', scope='site'),
     'youtube':  dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
     'audio':    dict(w=320, h=54, font='Noto Sans', size=13, src='', url='', title='', fill='#eef1f4', color='#2b2b2b', accent='#2a7d6b', radius=8),
@@ -1250,9 +1252,21 @@ def obj_brush(o):
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
 def nav_items(site, o=None):
+    # Returns a list of (top_level_page, [child_pages]) tuples. A page with level>0
+    # nests as a drop-down child of the most recent level-0 page before it, in BOTH
+    # automatic mode and the hand-picked (o['pages']) mode — so sub-pages always show
+    # as a submenu rather than another top-level link.
     if o and o.get('pages'):
         byid = {q['id']: q for q in site['pages']}
-        return [(byid[i], []) for i in o['pages'] if i in byid]
+        out = []
+        for i in o['pages']:
+            q = byid.get(i)
+            if not q: continue
+            if q.get('level') and out:
+                out[-1][1].append(q)
+            else:
+                out.append((q, []))
+        return out
     out = []
     for q in site['pages']:
         if not q.get('nav', True): continue
@@ -1535,6 +1549,12 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         p.restore()
         if o.get('strokeW', 0) > 0:
             p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit and (o.get('rollover') or o.get('popup') or (o.get('popuptext') or '').strip()):
+            # A small corner badge marking a picture that has a hover rollover / pop-up set.
+            bw = 56; br = QRectF(w - bw - 6, 6, bw, 18)
+            p.setPen(Qt.NoPen); p.setBrush(QColor(42, 125, 107, 220)); p.drawRoundedRect(br, 9, 9)
+            f = QFont(); f.setPixelSize(11); f.setBold(True); p.setFont(f); p.setPen(QColor('#ffffff'))
+            p.drawText(br, Qt.AlignCenter, 'rollover')
     elif t == 'lightbox':
         # Same frame as a picture, plus a magnifier badge so it reads as "click to enlarge".
         path = QPainterPath(); path.addRoundedRect(r, rad, rad)
@@ -1854,14 +1874,32 @@ a.obj{color:inherit;text-decoration:none}
 .obj-artistic{white-space:nowrap}
 .obj-button{display:flex;flex-direction:column;justify-content:center}
 .obj-picture img{width:100%;height:100%;display:block}
+/* Rollover image — a second picture that fades in on hover/focus (self-contained, no JS). */
+.obj-picture.has-rollover{position:absolute}
+.obj-picture.has-rollover>img{position:absolute;inset:0}
+.obj-picture.has-rollover>img.roll{opacity:0;transition:opacity .25s ease}
+.obj-picture.has-rollover:hover>img.roll,.obj-picture.has-rollover:focus-within>img.roll{opacity:1}
+/* Pop-up rollover — a small caption / image panel shown while the picture is hovered or focused. */
+.obj-picture.has-popup{overflow:visible}
+.obj-picture .pic-pop{position:absolute;left:50%;bottom:100%;transform:translate(-50%,-6px);min-width:120px;max-width:260px;
+background:#1f2a30;color:#fff;border-radius:8px;padding:8px 11px;box-shadow:0 8px 24px rgba(0,0,0,.28);
+font:14px/1.4 Arial,sans-serif;text-align:center;opacity:0;visibility:hidden;transition:opacity .18s ease;z-index:200;pointer-events:none}
+.obj-picture .pic-pop img{width:100%;height:auto;display:block;border-radius:4px;margin-bottom:6px}
+.obj-picture .pic-pop span{display:block}
+.obj-picture .pic-pop::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:7px solid transparent;border-top-color:#1f2a30}
+.obj-picture.has-popup:hover .pic-pop,.obj-picture.has-popup:focus-within .pic-pop{opacity:1;visibility:visible}
 .obj-nav{display:flex;flex-wrap:wrap;gap:6px;align-items:center;align-content:center;z-index:50}
 .obj-nav.v{flex-direction:column;flex-wrap:nowrap;align-items:stretch}
-.obj-nav .nv{position:relative}
+.obj-nav .nav-links{list-style:none;margin:0;padding:0}
+.obj-nav .nv{position:relative;list-style:none}
 .obj-nav a{display:block;text-decoration:none;color:inherit;padding:8px var(--nvpad,14px);white-space:nowrap;text-align:center;line-height:1.2}
-.obj-nav .sub{display:none;position:absolute;top:100%;left:0;min-width:100%;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.15);border-radius:6px;padding:4px;z-index:60}
+.obj-nav .nv.has-sub>a::after{content:"\\25BE";margin-left:.4em;font-size:.8em;opacity:.7}
+.obj-nav .sub{list-style:none;margin:0;display:none;position:absolute;top:100%;left:0;min-width:100%;background:#fff;box-shadow:0 6px 18px rgba(0,0,0,.15);border-radius:6px;padding:4px;z-index:60}
+.obj-nav .sub li{list-style:none}
 .obj-nav .sub a{color:#222;text-align:left;border-radius:4px}
-.obj-nav .sub a:hover{background:rgba(0,0,0,.06)}
-.obj-nav .nv:hover .sub{display:block}
+.obj-nav .sub a:hover,.obj-nav .sub a:focus{background:rgba(0,0,0,.06)}
+/* Open the drop-down on hover AND on keyboard focus (so Tab reaches the sub-pages). */
+.obj-nav .nv:hover>.sub,.obj-nav .nv:focus-within>.sub{display:block}
 .nav-pills a.on{background:var(--na);color:var(--nai);border-radius:999px}
 .nav-underline a.on{box-shadow:inset 0 -2px 0 var(--na)}
 .nav-tabs>.nv>a{background:rgba(0,0,0,.06);border-radius:6px}
@@ -2150,6 +2188,7 @@ def obj_html(o, site, page, img):
         elif L['type'] == 'file': href = img(L['target']) if L['target'] in site.get('assets', {}) else '#'; attrs += ' target="_blank"'
         tag, attrs = 'a', f' href="{esc(href)}"' + attrs
     inner = ''
+    extra_cls = ''   # appended to the object's class list (used by the picture rollover/popup)
     if t in ('text', 'artistic', 'button'):
         st += text_css(o) + box_css(o)
         if t == 'text': st += f"padding:{o.get('pad', 8)}px;--pg:{o.get('pgap', .6)};"
@@ -2175,8 +2214,30 @@ def obj_html(o, site, page, img):
     elif t == 'picture':
         st += box_css(o) + 'overflow:hidden;'
         fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}[o.get('fit', 'cover')]
-        if o.get('src'): inner = f'<img src="{img(o["src"])}" alt="" style="object-fit:{fit}">'
-        else: st += 'background:#dde2e5;'
+        roll = o.get('rollover'); pop = o.get('popup'); poptxt = (o.get('popuptext') or '').strip()
+        has_pop = bool(pop or poptxt)
+        if o.get('src'):
+            inner = f'<img src="{img(o["src"])}" alt="" style="object-fit:{fit}">'
+            # Rollover image: a second <img> stacked on top that fades in on hover/focus
+            # (pure CSS, self-contained — see .obj-picture.has-rollover rules in PUBLISH_CSS).
+            if roll:
+                inner += f'<img class="roll" src="{img(roll)}" alt="" style="object-fit:{fit}">'
+            # Pop-up rollover: a small caption / image panel revealed when the picture is hovered.
+            if has_pop:
+                pbits = ''
+                if pop: pbits += f'<img src="{img(pop)}" alt="">'
+                if poptxt: pbits += f'<span>{esc(poptxt)}</span>'
+                inner += f'<span class="pic-pop" role="tooltip">{pbits}</span>'
+            # Behaviour-flag classes drive the self-contained CSS in PUBLISH_CSS. A pop-up must
+            # escape the frame, so it needs overflow:visible and (when not already a link) a
+            # tabindex so keyboard users can trigger :focus-within. The base class/style shape
+            # the publish `lift` regex relies on is preserved via extra_cls + the shared return.
+            extra_cls = (' has-rollover' if roll else '') + (' has-popup' if has_pop else '')
+            if has_pop:
+                st = st.replace('overflow:hidden;', 'overflow:visible;')
+                if tag != 'a': attrs += ' tabindex="0"'
+        else:
+            st += 'background:#dde2e5;'
     elif t == 'lightbox':
         # Thumbnail that opens the full image in an overlay on click. The full image is
         # o['full'] if set, otherwise the thumbnail itself. The shared overlay markup,
@@ -2201,13 +2262,19 @@ def obj_html(o, site, page, img):
         parts = []
         for idx, (q, kids) in enumerate(nav_items(site, o)):
             on = ' class="on"' if page and q['id'] == page['id'] or (page and page['id'] in [k['id'] for k in kids]) else ''
-            sub = ''
+            # Multi-level drop-down: a page with sub-pages publishes a nested <ul class="sub">.
+            # The submenu opens on hover AND on keyboard focus (:focus-within, see PUBLISH_CSS),
+            # and the parent link advertises it to assistive tech via aria-haspopup.
+            sub, haspop = '', ''
             if kids:
-                sub = '<div class="sub">' + ''.join(f'<a href="{esc(k["file"])}">{esc(k["title"])}</a>' for k in kids) + '</div>'
+                sub = ('<ul class="sub">'
+                       + ''.join(f'<li><a href="{esc(k["file"])}">{esc(nav_label(o, k))}</a></li>' for k in kids)
+                       + '</ul>')
+                haspop = ' aria-haspopup="true"'
             # The item at the split boundary gets margin-left:auto, which in a flex row pushes it
             # and every following item to the right edge (the "pin first N items left" grouping).
             push = ' style="margin-left:auto"' if split and idx == split else ''
-            parts.append(f'<div class="nv"{push}><a href="{esc(q["file"])}"{on}>{esc(nav_label(o, q))}</a>{sub}</div>')
+            parts.append(f'<li class="nv{" has-sub" if kids else ""}"{push}><a href="{esc(q["file"])}"{on}{haspop}>{esc(nav_label(o, q))}</a>{sub}</li>')
         # A hamburger toggle + off-canvas panel: inert on desktop (the burger and the
         # checkbox are display:none, and .nav-links is display:contents so the items lay
         # out exactly as before), but on narrow screens the media query shows the burger
@@ -2218,7 +2285,7 @@ def obj_html(o, site, page, img):
                 f'<input type="checkbox" class="nav-toggle" id="{tog}" hidden>'
                 f'<label class="nav-burger" for="{tog}" aria-label="Menu">'
                 f'<span class="b"></span><span class="b"></span><span class="b"></span></label>'
-                f'<div class="nav-links">' + ''.join(parts) + '</div>'
+                f'<ul class="nav-links">' + ''.join(parts) + '</ul>'
                 f'<label class="nav-backdrop" for="{tog}" aria-hidden="true"></label></nav>')
     elif t == 'table':
         st += text_css(o) + f"--tb:{o.get('stroke')};--th:{o.get('head')};background:{o.get('fill') or '#fff'};"
@@ -2226,14 +2293,37 @@ def obj_html(o, site, page, img):
         inner = f'<table>{rows}</table>'
     elif t == 'form':
         st += text_css(o) + f"--na:{o.get('accent')};"
+        send = o.get('send', 'netlify')
+        fname = re.sub(r'[^A-Za-z0-9_-]+', '-', (o.get('formname') or 'contact')).strip('-') or 'contact'
         fl = ''
         for i, fld in enumerate(o.get('fields', [])):
             big = any(k in fld.lower() for k in ('message', 'help', 'comment', 'enquiry', 'details'))
             nm = re.sub(r'[^a-z0-9]+', '_', fld.lower()).strip('_') or f'field{i}'
-            ctl = f'<textarea name="{nm}"></textarea>' if big else f'<input name="{nm}" type="{"email" if "email" in fld.lower() else "text"}">'
+            ctl = (f'<textarea name="{nm}"></textarea>' if big
+                   else f'<input name="{nm}" type="{"email" if "email" in fld.lower() else "text"}">')
             fl += f'<label>{esc(fld)}{ctl}</label>'
-        return (f'<form class="obj obj-form" style="{st}" method="post" action="#" onsubmit="alert(\'Connect this form to a form handler on your web host.\');return false">'
-                f'{fl}<button type="submit">{esc(o.get("submit", "Send"))}</button></form>')
+        btn = f'<button type="submit">{esc(o.get("submit", "Send"))}</button>'
+        if send == 'netlify':
+            # Netlify Forms: data-netlify="true" + a hidden form-name field is all Netlify needs
+            # to capture submissions (it post-processes the static HTML at deploy time).
+            hidden = f'<input type="hidden" name="form-name" value="{esc(fname)}">'
+            return (f'<form class="obj obj-form" style="{st}" name="{esc(fname)}" method="post" '
+                    f'data-netlify="true" netlify-honeypot="bot-field">'
+                    f'{hidden}<p hidden><label>Leave blank: <input name="bot-field"></label></p>'
+                    f'{fl}{btn}</form>')
+        if send == 'formspree' and (o.get('formspree') or '').strip():
+            action = (o.get('formspree') or '').strip()
+            return (f'<form class="obj obj-form" style="{st}" action="{esc(action)}" method="post">'
+                    f'{fl}{btn}</form>')
+        if send == 'email' and (o.get('email') or '').strip():
+            # mailto: opens the visitor's own mail client with the fields pre-filled.
+            action = 'mailto:' + (o.get('email') or '').strip()
+            return (f'<form class="obj obj-form" style="{st}" action="{esc(action)}" method="post" '
+                    f'enctype="text/plain">{fl}{btn}</form>')
+        # Fallback (no handler configured yet) — keep the old safe placeholder behaviour.
+        return (f'<form class="obj obj-form" style="{st}" method="post" action="#" '
+                f'onsubmit="alert(\'Connect this form to a form handler (Form editor ▸ When submitted).\');return false">'
+                f'{fl}{btn}</form>')
     elif t == 'search':
         st += text_css(o) + f"--na:{o.get('accent')};"
         action = {'google': 'https://www.google.com/search', 'bing': 'https://www.bing.com/search',
@@ -2335,7 +2425,7 @@ def obj_html(o, site, page, img):
         empty = '<span class="nf-empty">No stories yet — add news pages under this one, then publish.</span>'
         inner = '<span class="nf-scroll">' + (''.join(cards) or empty) + '</span>'
         return f'<div class="obj obj-newsfeed" style="{st}">{inner}</div>'
-    return f'<{tag} class="obj obj-{t}" style="{st}"{attrs}>{inner}</{tag}>'
+    return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}>{inner}</{tag}>'
 
 def _page_text(page):
     """Plain text of a page's text objects (tags stripped, whitespace tidied)."""
@@ -5941,7 +6031,11 @@ class MainWindow(QMainWindow):
             a = QAction(ticon(names, glyph), label, self); a.setCheckable(True); a.setToolTip(f'{label}\n{tip}')
             a.triggered.connect(lambda _=False, tid=tid: self.set_tool(tid))
             self.tool_group.addAction(a); tt.addAction(a); self.tool_actions[tid] = a
-        for name, glyph in (('Node Edit', '✎'), ('Pen / Curve', '✐'), ('Hotspot', '⬚'), ('Rollover', '◳')):
+        # Rollover is live (hover image-swap + pop-up on a picture); the rest are still stubs.
+        roll = QAction(ticon(['view-preview', 'image-x-generic'], '◳'), 'Rollover', self)
+        roll.setToolTip('Rollover\nGive the selected picture a hover image-swap and/or a pop-up panel.')
+        roll.triggered.connect(lambda _=False: self.rollover_dialog()); tt.addAction(roll); self.a['rollover'] = roll
+        for name, glyph in (('Node Edit', '✎'), ('Pen / Curve', '✐'), ('Hotspot', '⬚')):
             pt = QAction(ticon([], glyph), name, self); pt.setToolTip(f'{name} — not available in this clone yet')
             pt.triggered.connect(lambda _=False, n=name: self.hint(f'The {n} tool isn’t available in this clone yet.')); tt.addAction(pt)
         # The Insert-menu entries that aren't drawing tools, as icons at the foot of the rail.
@@ -7452,6 +7546,50 @@ class MainWindow(QMainWindow):
         uri = f'data:image/{mime};base64,' + base64.b64encode(data).decode()
         self._apply_picture(o, uri)
 
+    def rollover_dialog(self, o=None):
+        """Set a picture's rollover image (swaps in on hover) and/or pop-up rollover
+        (a small image+caption panel revealed on hover). Pure CSS on publish — no server."""
+        o = o or next((q for q in self.sel_objs() if q['type'] == 'picture'), None)
+        if o is None or o.get('type') != 'picture':
+            self.hint('Select a picture first, then choose the Rollover tool to give it a hover effect.')
+            return
+        dlg = QDialog(self); dlg.setWindowTitle('Rollover and Pop-up'); dlg.setMinimumWidth(460)
+        lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('<b>Rollover image</b> — a second picture that appears while the mouse is over this one.'))
+        rrow = QHBoxLayout()
+        rstat = QLabel('Set' if o.get('rollover') else 'None'); rstat.setStyleSheet('color:#555')
+        rpick = QPushButton('Choose image…'); rclear = QPushButton('Clear')
+        rrow.addWidget(rstat, 1); rrow.addWidget(rpick); rrow.addWidget(rclear); lay.addLayout(rrow)
+        lay.addSpacing(8)
+        lay.addWidget(QLabel('<b>Pop-up rollover</b> — a little panel (image and/or caption) that pops up on hover.'))
+        prow = QHBoxLayout()
+        pstat = QLabel('Set' if o.get('popup') else 'None'); pstat.setStyleSheet('color:#555')
+        ppick = QPushButton('Choose image…'); pclear = QPushButton('Clear')
+        prow.addWidget(pstat, 1); prow.addWidget(ppick); prow.addWidget(pclear); lay.addLayout(prow)
+        ptxt = QLineEdit(o.get('popuptext') or '')
+        pf = QFormLayout(); pf.addRow('Pop-up caption:', ptxt); lay.addLayout(pf)
+        state = {'rollover': o.get('rollover'), 'popup': o.get('popup')}
+
+        def choose(key, statlbl):
+            uri = self._load_image_uri('Choose an image')
+            if uri:
+                state[key] = add_asset(self.site, uri); statlbl.setText('Set')
+        rpick.clicked.connect(lambda: choose('rollover', rstat))
+        rclear.clicked.connect(lambda: (state.update(rollover=None), rstat.setText('None')))
+        ppick.clicked.connect(lambda: choose('popup', pstat))
+        pclear.clicked.connect(lambda: (state.update(popup=None), pstat.setText('None')))
+        note = QLabel('The main picture shows on the page; the rollover swap and pop-up appear '
+                      'on the published site when a visitor hovers (or tabs to) the picture.')
+        note.setWordWrap(True); note.setStyleSheet('color:#555'); lay.addWidget(note)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if dlg.exec():
+            self.commit()
+            o['rollover'] = state['rollover']; o['popup'] = state['popup']
+            o['popuptext'] = ptxt.text().strip()
+            self.select([o['id']]); self.refresh()
+            self.hint('Rollover set. Preview it in the browser via Device Preview or by publishing.')
+
     def crop_picture(self, o):
         """Interactive crop: drag out the part of the image to keep. The kept region is
         saved as a new picture and the frame's height is set to match it (no distortion)."""
@@ -8006,10 +8144,39 @@ class MainWindow(QMainWindow):
     def form_dialog(self, o):
         fields = QPlainTextEdit('\n'.join(o.get('fields', []))); fields.setMinimumHeight(140)
         sub = QLineEdit(o.get('submit', 'Send'))
-        dlg = form_dialog(self, 'Edit Form', [('Fields (one per line):', fields), ('Button text:', sub)],
-                          QLabel('Published forms need a form handler on your web host to send their contents.'))
+        # How the form actually sends — all three are static-host friendly (no backend to run).
+        modes = [('netlify', 'Netlify Forms (recommended — zero setup when published to Netlify)'),
+                 ('formspree', 'Formspree (paste your form endpoint)'),
+                 ('email', 'Email the visitor’s own mail app (mailto:)')]
+        send = QComboBox(); send.addItems([lbl for _, lbl in modes])
+        send.setCurrentIndex(next((i for i, (k, _) in enumerate(modes) if k == o.get('send', 'netlify')), 0))
+        fname = QLineEdit(o.get('formname', 'contact'))
+        fspree = QLineEdit(o.get('formspree', '')); fspree.setPlaceholderText('https://formspree.io/f/xxxxxxxx')
+        email = QLineEdit(o.get('email', '')); email.setPlaceholderText('you@example.com')
+        note = QLabel(); note.setWordWrap(True); note.setStyleSheet('color:#555')
+        def upd():
+            k = modes[send.currentIndex()][0]
+            fname.setEnabled(k == 'netlify'); fspree.setEnabled(k == 'formspree'); email.setEnabled(k == 'email')
+            note.setText({
+                'netlify': 'Netlify detects the form automatically when you publish to Netlify — nothing else to do. '
+                           'Submissions appear in your Netlify dashboard under Forms.',
+                'formspree': 'Create a free form at formspree.io, copy its endpoint URL and paste it above. '
+                             'Submissions are emailed to you.',
+                'email': 'Opens the visitor’s own email program with the answers filled in. Works anywhere, '
+                         'but relies on the visitor having email set up.'}[k])
+        send.currentIndexChanged.connect(lambda *_: upd()); upd()
+        dlg = form_dialog(self, 'Edit Form',
+                          [('Fields (one per line):', fields), ('Button text:', sub),
+                           ('When submitted:', send), ('Form name (Netlify):', fname),
+                           ('Formspree endpoint:', fspree), ('Send to email:', email)], note)
         if dlg.exec():
-            self.commit(); o['fields'] = [x.strip() for x in fields.toPlainText().splitlines() if x.strip()]; o['submit'] = sub.text() or 'Send'
+            self.commit()
+            o['fields'] = [x.strip() for x in fields.toPlainText().splitlines() if x.strip()]
+            o['submit'] = sub.text() or 'Send'
+            o['send'] = modes[send.currentIndex()][0]
+            o['formname'] = fname.text().strip() or 'contact'
+            o['formspree'] = fspree.text().strip()
+            o['email'] = email.text().strip()
             o['h'] = max(o['h'], 60 + 70 * len(o['fields'])); self.refresh()
 
     def search_dialog(self, o):
@@ -9321,6 +9488,7 @@ class MainWindow(QMainWindow):
                 m.addAction(ticon(['insert-table', 'table'], ''), 'Convert to Table…', self.text_to_table)
             if o['type'] == 'picture':
                 m.addAction('Replace Picture…', lambda: self.pick_picture(o))
+                m.addAction(ticon(['view-preview'], '◳'), 'Rollover and Pop-up…', lambda: self.rollover_dialog(o))
                 if o.get('src'):
                     m.addAction(ticon(['draw-brush', 'krita'], '🖌'), 'Edit in PAINTcanvas', lambda: self.edit_in_paint(o['src']))
                     self._pic_adjust_menu(m, o['src'])
