@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.17-00"
+VERSION = "1.17-01"
 
 
 def _just_dir(kind):
@@ -6542,6 +6542,19 @@ class MainWindow(QMainWindow):
                         if fam not in seen:
                             seen.add(fam); self.bundled_fonts.append(fam)
         self.bundled_fonts.sort(key=str.lower)
+        # Also surface the user's OWN installed fonts from a drop-in folder, listed
+        # separately in the Fonts panel (not bundled with or committed to the app).
+        self.user_fonts = []
+        ud = os.path.expanduser('~/.local/share/fonts/just-a-fonts')
+        if os.path.isdir(ud):
+            useen = set(self.bundled_fonts)
+            for fn in sorted(os.listdir(ud)):
+                if fn.lower().endswith(('.ttf', '.otf')):
+                    fid = QFontDatabase.addApplicationFont(os.path.join(ud, fn))
+                    for fam in QFontDatabase.applicationFontFamilies(fid):
+                        if fam and fam not in useen:
+                            useen.add(fam); self.user_fonts.append(fam)
+            self.user_fonts.sort(key=str.lower)
 
     def apply_font_family(self, fam):
         """Apply a font to the selected text (or the highlighted words if you're editing)."""
@@ -6696,20 +6709,28 @@ class MainWindow(QMainWindow):
         fl.addWidget(QLabel('<b>Fonts</b> — click a sample to apply it to the selected text.'))
         fscroll = QScrollArea(); fscroll.setWidgetResizable(True); fscroll.setFrameShape(QFrame.NoFrame)
         finner = QWidget(); fil = QVBoxLayout(finner); fil.setContentsMargins(0, 0, 0, 0); fil.setSpacing(0)
-        PANGRAM = 'A young fox jumped over the lazy dog'
+        PANGRAM = 'The quick brown fox jumps over the lazy dog'
+        def _addfont(fam):
+            b = QPushButton(PANGRAM); b.setCursor(Qt.PointingHandCursor); b.setToolTip(f'Apply {fam}')
+            bf = QFont(fam); bf.setPixelSize(21); b.setFont(bf)
+            b.setStyleSheet('QPushButton{text-align:left;padding:7px 10px 1px;border:0;'
+                            'border-bottom:1px solid #e6ebee;background:transparent}'
+                            'QPushButton:hover{background:#eef5f3}')
+            b.clicked.connect(lambda _=False, fam=fam: self.apply_font_family(fam))
+            fil.addWidget(b)
+            nm = QLabel(fam); nm.setStyleSheet('color:#8b97a0;font-size:10px;padding:0 10px 7px;border-bottom:1px solid #e6ebee')
+            fil.addWidget(nm)
+        def _fonthead(t):
+            h = QLabel(t); h.setStyleSheet('font-weight:700;color:#2a7d6b;padding:11px 10px 5px'); fil.addWidget(h)
         if getattr(self, 'bundled_fonts', None):
             for fam in self.bundled_fonts:
-                b = QPushButton(PANGRAM); b.setCursor(Qt.PointingHandCursor); b.setToolTip(f'Apply {fam}')
-                bf = QFont(fam); bf.setPixelSize(21); b.setFont(bf)
-                b.setStyleSheet('QPushButton{text-align:left;padding:7px 10px 1px;border:0;'
-                                'border-bottom:1px solid #e6ebee;background:transparent}'
-                                'QPushButton:hover{background:#eef5f3}')
-                b.clicked.connect(lambda _=False, fam=fam: self.apply_font_family(fam))
-                fil.addWidget(b)
-                nm = QLabel(fam); nm.setStyleSheet('color:#8b97a0;font-size:10px;padding:0 10px 7px;border-bottom:1px solid #e6ebee')
-                fil.addWidget(nm)
+                _addfont(fam)
         else:
             fil.addWidget(QLabel('<span style="color:gray">No bundled fonts were found.</span>'))
+        if getattr(self, 'user_fonts', None):
+            _fonthead('My fonts — your own installed faces')
+            for fam in self.user_fonts:
+                _addfont(fam)
         fil.addStretch()
         fscroll.setWidget(finner); fl.addWidget(fscroll, 1)
         self.d_fonts = self.dock('Fonts', fw, 'fonts')
@@ -7233,6 +7254,8 @@ class MainWindow(QMainWindow):
         if self.editor: self.finish_edit()
         self.tool = tid; self.tool_actions[tid].setChecked(True)
         self.view.viewport().setCursor({'pointer': Qt.ArrowCursor, 'hand': Qt.OpenHandCursor, 'zoom': Qt.PointingHandCursor}.get(tid, Qt.CrossCursor))
+        if tid in ('artistic', 'text') and getattr(self, 'd_fonts', None):
+            self.d_fonts.show(); self.d_fonts.raise_()   # bring the Fonts panel forward when a text tool is picked
         self.update_hint()
 
     def select_all(self):

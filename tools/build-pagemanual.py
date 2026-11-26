@@ -286,7 +286,7 @@ def capture(full=True):
                 qp.setPen(QColor("#8b97a0")); nf = QFont("Noto Sans"); nf.setPixelSize(10); qp.setFont(nf)
                 qp.drawText(14, y + 12, fam)
                 qp.setPen(QColor("#243137")); sf = QFont(fam); sf.setPixelSize(24); qp.setFont(sf)
-                qp.drawText(12, y + 40, "A young fox jumped over the lazy dog")
+                qp.drawText(12, y + 40, "The quick brown fox jumps over the lazy dog")
                 y += 46
             qp.end()
             IM["fonts_panel"] = _pil(fi).convert("RGB")
