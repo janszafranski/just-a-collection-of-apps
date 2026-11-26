@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.23-01"
+VERSION = "1.23-02"
 
 
 def _just_dir(kind):
@@ -7118,6 +7118,90 @@ class MainWindow(QMainWindow):
         self.set_prop('font', fam)
         self.hint(f'Applied font: {fam}')
 
+    def _build_fonts_panel(self):
+        """The Fonts studio tab: a filter box over collapsible groups (Bundled, then
+        'My fonts' A–Z). Group bodies build lazily on first expand, so a large library
+        (hundreds of faces) doesn't slow startup."""
+        from PySide6.QtWidgets import QScrollArea, QLineEdit, QToolButton
+        import collections
+        PANGRAM = 'The quick brown fox jumps over the lazy dog'
+        wrap = QWidget(); v = QVBoxLayout(wrap); v.setContentsMargins(6, 8, 6, 6); v.setSpacing(6)
+        v.addWidget(QLabel('<b>Fonts</b> — click a sample to apply it to the selected text.'))
+        search = QLineEdit(); search.setPlaceholderText('Filter fonts…'); search.setClearButtonEnabled(True)
+        v.addWidget(search)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QFrame.NoFrame)
+        inner = QWidget(); il = QVBoxLayout(inner); il.setContentsMargins(0, 0, 0, 0); il.setSpacing(0)
+        scroll.setWidget(inner); v.addWidget(scroll, 1)
+
+        def make_row(fam):
+            b = QPushButton(PANGRAM); b.setCursor(Qt.PointingHandCursor); b.setToolTip(f'Apply {fam}')
+            f = QFont(fam); f.setPixelSize(20); b.setFont(f)
+            b.setStyleSheet('QPushButton{text-align:left;padding:6px 10px 0;border:0;'
+                            'border-bottom:1px solid #eef1f3;background:transparent}QPushButton:hover{background:#eef5f3}')
+            b.clicked.connect(lambda _=False, fam=fam: self.apply_font_family(fam))
+            lab = QLabel(fam); lab.setStyleSheet('color:#8b97a0;font-size:10px;padding:0 10px 6px;border-bottom:1px solid #eef1f3')
+            row = QWidget(); rl = QVBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
+            rl.addWidget(b); rl.addWidget(lab); return row
+
+        groups = []
+        if getattr(self, 'bundled_fonts', None):
+            groups.append(('Bundled fonts', list(self.bundled_fonts)))
+        uf = getattr(self, 'user_fonts', None) or []
+        if uf:
+            byl = collections.OrderedDict()
+            for fam in uf:
+                byl.setdefault(fam[0].upper() if fam[:1].isalpha() else '#', []).append(fam)
+            for k, fams in byl.items():
+                groups.append((f'My fonts · {k}', fams))
+
+        self._font_sections = []
+        for i, (title, fams) in enumerate(groups):
+            hdr = QToolButton(); hdr.setCheckable(True); hdr.setChecked(i == 0); hdr.setCursor(Qt.PointingHandCursor)
+            hdr.setStyleSheet('QToolButton{text-align:left;border:0;font-weight:700;color:#2a7d6b;padding:8px 10px;background:#f2f7f5}')
+            body = QWidget(); bl = QVBoxLayout(body); bl.setContentsMargins(0, 0, 0, 0); bl.setSpacing(0)
+            st = {'title': title, 'fams': fams, 'hdr': hdr, 'body': body, 'bl': bl, 'built': False}
+            def build_body(st=st):
+                if st['built']:
+                    return
+                for fam in st['fams']:
+                    st['bl'].addWidget(make_row(fam))
+                st['built'] = True
+            def toggle(open_, st=st, build_body=build_body):
+                st['hdr'].setText(('▾ ' if open_ else '▸ ') + f"{st['title']}  ({len(st['fams'])})")
+                if open_:
+                    build_body()
+                st['body'].setVisible(open_)
+            hdr.toggled.connect(toggle)
+            il.addWidget(hdr); il.addWidget(body)
+            self._font_sections.append(st)
+            toggle(i == 0)   # label + open the first group only
+        # flat filtered results holder (shown only while filtering)
+        flat = QWidget(); fl2 = QVBoxLayout(flat); fl2.setContentsMargins(0, 0, 0, 0); fl2.setSpacing(0); flat.setVisible(False)
+        il.addWidget(flat); il.addStretch()
+        allfams = (getattr(self, 'bundled_fonts', None) or []) + uf
+
+        def on_filter(q):
+            q = q.strip().lower()
+            while fl2.count():
+                it = fl2.takeAt(0); w = it.widget()
+                if w:
+                    w.deleteLater()
+            if not q:
+                flat.setVisible(False)
+                for st in self._font_sections:
+                    st['hdr'].setVisible(True); st['body'].setVisible(st['hdr'].isChecked())
+                return
+            for st in self._font_sections:
+                st['hdr'].setVisible(False); st['body'].setVisible(False)
+            matches = [f for f in allfams if q in f.lower()][:300]
+            for fam in matches:
+                fl2.addWidget(make_row(fam))
+            if not matches:
+                fl2.addWidget(QLabel('<span style="color:gray">No fonts match.</span>'))
+            flat.setVisible(True)
+        search.textChanged.connect(on_filter)
+        return wrap
+
     def build_studio(self):
         # Site
         sw = QWidget(); sl = QVBoxLayout(sw); sl.setContentsMargins(4, 4, 4, 4)
@@ -7257,38 +7341,9 @@ class MainWindow(QMainWindow):
         yl.addWidget(ytb)
         self.d_layers = self.dock('Layers', yw, 'layers')
 
-        # Fonts — the bundled display/script faces, each shown large as a pangram you
-        # click to apply to the selected text (PagePlus's "Fonts" studio tab).
-        from PySide6.QtWidgets import QScrollArea
-        fw = QWidget(); fl = QVBoxLayout(fw); fl.setContentsMargins(6, 8, 6, 6); fl.setSpacing(6)
-        fl.addWidget(QLabel('<b>Fonts</b> — click a sample to apply it to the selected text.'))
-        fscroll = QScrollArea(); fscroll.setWidgetResizable(True); fscroll.setFrameShape(QFrame.NoFrame)
-        finner = QWidget(); fil = QVBoxLayout(finner); fil.setContentsMargins(0, 0, 0, 0); fil.setSpacing(0)
-        PANGRAM = 'The quick brown fox jumps over the lazy dog'
-        def _addfont(fam):
-            b = QPushButton(PANGRAM); b.setCursor(Qt.PointingHandCursor); b.setToolTip(f'Apply {fam}')
-            bf = QFont(fam); bf.setPixelSize(21); b.setFont(bf)
-            b.setStyleSheet('QPushButton{text-align:left;padding:7px 10px 1px;border:0;'
-                            'border-bottom:1px solid #e6ebee;background:transparent}'
-                            'QPushButton:hover{background:#eef5f3}')
-            b.clicked.connect(lambda _=False, fam=fam: self.apply_font_family(fam))
-            fil.addWidget(b)
-            nm = QLabel(fam); nm.setStyleSheet('color:#8b97a0;font-size:10px;padding:0 10px 7px;border-bottom:1px solid #e6ebee')
-            fil.addWidget(nm)
-        def _fonthead(t):
-            h = QLabel(t); h.setStyleSheet('font-weight:700;color:#2a7d6b;padding:11px 10px 5px'); fil.addWidget(h)
-        if getattr(self, 'bundled_fonts', None):
-            for fam in self.bundled_fonts:
-                _addfont(fam)
-        else:
-            fil.addWidget(QLabel('<span style="color:gray">No bundled fonts were found.</span>'))
-        if getattr(self, 'user_fonts', None):
-            _fonthead('My fonts — your own installed faces')
-            for fam in self.user_fonts:
-                _addfont(fam)
-        fil.addStretch()
-        fscroll.setWidget(finner); fl.addWidget(fscroll, 1)
-        self.d_fonts = self.dock('Fonts', fw, 'fonts')
+        # Fonts — bundled + "My fonts" (your own installed faces); collapsible groups,
+        # built lazily, with a type-to-filter box (PagePlus's "Fonts" studio tab).
+        self.d_fonts = self.dock('Fonts', self._build_fonts_panel(), 'fonts')
 
         # Assets — a thumbnail library of every picture in the site (uploaded + AI-made).
         aw = QWidget(); aw.setObjectName('assetpanel'); aw.setMinimumWidth(104); al = QVBoxLayout(aw); al.setContentsMargins(4, 4, 4, 4); al.setSpacing(4)

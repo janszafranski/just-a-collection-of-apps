@@ -750,6 +750,10 @@ shows each font as a large sample so you can see it before you commit:</p>
   'Select a text frame or artistic text (or highlight some words while editing).',
   'Open the <b>Fonts</b> panel and click a sample.',
   'The text takes on that font at once. The same fonts are also in the ordinary font drop-down, listed by name.')}
+<p>Picking the <b>Text</b> or <b>Artistic&nbsp;Text</b> tool brings the Fonts panel forward automatically. The
+list is grouped into collapsible sections — the bundled faces first, then <b>My&nbsp;fonts</b> (any fonts you
+have installed yourself) in A–Z groups you can open one at a time — and a <b>filter box</b> at the top lets
+you type a few letters to jump straight to a font by name.</p>
 {tip('Pair a decorative font for the headline with a plain one (such as Open Sans) for the body — one personality per page is plenty.')}"""),
       ("Text styles", """
 <p>When a document has several headings, you want them to match without setting each by hand. <b>Text
