@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.14-03"
+VERSION = "1.14-04"
 
 
 def _just_dir(kind):
@@ -249,7 +249,7 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
 NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
-                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio')
+                  nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -1722,6 +1722,17 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
             cap = ('YouTube · ' + o['video']) if o.get('video') else 'YouTube video — double-click to add a link'
             p.setFont(qfont(o)); p.setPen(QColor('#aaaaaa'))
             p.drawText(QRectF(6, h - 24, w - 12, 20), Qt.AlignHCenter | Qt.AlignVCenter, cap)
+    elif t == 'vimeo':
+        # Editor placeholder — the embedded player appears on preview/publish.
+        p.fillRect(QRectF(0, 0, w, h), QColor('#0f0f0f'))
+        bw2 = max(16, min(w, h) * 0.16); cx, cy = w / 2, h / 2
+        p.setPen(Qt.NoPen); p.setBrush(QColor(0x1a, 0xb7, 0xea, 235))   # Vimeo blue
+        p.drawRoundedRect(QRectF(cx - bw2, cy - bw2 * 0.7, bw2 * 2, bw2 * 1.4), bw2 * 0.35, bw2 * 0.35)
+        p.setBrush(QColor('#ffffff'))
+        p.drawPolygon(QPolygonF([QPointF(cx - bw2 * 0.28, cy - bw2 * 0.45), QPointF(cx - bw2 * 0.28, cy + bw2 * 0.45), QPointF(cx + bw2 * 0.5, cy)]))
+        cap = ('Vimeo · ' + o['video']) if o.get('video') else 'Vimeo video — double-click to add a link'
+        p.setFont(qfont(o)); p.setPen(QColor('#aaaaaa'))
+        p.drawText(QRectF(6, h - 24, w - 12, 20), Qt.AlignHCenter | Qt.AlignVCenter, cap)
     elif t == 'map':
         # Editor placeholder — the real interactive map only appears on preview/publish.
         p.fillRect(QRectF(0, 0, w, h), QColor('#e8eaed'))
@@ -1888,6 +1899,8 @@ a.obj{color:inherit;text-decoration:none}
 .obj-search button{flex:none;font:inherit;font-weight:700;padding:10px 20px;border:0;border-radius:6px;background:var(--na);color:#fff;cursor:pointer}
 .obj-youtube{overflow:hidden;background:#000}
 .obj-youtube iframe{display:block;width:100%;height:100%;border:0}
+.obj-vimeo{overflow:hidden;background:#000}
+.obj-vimeo iframe{display:block;width:100%;height:100%;border:0}
 .obj-map{overflow:hidden;background:#e8eaed}
 .obj-map iframe{display:block;width:100%;height:100%;border:0}
 .obj-lightbox{overflow:hidden;cursor:zoom-in}
@@ -2254,6 +2267,15 @@ def obj_html(o, site, page, img):
                     f'allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" '
                     f'allowfullscreen loading="lazy"></iframe></div>')
         return f'<div class="obj obj-youtube" style="{st}"></div>'
+    elif t == 'vimeo':
+        vid = re.sub(r'[^0-9]', '', o.get('video', ''))
+        st += f"border-radius:{o.get('radius', 0):g}px;overflow:hidden;background:#000;"
+        if vid:
+            return (f'<div class="obj obj-vimeo" style="{st}">'
+                    f'<iframe src="https://player.vimeo.com/video/{vid}" title="{esc(o.get("title") or "Vimeo video")}" '
+                    f'allow="autoplay; fullscreen; picture-in-picture" '
+                    f'allowfullscreen loading="lazy"></iframe></div>')
+        return f'<div class="obj obj-vimeo" style="{st}"></div>'
     elif t == 'map':
         # Embedded Google Map via the keyless maps "q=" embed (no API key needed).
         place = (o.get('place') or '').strip()
@@ -4370,6 +4392,7 @@ TOOLS = [
     ('share', 'Share Buttons', ['document-share', 'emblem-shared-symbolic', 'mail-forward'], '⇪', 'Drag to place a row of buttons that let visitors share the page on social media.'),
     ('html', 'HTML Code', ['text-html', 'code-context'], '</>', 'Drag to place an HTML fragment.'),
     ('youtube', 'YouTube Video', ['youtube', 'applications-multimedia', 'media-playback-start'], '▶', 'Drag to place a YouTube video that plays embedded in the page. Paste its link.'),
+    ('vimeo', 'Vimeo Video', ['vimeo', 'applications-multimedia', 'media-playback-start'], '▶', 'Drag to place a Vimeo video that plays embedded in the page. Paste its link.'),
     ('audio', 'Audio', ['audio-x-generic', 'media-playback-start', 'audio-volume-high'], '♪', 'Drag to place an audio player. Choose a sound file or paste a link; it plays with the browser audio controls.'),
     ('map', 'Google Map', ['map', 'applications-geography', 'mark-location', 'find-location'], '📍', 'Drag to place an interactive Google Map, then type an address — no API key needed. Shows a pin where you are based.'),
     ('newsfeed', 'News Feed', ['application-rss+xml', 'view-list-details', 'rss'], '📰', 'Drag to place a scrolling News feed. It lists the sub-pages of the page it sits on automatically — every news story, newest first, each a card linking to its page.'),
@@ -6589,6 +6612,8 @@ class MainWindow(QMainWindow):
                 label('Button'); add(ColorButton(o.get('accent'), lambda c: self.set_prop('accent', c), 'Button colour'))
             if t == 'youtube':
                 btn(['document-edit'], 'Edit Video…', lambda: self.edit_object(o))
+            if t == 'vimeo':
+                btn(['document-edit'], 'Edit Video…', lambda: self.edit_object(o))
             if t == 'map':
                 btn(['mark-location', 'document-edit'], 'Edit Location…', lambda: self.edit_object(o))
             if t == 'html':
@@ -6865,6 +6890,7 @@ class MainWindow(QMainWindow):
         elif kind == 'gallery': self.gallery_dialog(o)
         elif kind == 'search': self.search_dialog(o)
         elif kind == 'youtube': self.youtube_dialog(o)
+        elif kind == 'vimeo': self.vimeo_dialog(o)
         elif kind == 'audio': self.audio_dialog(o)
         elif kind == 'map': self.map_dialog(o)
 
@@ -7067,6 +7093,7 @@ class MainWindow(QMainWindow):
         elif t == 'form': self.form_dialog(o)
         elif t == 'search': self.search_dialog(o)
         elif t == 'youtube': self.youtube_dialog(o)
+        elif t == 'vimeo': self.vimeo_dialog(o)
         elif t == 'audio': self.audio_dialog(o)
         elif t == 'map': self.map_dialog(o)
         elif t == 'gallery': self.gallery_dialog(o)
@@ -7976,6 +8003,26 @@ class MainWindow(QMainWindow):
             vid = self._youtube_id(url.text())
             if not vid:
                 QMessageBox.warning(self, APP, "That doesn't look like a YouTube link, so nothing was changed."); return
+            self.commit(); o['video'] = vid; o['title'] = title.text().strip(); self.refresh()
+
+    @staticmethod
+    def _vimeo_id(s):
+        """Pull the numeric video id out of any Vimeo link (vimeo.com/123, player.vimeo.com/video/123) or a bare id."""
+        s = (s or '').strip()
+        if re.fullmatch(r'\d{6,}', s): return s
+        m = re.search(r'vimeo\.com/(?:video/|channels/[^/]+/|groups/[^/]+/videos/)?(\d{6,})', s)
+        return m.group(1) if m else ''
+
+    def vimeo_dialog(self, o):
+        url = QLineEdit('https://vimeo.com/' + o['video'] if o.get('video') else '')
+        url.setPlaceholderText('https://vimeo.com/123456789   or   player.vimeo.com/video/123456789')
+        title = QLineEdit(o.get('title', ''))
+        dlg = form_dialog(self, 'Vimeo Video', [('Vimeo link or ID:', url), ('Title (optional):', title)],
+                          QLabel('Paste a Vimeo link — the video plays embedded right in the page when published.'))
+        if dlg.exec():
+            vid = self._vimeo_id(url.text())
+            if not vid:
+                QMessageBox.warning(self, APP, "That doesn't look like a Vimeo link, so nothing was changed."); return
             self.commit(); o['video'] = vid; o['title'] = title.text().strip(); self.refresh()
 
     def audio_dialog(self, o):
@@ -9306,17 +9353,39 @@ class MainWindow(QMainWindow):
         paragraphs (blank-line separated), with simple Markdown headings/emphasis."""
         last = self.settings.value('importTextDir', os.path.expanduser('~'))
         path, _ = QFileDialog.getOpenFileName(self, 'Import Text — choose a file', last,
-                                              'Text and web files (*.txt *.text *.md *.markdown *.html *.htm);;All files (*)')
+                                              'Text, Word and web files (*.txt *.text *.md *.markdown *.docx *.html *.htm);;All files (*)')
         if not path: return
         self.settings.setValue('importTextDir', os.path.dirname(path))
-        try:
-            with open(path, 'rb') as fh:
-                raw = fh.read()
-            text = raw.decode('utf-8', errors='replace')
-        except OSError as ex:
-            QMessageBox.warning(self, 'Import Text', f"Couldn't read that file.\n{ex}"); return
         ext = os.path.splitext(path)[1].lower()
-        html = self._text_to_html(text, ext)
+        if ext == '.docx':
+            try:
+                import docx
+            except ImportError:
+                QMessageBox.warning(self, 'Import Text',
+                    'Reading a Word .docx needs the python-docx package.\n'
+                    'Install it:  sudo pacman -S python-docx   (or: pip install python-docx)'); return
+            try:
+                d = docx.Document(path)
+            except Exception as ex:
+                QMessageBox.warning(self, 'Import Text', f"Couldn't open that Word file.\n{ex}"); return
+            paras = []
+            for pa in d.paragraphs:
+                txt = (pa.text or '').strip()
+                if not txt: continue
+                style = (pa.style.name or '').lower() if pa.style else ''
+                if 'heading' in style:
+                    paras.append(f'<h3>{H.escape(txt)}</h3>')
+                else:
+                    paras.append(f'<p>{H.escape(txt)}</p>')
+            html = '\n'.join(paras)
+        else:
+            try:
+                with open(path, 'rb') as fh:
+                    raw = fh.read()
+                text = raw.decode('utf-8', errors='replace')
+            except OSError as ex:
+                QMessageBox.warning(self, 'Import Text', f"Couldn't read that file.\n{ex}"); return
+            html = self._text_to_html(text, ext)
         if not html:
             QMessageBox.warning(self, 'Import Text', 'That file had no readable text in it.'); return
         # place a text box near the top-left of the current view, a comfortable width
