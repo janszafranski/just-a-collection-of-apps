@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.11-00"
+VERSION = "1.12-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -457,6 +457,77 @@ def smooth_skin(rgb, amount=0.7, radius=8, detail=0.3, skin_only=True,
 
     out = of * (1.0 - weight[..., None]) + retouch * weight[..., None]
     return _np.clip(out, 0, 255).astype(_np.uint8)
+
+
+# ---------------------------------------------------------------- smart enlarge
+# Intelligent photo up-scaling in the spirit of BenVista PhotoZoom's S-Spline:
+# make a small picture bigger while keeping edges crisp, dodging the soft/jaggy
+# look of a plain resize. Clean-room recipe (NOT their algorithm): a high-quality
+# Lanczos resample, an optional light denoise so we don't amplify grain, then an
+# edge-aware unsharp mask to restore the apparent detail lost in blowing it up.
+# Pure function (no Qt) so it can be unit-tested headless.
+
+def _gaussian_blur_rgb(rgb, radius, force_fallback=False):
+    """Light Gaussian blur of an HxWx3 uint8 RGB array (the unsharp-mask low pass)."""
+    radius = float(max(0.1, radius))
+    if HAS_CV2 and not force_fallback:
+        k = int(radius * 3) | 1                      # odd kernel ~3σ
+        return _cv2.GaussianBlur(rgb, (k, k), radius)
+    im = Image.fromarray(rgb, 'RGB').filter(ImageFilter.GaussianBlur(radius))
+    return _np.asarray(im).astype(_np.uint8)
+
+
+def _denoise_rgb(rgb, strength, force_fallback=False):
+    """Light colour denoise of an HxWx3 uint8 RGB array. Prefers cv2's Non-Local
+    Means (fastNlMeansDenoisingColored); otherwise a Pillow MedianFilter. `strength`
+    is 0..1 — scales the filter strength / median size."""
+    strength = float(max(0.0, min(1.0, strength)))
+    if strength <= 0:
+        return rgb
+    if HAS_CV2 and not force_fallback:
+        h = 3.0 + strength * 12.0                    # luma/chroma denoise amount
+        return _cv2.fastNlMeansDenoisingColored(rgb, None, h, h, 7, 21)
+    msz = 3 if strength < 0.6 else 5                 # 3×3 for light, 5×5 for strong
+    im = Image.fromarray(rgb, 'RGB').filter(ImageFilter.MedianFilter(size=msz))
+    return _np.asarray(im).astype(_np.uint8)
+
+
+def smart_enlarge(rgb, new_w, new_h, sharpen=0.5, denoise=0.0, force_fallback=False):
+    """Intelligently up-scale an HxWx3 (or x4) uint8 RGB image to (new_w, new_h).
+
+    Recipe: optional light denoise on the SOURCE (so grain isn't magnified), a
+    high-quality Lanczos resample up to the new size, then an edge-aware unsharp
+    mask — ``sharpened = img + amount*(img - gaussianblur(img))`` — to put back the
+    crispness a plain resize loses. `sharpen` (0..1) scales the unsharp amount;
+    `denoise` (0..1) scales the pre-pass. Returns a fresh HxWx3 uint8 array of the
+    new size. Prefers OpenCV (cv2.INTER_LANCZOS4); with `force_fallback` or no cv2 it
+    uses Pillow's Image.LANCZOS. A pure function — no Qt."""
+    src = _np.ascontiguousarray(rgb[..., :3].astype(_np.uint8))
+    new_w = max(1, int(new_w)); new_h = max(1, int(new_h))
+    sharpen = float(max(0.0, min(1.0, sharpen)))
+    denoise = float(max(0.0, min(1.0, denoise)))
+
+    # 1) denoise the source before enlarging, so we don't amplify grain/speckle.
+    if denoise > 0:
+        src = _denoise_rgb(src, denoise, force_fallback=force_fallback)
+
+    # 2) high-quality Lanczos resample to the target size (the sharp resampler).
+    if HAS_CV2 and not force_fallback:
+        up = _cv2.resize(src, (new_w, new_h), interpolation=_cv2.INTER_LANCZOS4)
+    else:
+        im = Image.fromarray(src, 'RGB').resize((new_w, new_h), Image.LANCZOS)
+        up = _np.asarray(im).astype(_np.uint8)
+    up = _np.ascontiguousarray(up.astype(_np.uint8))
+
+    # 3) edge-aware unsharp mask: restore the apparent detail lost in up-scaling.
+    if sharpen > 0:
+        amount = sharpen * 1.5                       # tasteful 0..1.5 strength
+        radius = 1.0 + (max(new_w, new_h) / max(src.shape[1], src.shape[0])) * 0.5
+        blur = _gaussian_blur_rgb(up, radius, force_fallback=force_fallback).astype(_np.float32)
+        upf = up.astype(_np.float32)
+        out = upf + amount * (upf - blur)
+        up = _np.clip(out, 0, 255).astype(_np.uint8)
+    return up
 
 
 EXPORT_FORMATS = [
@@ -1575,6 +1646,25 @@ class Canvas(QWidget):
     def resize_image(self, w, h):
         self._map_layers(lambda im: im.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32))
 
+    def smart_enlarge_doc(self, w, h, sharpen=0.5, denoise=0.0):
+        """Image ▸ Enlarge: smart-upscale the WHOLE document (every layer, canvas and
+        all) to (w, h). Each layer's colour is enlarged with smart_enlarge() so edges
+        stay crisp; its alpha channel and any layer mask are Lanczos-resized to match.
+        Snapshots for undo and refits. Needs numpy (HAS_PIL)."""
+        def up(im):
+            src = im.convertToFormat(QImage.Format_ARGB32)
+            rgba = _np.asarray(q2pil(src))                       # HxWx4 uint8
+            rgb = smart_enlarge(rgba[..., :3], w, h, sharpen=sharpen, denoise=denoise)
+            a = Image.fromarray(rgba[..., 3], 'L').resize((w, h), Image.LANCZOS)
+            out = _np.dstack([rgb, _np.asarray(a).astype(_np.uint8)])
+            return pil2q(Image.fromarray(out, 'RGBA'))
+        self.snapshot_full()
+        for l in self.layers:
+            l.img = up(l.img)
+            if l.mask is not None:
+                l.mask = l.mask.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        self.sel = None; self._fit()
+
     def set_canvas_size(self, w, h):
         def grow(im):
             out = QImage(w, h, QImage.Format_ARGB32); out.fill(Qt.transparent)
@@ -1957,6 +2047,176 @@ class LensFlareDialog(QDialog):
 
     def accept(self):
         self.win.apply_lens_flare(self.sx.value(), self.sy.value(), self._collect())
+        super().accept()
+
+
+class EnlargeDialog(QDialog):
+    """Image ▸ Enlarge — smart up-scaling in the spirit of PhotoZoom. Pick a target as
+    a scale factor (2×/3×/4×), a custom %, or an explicit width/height (with aspect
+    lock); dial Sharpen and Denoise; the resulting pixel size is shown live. A small
+    100%-crop before/after preview shows how crisp the enlarge keeps the edges. On OK
+    the whole document (every layer) is resampled with smart_enlarge()."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Enlarge (smart upscale)'); self.setMinimumWidth(420)
+        self.ow, self.oh = self.canvas.doc_w(), self.canvas.doc_h()
+        self._busy = False
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Enlarge — smart upscale</b>'))
+        engine = 'OpenCV Lanczos4' if HAS_CV2 else 'Pillow Lanczos'
+        info = QLabel('Make a small photo bigger while keeping edges crisp. The image is '
+                      'resampled with a high-quality Lanczos filter, then an edge-aware '
+                      'sharpen restores the detail a plain resize would blur — far better '
+                      'than ordinary resizing for blowing a picture up.<br>'
+                      f'<i>Resampler: {engine}.</i>')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+
+        from PySide6.QtWidgets import QRadioButton, QButtonGroup
+        form = QFormLayout(); v.addLayout(form)
+
+        # target mode: scale factor / custom % / explicit size
+        self.rb_factor = QRadioButton('Scale factor'); self.rb_factor.setChecked(True)
+        self.rb_pct = QRadioButton('Custom %')
+        self.rb_size = QRadioButton('Width × Height')
+        grp = QButtonGroup(self)
+        for rb in (self.rb_factor, self.rb_pct, self.rb_size):
+            grp.addButton(rb); rb.toggled.connect(self._mode_changed)
+
+        self.cb_factor = QComboBox(); self.cb_factor.addItems(['2×', '3×', '4×'])
+        self.cb_factor.currentIndexChanged.connect(self._from_factor)
+        frow = QHBoxLayout(); frow.addWidget(self.rb_factor); frow.addWidget(self.cb_factor, 1)
+        fw = QWidget(); fw.setLayout(frow); form.addRow(fw)
+
+        self.sp_pct = QSpinBox(); self.sp_pct.setRange(100, 800); self.sp_pct.setValue(200)
+        self.sp_pct.setSuffix(' %'); self.sp_pct.valueChanged.connect(self._from_pct)
+        prow = QHBoxLayout(); prow.addWidget(self.rb_pct); prow.addWidget(self.sp_pct, 1)
+        pw = QWidget(); pw.setLayout(prow); form.addRow(pw)
+
+        self.sp_w = QSpinBox(); self.sp_w.setRange(1, 40000); self.sp_w.setValue(self.ow * 2)
+        self.sp_h = QSpinBox(); self.sp_h.setRange(1, 40000); self.sp_h.setValue(self.oh * 2)
+        self.cb_lock = QCheckBox('Lock aspect'); self.cb_lock.setChecked(True)
+        self.sp_w.valueChanged.connect(lambda: self._from_size('w'))
+        self.sp_h.valueChanged.connect(lambda: self._from_size('h'))
+        srow = QHBoxLayout(); srow.addWidget(self.rb_size)
+        srow.addWidget(self.sp_w); srow.addWidget(QLabel('×')); srow.addWidget(self.sp_h)
+        srow.addWidget(self.cb_lock)
+        sw = QWidget(); sw.setLayout(srow); form.addRow(sw)
+
+        self.s_sharpen = self._slider(0, 100, 50)
+        self.s_denoise = self._slider(0, 100, 0)
+        self.l_sharpen = self._val(); self.l_denoise = self._val()
+        form.addRow('Sharpen:', self._row(self.s_sharpen, self.l_sharpen))
+        form.addRow('Denoise:', self._row(self.s_denoise, self.l_denoise))
+        self.s_sharpen.valueChanged.connect(self._update_preview)
+        self.s_denoise.valueChanged.connect(self._update_preview)
+
+        self.dims = QLabel(); self.dims.setStyleSheet('color:#ccd; font-weight:bold')
+        v.addWidget(self.dims)
+
+        # 100%-crop before/after preview (a centre crop, blown up through the engine)
+        prow2 = QHBoxLayout()
+        self.pv_before = QLabel('before'); self.pv_after = QLabel('after')
+        for lab, pv in (('Before (100%)', self.pv_before), ('After (100%)', self.pv_after)):
+            col = QVBoxLayout(); cap = QLabel(lab); cap.setStyleSheet('color:#889')
+            pv.setFixedSize(150, 110); pv.setAlignment(Qt.AlignCenter)
+            pv.setStyleSheet('border:1px solid #556; background:#222')
+            col.addWidget(cap); col.addWidget(pv); cw = QWidget(); cw.setLayout(col)
+            prow2.addWidget(cw)
+        v.addLayout(prow2)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Enlarge')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+
+        self._mode_changed(); self._from_factor(); self._update_preview()
+
+    # ---- widget helpers (match SmoothSkinDialog) ----
+    def _slider(self, lo, hi, val):
+        s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(val); return s
+
+    def _val(self):
+        l = QLabel(); l.setMinimumWidth(46); l.setAlignment(Qt.AlignRight | Qt.AlignVCenter); return l
+
+    def _row(self, s, val):
+        rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+        holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250); return holder
+
+    # ---- target-size plumbing ----
+    def _mode_changed(self):
+        self.cb_factor.setEnabled(self.rb_factor.isChecked())
+        self.sp_pct.setEnabled(self.rb_pct.isChecked())
+        self.sp_w.setEnabled(self.rb_size.isChecked())
+        self.sp_h.setEnabled(self.rb_size.isChecked())
+        self.cb_lock.setEnabled(self.rb_size.isChecked())
+
+    def _set_size(self, w, h):
+        self._busy = True
+        self.sp_w.setValue(int(w)); self.sp_h.setValue(int(h))
+        self._busy = False
+        self._update_preview()
+
+    def _from_factor(self, *a):
+        f = self.cb_factor.currentIndex() + 2        # 2,3,4
+        self._set_size(self.ow * f, self.oh * f)
+
+    def _from_pct(self, *a):
+        if self._busy: return
+        f = self.sp_pct.value() / 100.0
+        self._set_size(round(self.ow * f), round(self.oh * f))
+
+    def _from_size(self, which):
+        if self._busy: return
+        if self.cb_lock.isChecked():
+            self._busy = True
+            if which == 'w':
+                self.sp_h.setValue(max(1, round(self.sp_w.value() * self.oh / self.ow)))
+            else:
+                self.sp_w.setValue(max(1, round(self.sp_h.value() * self.ow / self.oh)))
+            self._busy = False
+        self._update_preview()
+
+    def target(self):
+        return int(self.sp_w.value()), int(self.sp_h.value())
+
+    def params(self):
+        return self.s_sharpen.value() / 100.0, self.s_denoise.value() / 100.0
+
+    def _update_preview(self):
+        if self._busy: return
+        nw, nh = self.target(); sharpen, denoise = self.params()
+        self.l_sharpen.setText(f'{self.s_sharpen.value()}')
+        self.l_denoise.setText(f'{self.s_denoise.value()}')
+        self.dims.setText(f'{self.ow} × {self.oh} px  →  {nw} × {nh} px'
+                          f'   ({nw / max(1, self.ow):.2f}×)')
+        try:
+            full = q2pil(self.canvas.composited()).convert('RGB')
+            rgb = _np.asarray(full)
+            # a small centre crop, enlarged through the engine at the chosen factor.
+            cw = min(self.ow, max(16, self.ow // 4)); ch = min(self.oh, max(16, self.oh // 4))
+            x = (self.ow - cw) // 2; y = (self.oh - ch) // 2
+            crop = rgb[y:y + ch, x:x + cw]
+            factor = max(1.0, nw / max(1, self.ow))
+            ncw, nch = max(1, round(cw * factor)), max(1, round(ch * factor))
+            after = smart_enlarge(crop, ncw, nch, sharpen=sharpen, denoise=denoise)
+            self._show(self.pv_before, crop)
+            self._show(self.pv_after, after)
+        except Exception:
+            pass
+
+    def _show(self, label, rgb):
+        rgb = _np.ascontiguousarray(rgb.astype(_np.uint8))
+        h, w = rgb.shape[:2]
+        qi = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format_RGB888)
+        pm = QPixmap.fromImage(qi).scaled(label.width(), label.height(),
+                                           Qt.KeepAspectRatio, Qt.FastTransformation)
+        label.setPixmap(pm)
+
+    def accept(self):
+        nw, nh = self.target(); sharpen, denoise = self.params()
+        self.canvas.smart_enlarge_doc(nw, nh, sharpen=sharpen, denoise=denoise)
+        self.win.refresh_layers()
         super().accept()
 
 
@@ -2486,6 +2746,7 @@ class Main(QMainWindow):
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
         img = m.addMenu('&Image')
         img.addAction(self.act('&Resize Image…', self.resize_image))
+        img.addAction(self.act('&Enlarge (smart upscale)…', self.dlg_enlarge))
         img.addAction(self.act('&Canvas Size…', self.canvas_size))
         img.addAction(self.act('Crop to &Selection', lambda: self.canvas.crop_to_sel()))
         img.addAction(self.act('&Straighten…', self.dlg_straighten))
@@ -2870,6 +3131,11 @@ class Main(QMainWindow):
         if not ok: return
         nh, ok = QInputDialog.getInt(self, 'Resize Image', 'New height (px):', round(h * nw / w), 1, 20000)
         if ok: self.canvas.resize_image(nw, nh)
+
+    def dlg_enlarge(self):
+        """Image ▸ Enlarge — smart up-scale the whole document (PhotoZoom-style)."""
+        if self._need_pil():
+            EnlargeDialog(self).exec()
 
     def canvas_size(self):
         w, h = self.canvas.img.width(), self.canvas.img.height()

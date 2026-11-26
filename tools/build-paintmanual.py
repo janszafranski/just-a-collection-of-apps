@@ -517,6 +517,28 @@ def capture(full=True):
     except Exception as e:
         print("overlay/texture demo failed:", e)
 
+    # enlarge (smart upscale) demo: take a SMALL scene, blow it up 3× two ways — a plain
+    # resize vs. smart_enlarge (Lanczos + edge sharpen) — and show matched zoom-crops of a
+    # detailed corner, so the reader sees the smart result keep crisp edges. All synthetic.
+    try:
+        import numpy as _np
+        from PIL import Image as _PI
+        small = _pil(_scene(150, 100)).convert("RGB")           # a deliberately small photo
+        sarr = _np.asarray(small)
+        factor = 3
+        nw, nh = small.width * factor, small.height * factor
+        smart = PC.smart_enlarge(sarr, nw, nh, sharpen=0.6, denoise=0.0)
+        plain = _np.asarray(small.resize((nw, nh), _PI.BILINEAR))  # ordinary resize baseline
+        # a matched zoom-crop of the house/roof corner (where edges show), at the enlarged size
+        cx, cy, cw, ch2 = int(nw * 0.10), int(nh * 0.40), int(nw * 0.42), int(nh * 0.45)
+        def _crop(a):
+            return _PI.fromarray(a[cy:cy + ch2, cx:cx + cw]).convert("RGB")
+        IM["enlarge_plain"] = _crop(plain)
+        IM["enlarge_smart"] = _crop(smart)
+        IM["enlarge_small"] = small                               # the tiny original
+    except Exception as e:
+        print("enlarge demo failed:", e)
+
     # --- live window, tool palette, layers dock --------------------------
     w = _win()
     IM["workspace"] = _grab(w)
@@ -572,6 +594,7 @@ def capture(full=True):
     drive(w2.dlg_blur)
     drive(w2.dlg_unsharp)
     drive(w2.dlg_median)
+    drive(w2.dlg_enlarge)         # Image ▸ Enlarge (smart upscale)…
     drive(w2._fx_dialog, "shadow")
     drive(w2._fx_dialog, "glow")
     drive(w2.dlg_lens_flare)      # Image ▸ Lens Flare… studio
@@ -1460,6 +1483,25 @@ place the result on its new background.</p>""")]))
   'Type a new <b>width</b> and <b>height</b>.',
   'The picture keeps its pixels at their current size; the canvas grows (adding transparent margin) or shrinks (cropping) around them.')}
 {note('<b>Resize Image</b> makes the picture itself bigger or smaller. <b>Canvas Size</b> changes the area you have to work on, leaving the existing pixels untouched — use it to add room around a subject.')}"""),
+      ("Enlarging photos (smart upscale)", f"""
+<p>Plain resizing is fine for making a picture <i>smaller</i>, but blowing a small photo <i>up</i> the
+ordinary way leaves it soft and jagged — there simply are not enough pixels, and a basic resize just
+stretches the ones it has. <b>Image ▸ Enlarge (smart upscale)…</b> does better: it resamples with a
+high-quality filter and then applies an edge-aware sharpen, so enlarged edges stay crisp instead of
+turning to mush. It is the tool to reach for when you need a small photo at a bigger size.</p>
+{fig(dlg('Enlarge (smart upscale)'), 'The Enlarge dialog: choose a scale factor, a custom percentage, or an explicit width and height (with aspect lock); set Sharpen and Denoise; the new pixel size and a 100% before/after crop update as you go.')}
+{proc('enlarge a photo',
+  'Choose <b>Image ▸ Enlarge (smart upscale)…</b>.',
+  'Pick a target: a <b>Scale factor</b> (2×, 3× or 4×), a <b>Custom %</b>, or an explicit <b>Width × Height</b> (leave <i>Lock aspect</i> on to keep the proportions). The resulting pixel size is shown as you change it.',
+  'Set <b>Sharpen</b> — this is what restores crispness after enlarging; a little goes a long way, so keep it tasteful.',
+  'If the photo is grainy, nudge <b>Denoise</b> up a touch so the enlarge does not magnify the noise.',
+  'Watch the small <b>100% before/after crop</b> to judge the result, then click <b>Enlarge</b>. The whole document — every layer — is scaled to the new size.')}
+<p>The difference is easy to see when you zoom in. Below, a small scene is enlarged 3× two ways — an
+ordinary resize versus Enlarge — shown at the same magnification:</p>
+{fig(IM.get('enlarge_plain'), 'Ordinary resize, 3×: the edges are soft and blurred — there is no extra detail, just bigger, fuzzier pixels.')}
+{fig(IM.get('enlarge_smart'), 'Enlarge (smart upscale), 3× at the same zoom: the Lanczos resample plus edge-aware sharpen keep the roof and wall edges crisp.')}
+{tip('Enlarge beats plain <b>Resize Image</b> whenever you are making a picture <i>bigger</i>. For shrinking a picture, ordinary Resize Image is all you need.')}
+{note('Enlarge uses OpenCV’s Lanczos resampler for the sharpest result, and the installer adds OpenCV automatically. If it is not present the tool falls back to Pillow’s own Lanczos filter — a little less refined, but it needs nothing extra and always works.')}"""),
       ("Cropping to a selection", f"""
 {proc('crop to a selection',
   'Choose a marquee tool and drag out the area you want to keep.',
@@ -1543,6 +1585,7 @@ tilted horizon.</p>
 <tr><td>Edit ▸ Undo / Redo</td><td>Step back and forward through recent changes</td></tr></table>"""),
       ("Image", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Resize Image…</td><td>Scale the whole picture to new pixel dimensions</td></tr>
+<tr><td>Enlarge (smart upscale)…</td><td>Blow a small photo up bigger while keeping edges crisp</td></tr>
 <tr><td>Canvas Size…</td><td>Change the canvas area without scaling the pixels</td></tr>
 <tr><td>Crop to Selection</td><td>Trim the picture to the current marquee</td></tr>
 <tr><td>Straighten…</td><td>Rotate by a small angle and crop back to size</td></tr>
@@ -1872,7 +1915,7 @@ def build_index(numbered):
              "brightness", "contrast", "levels", "hue", "saturation", "temperature", "colour balance",
              "threshold", "posterize", "greyscale", "invert", "sepia", "auto contrast", "equalize",
              "gaussian blur", "unsharp mask", "median", "sharpen", "emboss", "find edges", "contour",
-             "drop shadow", "outer glow", "resize", "canvas size", "crop", "rotate", "flip", "straighten",
+             "drop shadow", "outer glow", "resize", "enlarge", "upscale", "canvas size", "crop", "rotate", "flip", "straighten",
              "undo", "zoom", "PNG", "JPEG", "pixel", "raster"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
