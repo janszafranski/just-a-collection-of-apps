@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.23-02"
+VERSION = "1.23-03"
 
 
 def _just_dir(kind):
@@ -10171,31 +10171,90 @@ class MainWindow(QMainWindow):
         self.hint(f'Replaced {src} with {dst} in {n[0]} place(s).')
 
     def bitmap_fill_dialog(self):
-        """Fill the selected shape(s) with a picture or texture, stretched or tiled."""
-        import base64, mimetypes
-        from PySide6.QtWidgets import QComboBox
+        """Fill the selected shape(s) with a picture or a texture (stretched or tiled).
+        Offers a Browse-for-image option AND a picker over the local texture library at
+        ~/.local/share/justapps/textures (your own installed textures — read live, never
+        copied into the app)."""
+        import base64, mimetypes, os
+        from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QScrollArea,
+                                       QGridLayout, QToolButton, QWidget, QPushButton, QDialogButtonBox)
+        from PySide6.QtGui import QPixmap, QIcon
+        from PySide6.QtCore import QBuffer, QByteArray, QIODevice
         objs = [o for o in self.sel_objs() if o['type'] in ('shape', 'text', 'button')]
         if not objs:
             self.hint('Select a shape, text box or button first, then choose a picture fill.'); return
-        path, _ = QFileDialog.getOpenFileName(self, 'Choose a fill picture', _just_dir('pics'),
-                                              'Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)')
-        if not path:
-            return
-        try:
-            data = open(path, 'rb').read()
-        except Exception as e:
-            QMessageBox.warning(self, APP, f'Could not read that image:\n{e}'); return
-        mime = mimetypes.guess_type(path)[0] or 'image/png'
-        uri = 'data:%s;base64,%s' % (mime, base64.b64encode(data).decode())
-        mode = QComboBox(); mode.addItem('Stretch to fill the shape', 'stretch'); mode.addItem('Tile (repeat the picture)', 'tile')
-        d = form_dialog(self, 'Picture Fill', [('How should it fit?', mode)],
-                        QLabel('The picture fills the shape instead of a flat colour. Everything else — '
-                               'outline, shadow, corners — still applies.'))
-        if not d.exec():
+        TEXDIR = os.path.expanduser('~/.local/share/justapps/textures')
+        chosen = {'uri': None, 'name': None}
+
+        def to_uri(path, maxpx=900):
+            pm = QPixmap(path)
+            if pm.isNull():
+                try:
+                    data = open(path, 'rb').read(); mime = mimetypes.guess_type(path)[0] or 'image/png'
+                    return 'data:%s;base64,%s' % (mime, base64.b64encode(data).decode())
+                except Exception:
+                    return None
+            if pm.width() > maxpx:
+                pm = pm.scaledToWidth(maxpx, Qt.SmoothTransformation)
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); pm.save(buf, 'JPEG', 85)
+            return 'data:image/jpeg;base64,' + base64.b64encode(bytes(ba)).decode()
+
+        dlg = QDialog(self); dlg.setWindowTitle('Picture / Texture Fill'); dlg.resize(560, 580)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('Fill the selected shape with a picture or a texture instead of a flat colour. '
+                           'Outline, corners and shadow still apply over the top.'))
+        sel_lbl = QLabel('No fill image chosen yet.'); sel_lbl.setStyleSheet('color:#5c6b73')
+        row = QHBoxLayout(); bbrowse = QPushButton('Browse for an image…'); row.addWidget(bbrowse); row.addWidget(sel_lbl, 1)
+        v.addLayout(row)
+
+        def browse():
+            p, _ = QFileDialog.getOpenFileName(dlg, 'Choose a fill picture', _just_dir('pics'),
+                                               'Images (*.png *.jpg *.jpeg *.webp *.bmp *.gif);;All files (*)')
+            if p:
+                u = to_uri(p)
+                if u:
+                    chosen.update(uri=u, name=os.path.basename(p)); sel_lbl.setText('Chosen: ' + chosen['name'])
+        bbrowse.clicked.connect(browse)
+
+        cats = sorted([d for d in os.listdir(TEXDIR) if os.path.isdir(os.path.join(TEXDIR, d))]) if os.path.isdir(TEXDIR) else []
+        if cats:
+            v.addWidget(QLabel('<b>Texture library</b> — click a swatch to use it:'))
+            catcombo = QComboBox(); catcombo.addItems(cats); v.addWidget(catcombo)
+            area = QScrollArea(); area.setWidgetResizable(True); area.setMinimumHeight(280); v.addWidget(area, 1)
+            holder = QWidget(); hv = QGridLayout(holder); area.setWidget(holder)
+
+            def load_cat(cat):
+                while hv.count():
+                    it = hv.takeAt(0); w = it.widget()
+                    if w:
+                        w.deleteLater()
+                d = os.path.join(TEXDIR, cat)
+                files = sorted([f for f in os.listdir(d) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])[:80]
+                for i, fn in enumerate(files):
+                    fp = os.path.join(d, fn)
+                    tb = QToolButton(); pm = QPixmap(fp)
+                    if not pm.isNull():
+                        pm = pm.scaled(96, 96, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                    tb.setIcon(QIcon(pm)); tb.setIconSize(QSize(90, 90)); tb.setToolTip(fn)
+                    tb.setCursor(Qt.PointingHandCursor); tb.setAutoRaise(True)
+                    tb.clicked.connect(lambda _=0, fp=fp, fn=fn: (chosen.update(uri=to_uri(fp), name=fn), sel_lbl.setText('Chosen: ' + fn)))
+                    hv.addWidget(tb, i // 4, i % 4)
+            catcombo.currentTextChanged.connect(load_cat); load_cat(cats[0])
+        else:
+            v.addWidget(QLabel('<span style="color:gray">No local texture library found at '
+                               '~/.local/share/justapps/textures — use Browse for an image.</span>'))
+
+        mrow = QHBoxLayout(); mrow.addWidget(QLabel('How should it fit?'))
+        mode = QComboBox(); mode.addItem('Stretch to fill the shape', 'stretch'); mode.addItem('Tile (repeat)', 'tile')
+        mrow.addWidget(mode); mrow.addStretch(); v.addLayout(mrow)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply fill'); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted or not chosen['uri']:
             return
         self.commit()
         for o in objs:
-            o['fillimg'] = uri; o['fillmode'] = mode.currentData()
+            o['fillimg'] = chosen['uri']; o['fillmode'] = mode.currentData()
         self.refresh()
         self.hint('Picture fill applied — use Format ▸ Remove Picture Fill to go back to a colour.')
 

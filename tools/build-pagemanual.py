@@ -886,10 +886,11 @@ soft panel behind text.</p>
 Drop a photo into a heading banner, a paper texture behind a certificate, a pattern inside a star.</p>
 {proc('fill a shape with a picture',
   'Select the shape (or a text box or button).',
-  'Choose <b>Format ▸ Picture Fill…</b> and pick an image file.',
-  'Choose how it should fit — <b>Stretch to fill</b> the shape, or <b>Tile</b> it (repeat the picture).',
-  'Click <b>OK</b>. The outline, corners and any shadow or glow still apply over the top.')}
+  'Choose <b>Format ▸ Picture Fill…</b>, then either <b>Browse for an image</b> or click a swatch from the <b>texture library</b> (browse its categories — bricks, marble, paper, wood and more).',
+  'Choose how it should fit — <b>Stretch to fill</b> the shape, or <b>Tile</b> it (repeat the texture).',
+  'Click <b>Apply fill</b>. The outline, corners and any shadow or glow still apply over the top.')}
 {fig(IM.get('bitmap_demo'), 'The same star and banner filled with a picture — stretched (left) and tiled (right).')}
+{note('The texture library is any textures you have installed on your own machine — they are read live and shown as swatches, so you can fill a shape with a material in a couple of clicks.')}
 {tip('To go back to a plain colour, choose <b>Format ▸ Remove Picture Fill</b>.')}"""),
       ("Replacing a colour everywhere", f"""
 <p>Change your mind about a colour after building a whole publication? You do not have to re-select every
