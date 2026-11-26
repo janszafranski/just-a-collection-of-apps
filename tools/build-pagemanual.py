@@ -335,6 +335,16 @@ def capture(full=True):
     drive(w2.print_preview_dialog)
     drive(w2.guides_dialog)
     drive(w2.spell_dialog)
+    drive(w2.find_replace_dialog)       # Edit ▸ Find & Replace (Ctrl+H)
+    # Table of Contents — the document already has a couple of pages seeded, so the
+    # dialog captures with real content behind it.
+    try:
+        PC.add_page(w2.site, "About")
+        PC.add_page(w2.site, "Contact")
+        w2.refresh()
+    except Exception as e:
+        print("seed TOC pages failed:", e)
+    drive(w2.insert_toc)                # Insert ▸ Table of Contents…
     drive(w2.insert_asset_dialog)   # this one .show()s rather than .exec()s
     try:
         ad = w2._asset_dlg
@@ -746,6 +756,33 @@ styles</b> do that: apply a named style — <i>Heading</i>, <i>Subheading</i>, <
 <b>Format ▸ Text Styles</b>, and every piece of text with that style looks the same. Restyle the
 document later by changing the style once, and everything using it updates. Styles are what keep a long,
 multi-page document consistent and quick to re-skin.</p>"""),
+      ("Find &amp; Replace", f"""
+<p>In a long document, changing a word everywhere by hand is slow and easy to get wrong — miss one, and
+the inconsistency shows. <b>Find &amp; Replace</b> does it in one pass, searching the text on
+<i>every</i> page (and the master pages) at once.</p>
+{proc('change a word or phrase throughout the document',
+  'Choose <b>Edit ▸ Find &amp; Replace…</b> or press ' + K('Ctrl') + '+' + K('H') + '.',
+  'Type the text to look for in <b>Find what</b>, and its replacement in <b>Replace with</b>.',
+  'Tick <b>Match case</b> if the capitals matter (so <i>Rose</i> the name is not caught by <i>rose</i> the flower).',
+  'Click <b>Replace</b> to change the first match, or <b>Replace All</b> to change every one. PAGEdesigner reports how many it changed.')}
+{fig(dlg('Find & Replace'), 'Find & Replace searches the text across every page and swaps it in one step.')}
+{note('Replacement is <b>tag-safe</b>: it only ever changes the words you see, never the hidden formatting around them, so bold, colour and links survive untouched. And it is a single undo — one ' + K('Ctrl') + '+' + K('Z') + ' puts every change back.')}"""),
+      ("Table of Contents", f"""
+<p>A multi-page document — a booklet, a report, a programme — deserves a contents page. PAGEdesigner
+builds one from your page list, so you never have to type titles and page numbers by hand or keep them
+in step as the document grows.</p>
+{proc('insert a table of contents',
+  'Go to the page where the contents should appear.',
+  'Choose <b>Insert ▸ Table of Contents…</b>.',
+  'Give it a heading (<i>Contents</i> by default) and choose whether to leave out the page it sits on.',
+  'Click <b>OK</b>. A text frame drops in, listing every page with its page number, each line linked to its page.')}
+{fig(dlg('Table of Contents'), 'The Table of Contents dialog builds a contents list from the document’s pages.')}
+<p>Once inserted it is an <b>ordinary text frame</b>: restyle it, change the type, move it — whatever you
+would do to any text. When you later add, rename or reorder pages, rebuild it in one step:</p>
+{proc('update the contents after changing pages',
+  'Choose <b>Insert ▸ Update Table of Contents</b>.',
+  'Every contents frame in the document is regenerated from the current page list, with the right titles and numbers.')}
+{note('The page numbers follow the same counting as a <b>Page Number Field</b> — a page’s position in the document — so the contents and the running page numbers always agree.')}"""),
       ("Wrapping text, and spell check", f"""
 <p>Text can <b>wrap</b> around a picture or shape, so words flow around the artwork rather than
 disappearing behind it — give the object a wrap setting and place it over the text column.</p>
@@ -1111,6 +1148,27 @@ editing.</p>"""),
   'For professional printing, turn on <b>bleed</b> and <b>crop marks</b> so the printer can trim to the edge cleanly.',
   'Click <b>Export</b>.')}
 {note('PAGEdesigner’s PDF is <b>vector</b>: text and shapes stay razor-sharp at any size, and the file is small. It is the best format for anything that will be printed.')}"""),
+      ("Imposition and booklet printing", f"""
+<p><b>Imposition</b> is the printer's art of arranging several document pages onto one larger sheet, so
+that after printing, folding and trimming they end up in the right order. PAGEdesigner offers it both in
+the <b>Export PDF</b> dialog (the <b>Layout</b> drop-down) and from the <b>Print / PDF Preview</b>, which
+shows the composed sheets before you commit.</p>
+<ul>
+<li><b>1-up (normal)</b> — one document page per sheet. This is the default, and what you want for
+ordinary printing or sending a PDF to a print shop.</li>
+<li><b>2-up</b> — two pages side by side on each sheet: a quick way to proof, or to print a simple
+landscape leaflet.</li>
+<li><b>4-up</b> — four pages (two across, two down) on each sheet, for thumbnails, labels or small cards.</li>
+<li><b>Booklet</b> — pages reordered into <b>saddle-stitch</b> folding sequence: print double-sided, fold
+the stack in half and staple the spine, and the pages read 1, 2, 3… in order. PAGEdesigner pads the
+count to a multiple of four with blank pages, as the fold requires.</li>
+</ul>
+{proc('print a folded booklet',
+  'Choose <b>File ▸ Print / PDF Preview</b> and set <b>Layout</b> to <b>Booklet</b> to see the imposed sheets.',
+  'Choose <b>Export PDF…</b> (or <b>Print…</b>) from the preview, keeping the Booklet layout.',
+  'Print the PDF double-sided (flip on the short edge), fold the stack in half, and staple along the fold.')}
+{fig(dlg('Print / PDF Preview'), 'The Print / PDF Preview with a Layout selector — here showing imposed sheets.')}
+{caution('For a booklet, your document should read in simple page order (1, 2, 3…). PAGEdesigner does the folding arithmetic; you supply the pages in reading order.')}"""),
       ("Exporting an eBook", """
 <p><b>File ▸ Export eBook…</b> writes a reflowable <b>EPUB</b> from the text on your pages — each page
 becomes a chapter, with a contents list, ready to read on a phone, tablet or e-reader. Where a PDF
@@ -1134,13 +1192,14 @@ document. In each case your original file is left untouched, so there is no risk
 <tr><td>Document Setup…</td><td>Page size, orientation and margins</td></tr>
 <tr><td>Preflight…</td><td>Check the document for common problems before output</td></tr>
 <tr><td>Print…</td><td>Send the document to a printer</td></tr>
-<tr><td>Export PDF… / Export eBook…</td><td>Write a vector PDF, or a reflowable EPUB</td></tr>
+<tr><td>Export PDF… / Export eBook…</td><td>Write a vector PDF (with 1-up / 2-up / 4-up / booklet imposition), or a reflowable EPUB</td></tr>
 <tr><td>Quit</td><td>Close the program (prompts to save)</td></tr></table>"""),
       ("Edit", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Undo / Redo</td><td>Step back and forward through your changes</td></tr>
 <tr><td>Cut / Copy / Paste</td><td>Move or copy the selection via the clipboard</td></tr>
 <tr><td>Duplicate</td><td>Drop a copy of the selection, slightly offset</td></tr>
 <tr><td>Delete</td><td>Remove the selection</td></tr>
+<tr><td>Find &amp; Replace… (Ctrl+H)</td><td>Find and replace text across every page, tag-safe</td></tr>
 <tr><td>Select All</td><td>Select every object on the page</td></tr></table>"""),
       ("View", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Booklet view</td><td>Show facing pages, as a reader would see them</td></tr>
@@ -1155,6 +1214,7 @@ document. In each case your original file is left untouched, so there is no risk
 <tr><td>Asset…</td><td>The callout / badge / banner / decoration gallery</td></tr>
 <tr><td>Chart… / QR Code…</td><td>A data chart; a scannable QR code</td></tr>
 <tr><td>Calendar… / Mail Merge…</td><td>A calendar grid; a personalised run from a CSV</td></tr>
+<tr><td>Table of Contents… / Update Table of Contents</td><td>Insert a contents list built from the pages; rebuild it after changes</td></tr>
 <tr><td>Contact detail ▸</td><td>A text frame showing a field from Settings (name, email, phone…)</td></tr></table>"""),
       ("Format", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Bold / Italic / Underline</td><td>Character styling for selected text</td></tr>

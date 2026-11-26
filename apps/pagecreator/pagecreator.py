@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.21-00"
+VERSION = "1.22-00"
 
 
 def _just_dir(kind):
@@ -1138,6 +1138,49 @@ def _replace_word_in_html(html_src, old, new):
     for seg in re.split(r'(<[^>]+>)', html_src):
         out.append(seg if seg.startswith('<') else re.sub(r'\b' + re.escape(old) + r'\b', new, seg))
     return ''.join(out)
+
+def _text_find_pattern(find, match_case):
+    """A regex matching `find` (plain user text) within an HTML text node. The needle is
+    HTML-escaped first so it matches the stored, escaped form (e.g. '&' -> '&amp;') and
+    the surrounding entities/markup are left byte-for-byte untouched."""
+    return re.compile(re.escape(esc(find)), 0 if match_case else re.IGNORECASE)
+
+def _replace_text_in_html(html_src, find, repl, match_case=True, count=0):
+    """Tag-safe substring replace: swap `find` for `repl` only in the text nodes of
+    `html_src`, never inside a tag (so attributes/markup stay intact). Returns
+    (new_html, n_replaced). `count=0` replaces every occurrence; `count=1` replaces at
+    most one occurrence across the whole string."""
+    if not find:
+        return html_src, 0
+    pat = _text_find_pattern(find, match_case)
+    repl_esc = esc(repl)
+    budget = [count] if count else None   # None = unlimited; else a shared remaining-count
+    out = []
+    n = 0
+    for seg in re.split(r'(<[^>]+>)', html_src):
+        if seg.startswith('<') or not seg:
+            out.append(seg); continue
+        if budget is not None:
+            if budget[0] <= 0:
+                out.append(seg); continue
+            new_txt, k = pat.subn(repl_esc, seg, count=budget[0]); budget[0] -= k
+        else:
+            new_txt, k = pat.subn(repl_esc, seg)
+        n += k
+        out.append(new_txt)
+    return ''.join(out), n
+
+def _count_text_in_html(html_src, find, match_case=True):
+    """Count tag-safe occurrences of `find` in the text nodes of `html_src`."""
+    if not find:
+        return 0
+    pat = _text_find_pattern(find, match_case)
+    n = 0
+    for seg in re.split(r'(<[^>]+>)', html_src):
+        if seg.startswith('<') or not seg:
+            continue
+        n += len(pat.findall(seg))
+    return n
 
 def make_doc(o):
     doc = QTextDocument(); doc.setDocumentMargin(0); doc.setDefaultFont(qfont(o))
@@ -2326,6 +2369,62 @@ def render_page_image(site, page, width=240, crop=None):
         p.setOpacity(o.get('opacity', 1)); paint_obj(p, o, site, page, edit=False); p.restore()
     p.end()
     return img
+
+def paint_page_vector(painter, site, page, Wpx, Hpx):
+    """Paint one document page's objects onto `painter` at its current origin, vector —
+    the same path export_pdf/print_document use. Does NOT fill the background."""
+    for o in page_objects(site, page):
+        if o.get('hidden'): continue
+        painter.save(); painter.translate(o['x'], o['y'])
+        if o.get('rot'):
+            painter.translate(o['w'] / 2, o['h'] / 2); painter.rotate(o['rot']); painter.translate(-o['w'] / 2, -o['h'] / 2)
+        painter.setOpacity(o.get('opacity', 1)); paint_obj(painter, o, site, page, edit=False); painter.restore()
+        painter.setOpacity(1)
+
+# ----------------------------------------------------------------------------
+# Print imposition — arranging document pages N-per-sheet / as a folded booklet
+# ----------------------------------------------------------------------------
+
+# layout key -> (label, columns, rows). 'booklet' is special (2 pages per sheet side,
+# reordered for saddle-stitch folding).
+IMPOSITION = {
+    '1up':     ('1-up (normal — one page per sheet)', 1, 1),
+    '2up':     ('2-up (two pages per sheet)', 2, 1),
+    '4up':     ('4-up (four pages per sheet)', 2, 2),
+    'booklet': ('Booklet (saddle-stitch folding order)', 2, 1),
+}
+
+def booklet_order(n):
+    """Saddle-stitch page order for `n` document pages. Pages are padded with blanks
+    (None) up to a multiple of 4. Returns a flat list of page indices (0-based) or None,
+    two per sheet side, in print order: outer-back, outer-front, inner-front, inner-back…
+    e.g. 4 pages -> [3, 0, 1, 2]; 6 pages -> [5,0,1,4,3,2 ...] padded to 8."""
+    total = ((n + 3) // 4) * 4
+    pages = list(range(n)) + [None] * (total - n)
+    seq = []
+    lo, hi = 0, total - 1
+    while lo < hi:
+        seq.append(pages[hi]); seq.append(pages[lo])   # one sheet side (left, right) = last, first
+        lo += 1; hi -= 1
+        seq.append(pages[lo]); seq.append(pages[hi])   # the other side
+        lo += 1; hi -= 1
+    return seq
+
+def imposition_sheets(n_pages, layout):
+    """Given a page count and a layout key, return a list of 'sheets', each a list of
+    page indices (0-based) or None (blank slot) laid left-to-right, top-to-bottom."""
+    if layout == 'booklet':
+        order = booklet_order(n_pages)
+        return [order[i:i + 2] for i in range(0, len(order), 2)]
+    _, cols, rows = IMPOSITION.get(layout, IMPOSITION['1up'])
+    per = cols * rows
+    slots = list(range(n_pages))
+    sheets = []
+    for i in range(0, max(1, len(slots)), per):
+        grp = slots[i:i + per]
+        grp += [None] * (per - len(grp))
+        sheets.append(grp)
+    return sheets
 
 # ----------------------------------------------------------------------------
 # Publishing to HTML
@@ -6239,7 +6338,8 @@ class MainWindow(QMainWindow):
         menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], None, a['save'], a['saveas'], None, a['docsetup'], a['preflight'],
                        self.act('Print / PDF &Preview…', self.print_preview_dialog, None, ['document-print-preview', 'document-preview', 'document-print']),
                        a['printdoc'], None, a['quit']])
-        menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall']])
+        menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall'], None,
+                       self.act('Find && &Replace…', self.find_replace_dialog, 'Ctrl+H', ['edit-find-replace', 'edit-find'])])
         self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
         for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom') and t[0] not in WEB_TOOLS]:
@@ -6256,7 +6356,9 @@ class MainWindow(QMainWindow):
                          self.act('&Chart…', lambda: self.chart_dialog(), None, ['office-chart-bar', 'x-office-spreadsheet', 'view-statistics']),
                          self.act('&QR Code…', lambda: self.qr_dialog(), None, ['view-barcode-qr', 'insert-barcode', 'view-barcode']),
                          self.act('Calendar…', lambda: self.calendar_wizard(), None, ['view-calendar', 'office-calendar', 'x-office-calendar']),
-                         self.act('Mail Merge…', lambda: self.mail_merge(), None, ['mail-send', 'document-send', 'mail-message-new'])])
+                         self.act('Mail Merge…', lambda: self.mail_merge(), None, ['mail-send', 'document-send', 'mail-message-new']), None,
+                         self.act('&Table of Contents…', lambda: self.insert_toc(), None, ['view-list-text', 'format-list-ordered', 'view-list-tree']),
+                         self.act('&Update Table of Contents', lambda: self.update_toc(), None, ['view-refresh', 'reload'])])
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
@@ -9386,6 +9488,133 @@ class MainWindow(QMainWindow):
         if left.count(): left.setCurrentRow(0)
         dlg.exec()
 
+    def _find_replace_targets(self):
+        """Every text-bearing object across all pages AND master pages, de-duplicated
+        (a master object placed on several pages is the same dict), in a stable order."""
+        out, seen = [], set()
+        for m in self.site.get('masters', []):
+            for o in m.get('objects', []):
+                if o.get('type') in ('text', 'artistic', 'button') and o.get('html') and o['id'] not in seen:
+                    seen.add(o['id']); out.append(o)
+        for pg in self.site['pages']:
+            for o in pg.get('objects', []):
+                if o.get('type') in ('text', 'artistic', 'button') and o.get('html') and o['id'] not in seen:
+                    seen.add(o['id']); out.append(o)
+        return out
+
+    def find_replace_dialog(self):
+        """Find text across every text / artistic / button object on all pages and
+        replace it — tag-safe, so the HTML markup is never corrupted. Match-case,
+        Replace (first match) and Replace All."""
+        from PySide6.QtWidgets import QLineEdit
+        dlg = QDialog(self); dlg.setWindowTitle('Find & Replace'); dlg.resize(440, 0)
+        v = QVBoxLayout(dlg); form = QFormLayout(); v.addLayout(form)
+        find = QLineEdit(); repl = QLineEdit()
+        try:
+            if self.editor and self.editor.textCursor().hasSelection():
+                find.setText(self.editor.textCursor().selectedText())
+        except Exception:
+            pass
+        form.addRow('Find what:', find); form.addRow('Replace with:', repl)
+        case = QCheckBox('Match case'); case.setChecked(False); form.addRow('', case)
+        info = QLabel('Searches the text on every page (and master pages). Replacement is '
+                      'tag-safe, so formatting stays intact.')
+        info.setWordWrap(True); info.setStyleSheet('color:gray'); v.addWidget(info)
+        row = QHBoxLayout(); row.addStretch()
+        bReplace = QPushButton('Replace'); bAll = QPushButton('Replace All'); bClose = QPushButton('Close')
+        for b in (bReplace, bAll, bClose): row.addWidget(b)
+        v.addLayout(row)
+        def total():
+            f = find.text()
+            if not f: return 0
+            return sum(_count_text_in_html(o.get('html', ''), f, case.isChecked()) for o in self._find_replace_targets())
+        def do_replace(all_):
+            f = find.text()
+            if not f:
+                self.hint('Type the text to find first.'); return
+            targets = self._find_replace_targets()
+            if total() == 0:
+                QMessageBox.information(self, 'Find & Replace', f'“{f}” was not found.'); return
+            self.commit()
+            done = 0
+            for o in targets:
+                if not all_ and done:
+                    break
+                remaining = 0 if all_ else (1 - done)
+                new_html, k = _replace_text_in_html(o.get('html', ''), f, repl.text(),
+                                                    match_case=case.isChecked(), count=remaining)
+                if k:
+                    o['html'] = new_html; done += k
+            if done:
+                self.dirty = True; self.refresh()
+                self.hint(f'Replaced {done} occurrence' + ('' if done == 1 else 's') + f' of “{f}”.')
+            else:
+                self.hint(f'“{f}” was not found.')
+        bReplace.clicked.connect(lambda: do_replace(False))
+        bAll.clicked.connect(lambda: do_replace(True))
+        bClose.clicked.connect(dlg.accept)
+        dlg.exec()
+
+    def _toc_entries(self, exclude_id=None):
+        """(title, page-number) for each document page, in order. Page number mirrors the
+        'Page Number Field' numbering (1-based position in site['pages'])."""
+        out = []
+        for i, p in enumerate(self.site['pages'], 1):
+            if p['id'] == exclude_id: continue
+            out.append((p.get('title') or p.get('file') or f'Page {i}', i))
+        return out
+
+    def _toc_html(self, title, exclude_id=None):
+        """Build the HTML for a Table of Contents text frame: an optional heading, then one
+        hyperlinked line per page with a dot leader and the page number. wcpage:<id> links
+        resolve both in-editor and on publish, matching the site-index object."""
+        lines = []
+        if title:
+            lines.append('<p><span style="font-size:22px; font-weight:bold;">%s</span></p>' % esc(title))
+        for p in self.site['pages']:
+            if p['id'] == exclude_id: continue
+            n = self.site['pages'].index(p) + 1
+            lines.append('<p><a href="wcpage:%s"><span style="text-decoration:none; color:inherit;">%s</span></a>'
+                         '&nbsp;&middot;&nbsp;%d</p>'
+                         % (p['id'], esc(p.get('title') or p.get('file') or 'Page'), n))
+        return ''.join(lines)
+
+    def insert_toc(self):
+        """Insert a Table of Contents — a normal editable text frame listing every page
+        with its page number. Remembers it is a TOC (toc=True) so it can be regenerated."""
+        from PySide6.QtWidgets import QLineEdit
+        title = QLineEdit('Contents')
+        skip = QCheckBox('Leave out the page this TOC sits on'); skip.setChecked(True)
+        dlg = form_dialog(self, 'Table of Contents', [('Heading:', title), ('', skip)],
+                          QLabel('Lists every page and its page number. It is an ordinary text\n'
+                                 'frame afterwards — edit it freely, or use Insert ▸ Update Table\n'
+                                 'of Contents to rebuild it from the current page list.'))
+        if not dlg.exec(): return
+        page = self.page()
+        exclude = page['id'] if skip.isChecked() else None
+        html = self._toc_html(title.text().strip(), exclude)
+        c = self.view.mapToScene(self.view.viewport().rect().center())
+        o = mk('text', 0, 0, 340, max(120, 28 + 26 * (len(self.site['pages']) + 1)))
+        o['html'] = html
+        o['toc'] = True; o['toc_title'] = title.text().strip(); o['toc_skip_self'] = skip.isChecked()
+        o['x'] = self.view.snap(max(0, c.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, c.y() - o['h'] / 2))
+        self.add_object(o)
+        self.hint('Table of Contents inserted — it is an ordinary text frame you can style and edit.')
+
+    def update_toc(self):
+        """Rebuild every Table-of-Contents frame in the document from the current pages."""
+        tocs = [o for pg in self.site['pages'] for o in pg.get('objects', []) if o.get('toc')]
+        tocs += [o for m in self.site.get('masters', []) for o in m.get('objects', []) if o.get('toc')]
+        if not tocs:
+            self.hint('No Table of Contents to update — insert one from the Insert menu first.'); return
+        self.commit()
+        for o in tocs:
+            owner = next((pg for pg in self.site['pages'] if o in pg.get('objects', [])), None)
+            exclude = owner['id'] if (o.get('toc_skip_self') and owner) else None
+            o['html'] = self._toc_html(o.get('toc_title', 'Contents'), exclude)
+        self.dirty = True; self.refresh()
+        self.hint(f'Updated {len(tocs)} Table of Contents.')
+
     def transform_dialog(self):
         """Type an exact position, size and rotation for the selection."""
         from PySide6.QtWidgets import QDoubleSpinBox
@@ -10800,37 +11029,85 @@ class MainWindow(QMainWindow):
         bb = QDialogButtonBox(QDialogButtonBox.Ok); bb.accepted.connect(dlg.accept); v.addWidget(bb)
         dlg.exec()
 
+    def _render_sheet_image(self, pages, sheet, cols, rows, slot_w=230):
+        """Compose one imposed sheet (list of page indices / None) into a single preview
+        image, `cols`×`rows` document pages laid left-to-right, top-to-bottom."""
+        Hpx = pages[0].get('height') or self.site['height']; Wpx = self.site['width']
+        sc = slot_w / Wpx; sw = int(Wpx * sc); sh = int(Hpx * sc)
+        img = QImage(sw * cols, sh * rows, QImage.Format_ARGB32_Premultiplied)
+        img.fill(QColor('#ffffff'))
+        p = QPainter(img)
+        for slot, idx in enumerate(sheet):
+            if idx is None: continue
+            cell = render_page_image(self.site, pages[idx], width=slot_w)
+            p.drawImage((slot % cols) * sw, (slot // cols) * sh, cell)
+        p.setPen(QColor('#b7bec4'))
+        for c in range(1, cols): p.drawLine(c * sw, 0, c * sw, sh * rows)
+        for rr in range(1, rows): p.drawLine(0, rr * sh, sw * cols, rr * sh)
+        p.end()
+        return img
+
     def print_preview_dialog(self):
-        """Show every page as it will print/export, then print or save a PDF from here."""
-        from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QPushButton
+        """Show every page (or imposed sheet) as it will print/export, then print or save
+        a PDF from here. The layout selector mirrors the Export-PDF imposition options."""
+        from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox
         pages = self.site.get('pages', [])
         if not pages:
             self.hint('There is nothing to preview yet.'); return
-        dlg = QDialog(self); dlg.setWindowTitle('Print / PDF Preview'); dlg.resize(620, 820)
+        dlg = QDialog(self); dlg.setWindowTitle('Print / PDF Preview'); dlg.resize(640, 820)
         outer = QVBoxLayout(dlg)
-        head = QLabel(f'<b>{len(pages)} page{"s" if len(pages) != 1 else ""}</b> — exactly how your document '
-                      'will print and export. Send it to a printer or save a PDF from the buttons below.')
-        head.setWordWrap(True); outer.addWidget(head)
+        top = QHBoxLayout()
+        head = QLabel(); head.setWordWrap(True); top.addWidget(head, 1)
+        top.addWidget(QLabel('Layout:'))
+        imp = QComboBox()
+        for k, (lbl, *_rc) in IMPOSITION.items(): imp.addItem(lbl.split(' (')[0], k)
+        imp.setCurrentIndex(max(0, imp.findData(self.site.get('imposition', '1up'))))
+        top.addWidget(imp)
+        outer.addLayout(top)
         area = QScrollArea(); area.setWidgetResizable(True)
         area.setStyleSheet('QScrollArea{background:#8a929a;border:1px solid #6f7a82}')
         outer.addWidget(area, 1)
-        inner = QWidget(); area.setWidget(inner); col = QVBoxLayout(inner); col.setSpacing(18); col.setContentsMargins(16, 16, 16, 16)
-        for i, pg in enumerate(pages, 1):
-            img = render_page_image(self.site, pg, width=460)
-            lab = QLabel(); lab.setPixmap(QPixmap.fromImage(img)); lab.setAlignment(Qt.AlignCenter)
-            lab.setStyleSheet('background:#ffffff;border:1px solid #3a4248')
-            col.addWidget(lab, 0, Qt.AlignHCenter)
-            cap = QLabel(f'Page {i}' + (f' — {pg.get("title")}' if pg.get('title') else ''))
-            cap.setAlignment(Qt.AlignHCenter); cap.setStyleSheet('color:#e8edf0;font-size:12px')
-            col.addWidget(cap)
-        col.addStretch()
+        def rebuild():
+            layout = imp.currentData()
+            inner = QWidget(); col = QVBoxLayout(inner); col.setSpacing(18); col.setContentsMargins(16, 16, 16, 16)
+            if layout == '1up':
+                head.setText(f'<b>{len(pages)} page{"s" if len(pages) != 1 else ""}</b> — exactly how your document '
+                             'will print and export.')
+                for i, pg in enumerate(pages, 1):
+                    img = render_page_image(self.site, pg, width=460)
+                    lab = QLabel(); lab.setPixmap(QPixmap.fromImage(img)); lab.setAlignment(Qt.AlignCenter)
+                    lab.setStyleSheet('background:#ffffff;border:1px solid #3a4248')
+                    col.addWidget(lab, 0, Qt.AlignHCenter)
+                    cap = QLabel(f'Page {i}' + (f' — {pg.get("title")}' if pg.get('title') else ''))
+                    cap.setAlignment(Qt.AlignHCenter); cap.setStyleSheet('color:#e8edf0;font-size:12px')
+                    col.addWidget(cap)
+            else:
+                _, cols, rows = IMPOSITION[layout]
+                if layout == 'booklet': cols, rows = 2, 1
+                sheets = imposition_sheets(len(pages), layout)
+                head.setText(f'<b>{len(pages)} page{"s" if len(pages) != 1 else ""}</b> imposed as '
+                             f'{IMPOSITION[layout][0].split(" (")[0]} — {len(sheets)} sheet'
+                             f'{"s" if len(sheets) != 1 else ""} to print.')
+                for si, sheet in enumerate(sheets, 1):
+                    img = self._render_sheet_image(pages, sheet, cols, rows)
+                    lab = QLabel(); lab.setPixmap(QPixmap.fromImage(img)); lab.setAlignment(Qt.AlignCenter)
+                    lab.setStyleSheet('background:#ffffff;border:1px solid #3a4248')
+                    col.addWidget(lab, 0, Qt.AlignHCenter)
+                    nums = ', '.join('blank' if x is None else str(x + 1) for x in sheet)
+                    cap = QLabel(f'Sheet {si} — pages {nums}')
+                    cap.setAlignment(Qt.AlignHCenter); cap.setStyleSheet('color:#e8edf0;font-size:12px')
+                    col.addWidget(cap)
+            col.addStretch()
+            area.setWidget(inner)
+        imp.currentIndexChanged.connect(lambda *_: (self.site.__setitem__('imposition', imp.currentData()), rebuild()))
+        rebuild()
         row = QHBoxLayout(); row.addStretch()
         bprint = QPushButton('Print…'); bpdf = QPushButton('Export PDF…'); bclose = QPushButton('Close')
         for b in (bprint, bpdf, bclose):
             row.addWidget(b)
         outer.addLayout(row)
         bprint.clicked.connect(lambda: (dlg.accept(), self.print_document()))
-        bpdf.clicked.connect(lambda: (dlg.accept(), self.export_pdf()))
+        bpdf.clicked.connect(lambda: (dlg.accept(), self.export_pdf(imp.currentData())))
         bclose.clicked.connect(dlg.reject)
         dlg.exec()
 
@@ -10935,64 +11212,105 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP, f'Could not write the eBook:\n{e}'); return
         self.hint(f'Exported eBook: {os.path.basename(path)} ({len(chapters)} chapter' + ('' if len(chapters) == 1 else 's') + ').')
 
-    def export_pdf(self):
-        """Export to a vector PDF (one page per document page), with optional bleed
-        and printer crop marks. Reuses paint_obj so text stays text, shapes stay vector."""
+    def export_pdf(self, layout=None):
+        """Export to a vector PDF. 1-up (the default) gives one document page per sheet,
+        with optional bleed and printer crop marks. 2-up / 4-up / Booklet impose several
+        document pages onto larger sheets (booklet = saddle-stitch folding order). Reuses
+        paint_obj so text stays text and shapes stay vector. `layout` may be preset by a
+        caller (e.g. the Print preview); otherwise it is chosen in the dialog."""
         from PySide6.QtGui import QPdfWriter, QPageSize
         from PySide6.QtCore import QSizeF, QMarginsF
-        from PySide6.QtWidgets import QDoubleSpinBox
+        from PySide6.QtWidgets import QDoubleSpinBox, QComboBox
         bleed = QDoubleSpinBox(); bleed.setRange(0, 20); bleed.setDecimals(0); bleed.setSuffix(' mm'); bleed.setValue(self.site.get('bleed_mm', 0))
         marks = QCheckBox('Add printer crop marks'); marks.setChecked(bool(self.site.get('crop_marks', False)))
-        dlg = form_dialog(self, 'Export PDF', [('Bleed:', bleed), ('', marks)],
-                          QLabel('Bleed extends artwork past the trim edge so edge-to-edge printing has no\n'
-                                 'white slivers. Crop marks show the trim lines for a print shop.'))
+        imp = QComboBox()
+        for k, (lbl, *_rc) in IMPOSITION.items(): imp.addItem(lbl, k)
+        preset = layout if layout in IMPOSITION else self.site.get('imposition', '1up')
+        imp.setCurrentIndex(max(0, imp.findData(preset)))
+        def sync_enable(*_):
+            one = imp.currentData() == '1up'
+            bleed.setEnabled(one); marks.setEnabled(one)
+        imp.currentIndexChanged.connect(sync_enable); sync_enable()
+        dlg = form_dialog(self, 'Export PDF', [('Layout:', imp), ('Bleed:', bleed), ('', marks)],
+                          QLabel('Layout imposes pages onto larger sheets: 2-up/4-up fit several per sheet,\n'
+                                 'Booklet orders them for folding into a saddle-stitched booklet.\n'
+                                 'Bleed and crop marks apply to the 1-up layout.'))
         if not dlg.exec(): return
+        layout = imp.currentData()
+        self.site['imposition'] = layout
         start = os.path.splitext(self.path or self.site.get('name') or 'document')[0] + '.pdf'
         path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', start, 'PDF documents (*.pdf)')
         if not path: return
         if not path.lower().endswith('.pdf'): path += '.pdf'
-        self.site['bleed_mm'] = bleed.value(); self.site['crop_marks'] = marks.isChecked()
-        bpx = bleed.value() / 25.4 * 96
-        mark = marks.isChecked()
-        ext = (bpx + 18) if mark else bpx          # page grows by this on every side
         site = self.site; Wpx = site['width']; pages = site['pages']
         def mm(px): return px / 96.0 * 25.4
+        def pageH(pg): return pg.get('height') or site['height']
+        def page_bg(pg):
+            m = next((x for x in site['masters'] if x['id'] == pg['master']), site['masters'][0])
+            return QColor(pg.get('bg') or m.get('bg') or site.get('bg') or '#ffffff')
         w = QPdfWriter(path); w.setResolution(96); w.setTitle(site.get('name') or 'Document')
-        def setsize(Hpx):
-            w.setPageSize(QPageSize(QSizeF(mm(Wpx + 2 * ext), mm(Hpx + 2 * ext)), QPageSize.Millimeter))
-            w.setPageMargins(QMarginsF(0, 0, 0, 0))
-        def crop(painter, Wp, Hp):
-            pen = QPen(QColor('#000')); pen.setWidthF(0.5); painter.setPen(pen)
-            L, gap = 18.0, max(0.0, bpx)
-            for cx, cy in ((ext, ext), (ext + Wp, ext), (ext, ext + Hp), (ext + Wp, ext + Hp)):
-                sx = -1 if cx < ext + Wp / 2 else 1
-                sy = -1 if cy < ext + Hp / 2 else 1
-                painter.drawLine(QPointF(cx + sx * gap, cy), QPointF(cx + sx * (gap + L), cy))
-                painter.drawLine(QPointF(cx, cy + sy * gap), QPointF(cx, cy + sy * (gap + L)))
-        setsize(pages[0].get('height') or site['height'])
+
+        if layout == '1up':
+            self.site['bleed_mm'] = bleed.value(); self.site['crop_marks'] = marks.isChecked()
+            bpx = bleed.value() / 25.4 * 96
+            mark = marks.isChecked()
+            ext = (bpx + 18) if mark else bpx          # page grows by this on every side
+            def setsize(Hpx):
+                w.setPageSize(QPageSize(QSizeF(mm(Wpx + 2 * ext), mm(Hpx + 2 * ext)), QPageSize.Millimeter))
+                w.setPageMargins(QMarginsF(0, 0, 0, 0))
+            def crop(painter, Wp, Hp):
+                pen = QPen(QColor('#000')); pen.setWidthF(0.5); painter.setPen(pen)
+                L, gap = 18.0, max(0.0, bpx)
+                for cx, cy in ((ext, ext), (ext + Wp, ext), (ext, ext + Hp), (ext + Wp, ext + Hp)):
+                    sx = -1 if cx < ext + Wp / 2 else 1
+                    sy = -1 if cy < ext + Hp / 2 else 1
+                    painter.drawLine(QPointF(cx + sx * gap, cy), QPointF(cx + sx * (gap + L), cy))
+                    painter.drawLine(QPointF(cx, cy + sy * gap), QPointF(cx, cy + sy * (gap + L)))
+            setsize(pageH(pages[0]))
+            painter = QPainter(w)
+            try:
+                for i, page in enumerate(pages):
+                    Hpx = pageH(page)
+                    if i: setsize(Hpx); w.newPage()
+                    painter.fillRect(QRectF(ext - bpx, ext - bpx, Wpx + 2 * bpx, Hpx + 2 * bpx), page_bg(page))
+                    painter.save(); painter.translate(ext, ext)
+                    painter.setClipRect(QRectF(-bpx, -bpx, Wpx + 2 * bpx, Hpx + 2 * bpx))
+                    paint_page_vector(painter, site, page, Wpx, Hpx)
+                    painter.restore()
+                    if mark: crop(painter, Wpx, Hpx)
+            finally:
+                painter.end()
+            extra = [f'{bleed.value():.0f}mm bleed'] if bleed.value() else []
+            if mark: extra.append('crop marks')
+            self.hint(f'Exported {len(pages)} page(s)' + (f' ({", ".join(extra)})' if extra else '') + f' to {os.path.basename(path)}')
+            return
+
+        # ---- Imposed layouts (2-up / 4-up / booklet) ----
+        # Uniform page size for the grid (booklet/N-up assume a consistent trim).
+        Hpx = pageH(pages[0])
+        _, cols, rows = IMPOSITION[layout]
+        if layout == 'booklet': cols, rows = 2, 1
+        sheet_w = Wpx * cols; sheet_h = Hpx * rows
+        sheets = imposition_sheets(len(pages), layout)
+        w.setPageSize(QPageSize(QSizeF(mm(sheet_w), mm(sheet_h)), QPageSize.Millimeter))
+        w.setPageMargins(QMarginsF(0, 0, 0, 0))
         painter = QPainter(w)
         try:
-            for i, page in enumerate(pages):
-                Hpx = page.get('height') or site['height']
-                if i: setsize(Hpx); w.newPage()
-                m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
-                bg = QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff')
-                painter.fillRect(QRectF(ext - bpx, ext - bpx, Wpx + 2 * bpx, Hpx + 2 * bpx), bg)
-                painter.save(); painter.translate(ext, ext)
-                painter.setClipRect(QRectF(-bpx, -bpx, Wpx + 2 * bpx, Hpx + 2 * bpx))
-                for o in page_objects(site, page):
-                    if o.get('hidden'): continue
-                    painter.save(); painter.translate(o['x'], o['y'])
-                    if o.get('rot'):
-                        painter.translate(o['w'] / 2, o['h'] / 2); painter.rotate(o['rot']); painter.translate(-o['w'] / 2, -o['h'] / 2)
-                    painter.setOpacity(o.get('opacity', 1)); paint_obj(painter, o, site, page, edit=False); painter.restore()
-                painter.restore()
-                if mark: crop(painter, Wpx, Hpx)
+            for si, sheet in enumerate(sheets):
+                if si: w.newPage()
+                for slot, idx in enumerate(sheet):
+                    if idx is None: continue
+                    pg = pages[idx]
+                    cx = (slot % cols) * Wpx; cy = (slot // cols) * Hpx
+                    painter.save(); painter.translate(cx, cy)
+                    painter.fillRect(QRectF(0, 0, Wpx, Hpx), page_bg(pg))
+                    painter.setClipRect(QRectF(0, 0, Wpx, Hpx))
+                    paint_page_vector(painter, site, pg, Wpx, Hpx)
+                    painter.restore()
         finally:
             painter.end()
-        extra = [f'{bleed.value():.0f}mm bleed'] if bleed.value() else []
-        if mark: extra.append('crop marks')
-        self.hint(f'Exported {len(pages)} page(s)' + (f' ({", ".join(extra)})' if extra else '') + f' to {os.path.basename(path)}')
+        self.hint(f'Exported {len(pages)} page(s) as {IMPOSITION[layout][0].split(" (")[0]} '
+                  f'on {len(sheets)} sheet(s) to {os.path.basename(path)}')
 
     def publish_disk(self):
         """Publish = pick Static or Responsive, then show the 'put it online'
