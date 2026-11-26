@@ -491,6 +491,29 @@ def capture(full=True):
         IM["texture_after"] = _pil(ctx.composited()).convert("RGB")
         # the plain texture swatch, so the reader sees the raw tile
         IM["texture_swatch"] = _pil(tex).convert("RGB")
+
+        # frames & edges demo: build our OWN synthetic transparent-centre frame (a torn /
+        # distressed dark border with a clear middle), never the user's licensed library,
+        # and drop it onto the same scene via the real add_overlay_layer at Normal / 100%,
+        # so the photo shows through the clear centre.
+        import random as _rnd
+        frame = QImage(ow, oh, QImage.Format_ARGB32); frame.fill(Qt.transparent)
+        fp2 = QPainter(frame); fp2.setPen(Qt.NoPen)
+        fp2.fillRect(0, 0, ow, oh, QColor(18, 14, 10, 255))        # opaque dark border fill
+        # ragged inner edge: carve a clear centre with a jittered torn margin
+        _rnd.seed(7)
+        inset = 34
+        fp2.setCompositionMode(QPainter.CompositionMode_Clear)
+        for xx in range(inset, ow - inset):
+            top = inset + _rnd.randint(-6, 6); bot = oh - inset + _rnd.randint(-6, 6)
+            fp2.fillRect(xx, max(0, top), 1, max(1, bot - top), Qt.transparent)
+        fp2.end()
+        IM["frame_swatch"] = _pil(frame).convert("RGBA")
+
+        frp = os.path.join(tmpd, "demo_frame.png"); frame.save(frp)
+        cfr = _throwaway_canvas(base)
+        cfr.add_overlay_layer(frp, "normal", 1.0)
+        IM["frame_after"] = _pil(cfr.composited()).convert("RGB")
     except Exception as e:
         print("overlay/texture demo failed:", e)
 
@@ -576,6 +599,28 @@ def capture(full=True):
     drive(w2.export)              # Export dialog
     drive(w2.add_overlay_dialog)  # Add Overlay picker
     drive(w2.place_texture_dialog)  # Place Texture picker
+
+    # Add Frame / Edge picker — seed a tiny NESTED temp frame library so the swatch grid is
+    # populated for the capture (the real library at ~/.local/share/justapps/frames is read
+    # live and may be partial / still streaming in). Frames are transparent-centre PNGs.
+    try:
+        import tempfile as _tf2
+        _frroot = _tf2.mkdtemp(prefix="paintmanual_framelib_")
+        for _vol, _col in (("Vol. 1 Artistic Edges", (24, 20, 16)),
+                           ("Vol. 3 Film Strip Edges", (12, 12, 12))):
+            _d = os.path.join(_frroot, "Extreme Edges", _vol); os.makedirs(_d)
+            for _i in range(4):
+                _fi = QImage(300, 220, QImage.Format_ARGB32); _fi.fill(Qt.transparent)
+                _fp = QPainter(_fi); _fp.setPen(Qt.NoPen)
+                _fp.fillRect(0, 0, 300, 220, QColor(*_col, 255))
+                _fp.setCompositionMode(QPainter.CompositionMode_Clear)
+                _m = 26 + _i * 4
+                _fp.fillRect(_m, _m, 300 - 2 * _m, 220 - 2 * _m, Qt.transparent); _fp.end()
+                _fi.save(os.path.join(_d, "edge%d.png" % (_i + 1)))
+        PC.FRAME_LIBRARY_DIR = _frroot
+        drive(w2.add_frame_dialog)    # Image ▸ Add Frame / Edge…
+    except Exception as e:
+        print("frame picker capture failed:", e)
 
     # Open from Library picker — seed a tiny temp library so the swatch grid is populated
     # for the capture (the real library at ~/.local/share/justapps/images is read live
@@ -1225,6 +1270,27 @@ add a mask to show the texture only where you want it.</p>
   'Click <b>Add to new layer</b> — the texture covers the canvas on a new layer at Normal / 100%.',
   'Now blend it: set the layer’s <b>blend</b> to <b>Multiply</b> or <b>Overlay</b> and ease the opacity down, or add a <b>mask</b> to reveal the texture only in places.')}
 {note('The overlay and texture libraries live outside the app, at <code>~/.local/share/justapps/overlays</code> and <code>~/.local/share/justapps/textures</code>, and are read live — nothing is copied in. If a library is not installed, the dialog still offers <b>Browse</b> so you can use your own images.')}"""),
+      ("Frames and edges", f"""
+<p>A <b>frame</b> or <b>edge</b> is the classic photographic finish — a torn, distressed, film-strip, darkroom
+or vignette border laid <i>around</i> the picture, so the photo shows through a clear centre. <b>Image ▸ Add
+Frame / Edge…</b> does exactly that: it drops a decorative edge onto a <b>new layer</b> over your photo,
+non-destructively.</p>
+<p>A frame is a transparent PNG whose middle is clear and whose border is the artwork. It arrives at the
+<b>Normal</b> blend and full opacity, cover-fitted to the canvas, so the opaque border sits over the edges of
+your picture while the clear centre reveals the image straight through. Because it is just another layer, you
+can afterwards <b>reposition</b> or <b>scale</b> it, ease its <b>opacity</b>, or <b>mask</b> it — all without
+touching the photo beneath.</p>
+<div class="imgrow">
+{fig(IM.get('frame_swatch'), 'A frame swatch — an artistic torn edge. The chequered middle is transparent; only the border carries ink.')}
+{fig(IM.get('frame_after'), 'The same frame dropped on a new layer over a photo: the ragged border frames the picture, which shows through the clear centre.')}
+</div>
+{fig(dlg('Add Frame / Edge'), 'The Add Frame / Edge picker: Browse for an image, or choose a category and click a swatch from your installed frame library. Frames are laid at Normal / 100%.')}
+{proc('add a frame or edge',
+  'Choose <b>Image ▸ Add Frame / Edge…</b>.',
+  'Either click <b>Browse for an image…</b> and pick a frame PNG, or choose a <b>category</b> and click a <b>swatch</b> from your frame library.',
+  'Click <b>Add to new layer</b>. The frame lands on its own layer at Normal / 100%, framing the photo through its clear centre.',
+  'Fine-tune if you like: move or resize the frame layer, lower its <b>opacity</b> for a softer edge, or mask parts of it away.')}
+{note('The frame / edge library is your own installed collection, read live from <code>~/.local/share/justapps/frames</code>. It is deeply nested — sets such as <i>Extreme Edges / Vol. 1 Artistic Edges</i> — and the picker lists each folder of frames as its own category. If the library is not installed, the dialog still offers <b>Browse</b> so you can use any transparent-centre PNG of your own.')}"""),
       ("Merging and flattening", f"""
 <p><b>Layer ▸ Merge Down</b> (or the <b>⌄</b> button) fuses the active layer into the one below, baking in its
 opacity and blend. Merge when you are happy with a combination and want to simplify the stack.</p>

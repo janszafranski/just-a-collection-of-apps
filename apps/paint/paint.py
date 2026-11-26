@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.10-00"
+VERSION = "1.11-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -54,6 +54,7 @@ def _justapps_recent(appkey, path):
 
 
 IMAGE_LIBRARY_DIR = os.path.expanduser('~/.local/share/justapps/images')
+FRAME_LIBRARY_DIR = os.path.expanduser('~/.local/share/justapps/frames')
 _IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp')
 
 
@@ -78,6 +79,18 @@ def scan_image_library(root=None):
             cats.append((label, dirpath))
     cats.sort(key=lambda c: c[0].lower())
     return cats
+
+
+def scan_frame_library(root=None):
+    """Scan the local decorative frame/edge library for LEAF directories that directly
+    contain frames, returned as pickable categories. The frame library is DEEPLY nested
+    (e.g. 'Extreme Edges / Vol. 1 Artistic Edges / …'), so this reuses the same recursive
+    leaf-dir walk as scan_image_library, rooted at FRAME_LIBRARY_DIR. Read live, never
+    copied; a partial/absent library (a copy still streaming in) is handled gracefully.
+
+    Returns a list of (label, dirpath) sorted by label, where `label` is the directory's
+    path relative to the frames root joined with ' / '."""
+    return scan_image_library(root or FRAME_LIBRARY_DIR)
 
 
 def library_thumbnail(path, px=140):
@@ -2485,6 +2498,7 @@ class Main(QMainWindow):
         img.addSeparator()
         img.addAction(self.act('Add &Overlay…', self.add_overlay_dialog))
         img.addAction(self.act('&Place Texture…', self.place_texture_dialog))
+        img.addAction(self.act('Add &Frame / Edge…', self.add_frame_dialog))
         img.addSeparator()
         img.addAction(self.act('Cu&tout Studio… (remove background)', self.cutout_studio))
         img.addAction(self.act('Smart &Mask (cut out subject)…', self.smart_mask_apply))
@@ -2914,11 +2928,36 @@ class Main(QMainWindow):
             apply_fn=self.canvas.place_texture_layer,
             done='Texture placed on a new layer — blend or mask it in via the Layers panel.')
 
+    def add_frame_dialog(self):
+        """Image ▸ Add Frame / Edge… — pick a decorative edge/frame (a transparent PNG
+        whose centre is clear) from the deeply nested frame library and lay it over the
+        photo on a NEW layer at Normal / 100%, so the image shows through the clear centre.
+        Non-destructive; reposition/scale/opacity in the Layers panel afterwards."""
+        self._library_picker_dialog(
+            title='Add Frame / Edge',
+            libdir=FRAME_LIBRARY_DIR,
+            intro=('Lay a decorative edge or frame — torn, distressed, film-strip, darkroom, '
+                   'vignette… — over your photo on a NEW layer (non-destructive). The frame '
+                   'is cover-fitted at Normal / 100%, so its clear centre reveals the image '
+                   'through it. Browse your own installed frame library by category below.'),
+            libname='frame &amp; edge library',
+            default_blend='normal', default_opacity=100,
+            apply_fn=self.canvas.add_overlay_layer,
+            done='Frame added on a new layer — reposition/scale/opacity in the Layers panel.',
+            recursive=True)
+
     def _library_picker_dialog(self, title, libdir, intro, libname,
-                               default_blend, default_opacity, apply_fn, done):
-        """Shared picker for Add Overlay / Place Texture: Browse-for-image OR a categorised
-        swatch grid reading the live library at `libdir`, plus a blend-mode and opacity
-        control. Calls apply_fn(path, blend, opacity) on OK."""
+                               default_blend, default_opacity, apply_fn, done,
+                               recursive=False):
+        """Shared picker for Add Overlay / Place Texture / Add Frame: Browse-for-image OR a
+        categorised swatch grid reading the live library at `libdir`, plus a blend-mode and
+        opacity control. Calls apply_fn(path, blend, opacity) on OK.
+
+        With recursive=True the library is scanned for LEAF directories that directly contain
+        images (via scan_frame_library) — categories are labelled by their ' / '-joined path
+        relative to the root — which is how the deeply nested frame/edge library is browsed.
+        Swatches decode small/fast via library_thumbnail (QImageReader scaled size) so the
+        ~1.3 MB frame PNGs are never loaded full-size for the grid."""
         from PySide6.QtWidgets import (QScrollArea, QGridLayout, QToolButton, QWidget)
         chosen = {'path': None}
         dlg = QDialog(self); dlg.setWindowTitle(title); dlg.resize(580, 640)
@@ -2938,8 +2977,15 @@ class Main(QMainWindow):
             if p: choose(p)
         bbrowse.clicked.connect(browse)
 
-        cats = sorted([d for d in os.listdir(libdir) if os.path.isdir(os.path.join(libdir, d))]) \
-            if os.path.isdir(libdir) else []
+        if recursive:
+            # (label, dirpath) leaf categories from the deeply nested library
+            scanned = scan_frame_library(libdir)
+            cats = [c[0] for c in scanned]
+            dir_for = dict(scanned)
+        else:
+            cats = sorted([d for d in os.listdir(libdir) if os.path.isdir(os.path.join(libdir, d))]) \
+                if os.path.isdir(libdir) else []
+            dir_for = {c: os.path.join(libdir, c) for c in cats}
         if cats:
             v.addWidget(QLabel('<b>Your %s</b> — click a swatch to use it:' % libname))
             catcombo = QComboBox(); catcombo.addItems(cats); v.addWidget(catcombo)
@@ -2950,7 +2996,7 @@ class Main(QMainWindow):
                 while hv.count():
                     it = hv.takeAt(0); w = it.widget()
                     if w: w.deleteLater()
-                d = os.path.join(libdir, cat)
+                d = dir_for.get(cat, os.path.join(libdir, cat))
                 try:
                     files = sorted([f for f in os.listdir(d)
                                     if f.lower().endswith(('.jpg', '.jpeg', '.png', '.webp'))])[:120]
@@ -2958,7 +3004,9 @@ class Main(QMainWindow):
                     files = []
                 for i, fn in enumerate(files):
                     fp = os.path.join(d, fn)
-                    tb = QToolButton(); pm = QPixmap(fp)
+                    tb = QToolButton()
+                    # small/fast scaled decode — frame PNGs are ~1.3 MB, never full-size here
+                    pm = library_thumbnail(fp, 96)
                     if not pm.isNull():
                         pm = pm.scaled(96, 96, Qt.KeepAspectRatio, Qt.SmoothTransformation)
                     tb.setIcon(QIcon(pm)); tb.setIconSize(QSize(90, 90)); tb.setToolTip(fn)
