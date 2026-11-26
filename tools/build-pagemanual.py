@@ -365,6 +365,24 @@ def capture(full=True):
         if hasattr(w2, nm):
             drive(getattr(w2, nm)); break
 
+    # Image Library picker — seed a tiny temp library so the swatch grid is populated
+    # for the capture (the real library at ~/.local/share/justapps/images is read live
+    # and may be empty / still streaming in).
+    try:
+        import tempfile
+        from PIL import Image as _PI
+        _libroot = tempfile.mkdtemp(prefix="pagemanual_imglib_")
+        for _cat, _cols in (("People", [(204, 68, 68), (210, 150, 90), (120, 150, 190)]),
+                            ("Nature", [(80, 150, 90), (60, 120, 160), (200, 180, 90)]),
+                            ("City",   [(110, 110, 120), (160, 120, 90), (90, 120, 150)])):
+            _d = os.path.join(_libroot, "Premium Image Collection 6", _cat); os.makedirs(_d)
+            for _i, _c in enumerate(_cols):
+                _PI.new("RGB", (480, 360), _c).save(os.path.join(_d, "photo%d.jpg" % (_i + 1)), "JPEG")
+        PC.IMAGE_LIBRARY_DIR = _libroot
+        drive(PC.library_picker, w2, "Picture from Library")
+    except Exception as e:
+        print("library picker capture failed:", e)
+
     IM["_dialogs"] = dict(DGRABS)
     return IM
 
@@ -805,6 +823,17 @@ disappearing behind it — give the object a wrap setting and place it over the 
   'Double-click the frame and choose an image file.',
   'The picture fits the frame. Design the layout first with empty frames, and drop the photos in later — a frame can wait.')}
 {note('Keeping images in frames (rather than loose on the page) is what lets you resize the hole and the picture independently, and swap one photo for another without disturbing the layout.')}"""),
+      ("The image library", f"""
+<p>If you keep a local stock-photo library, <b>Insert ▸ Picture from Library…</b> lets you browse it by
+category and drop a photo straight onto the page — no hunting through folders.</p>
+{proc('insert a photo from your library',
+  'Choose <b>Insert ▸ Picture from Library…</b>.',
+  'Pick a <b>category</b> from the drop-down — each is one folder of your library (e.g. “Premium Image Collection 6 / People”).',
+  'Click a <b>thumbnail</b> to choose that photo, then <b>Use this photo</b>.',
+  'The picture is placed on the page, sized to its own proportions and ready to move, resize or crop.')}
+{fig(dlg('Picture from Library'), 'The Image Library picker: browse your stock-photo collections by category and click a thumbnail to drop it in.')}
+{note('Thumbnails are decoded small and fast, so even a library of thousands of high-resolution photos scrolls smoothly. The library is read straight from disk and never copied into your document — only the photo you pick is embedded.')}
+{tip('No library yet? The same dialog has a <b>Browse for an image…</b> button to pick any image file on your computer.')}"""),
       ("Fitting, cropping and borders", f"""
 <p>A picture either <b>fills</b> its frame (cropping to the edges) or sits <b>inside</b> it. To show only
 part of a photo, use the <b>Crop</b> tool:</p>

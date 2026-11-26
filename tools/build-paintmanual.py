@@ -465,6 +465,24 @@ def capture(full=True):
     drive(w2.add_overlay_dialog)  # Add Overlay picker
     drive(w2.place_texture_dialog)  # Place Texture picker
 
+    # Open from Library picker — seed a tiny temp library so the swatch grid is populated
+    # for the capture (the real library at ~/.local/share/justapps/images is read live
+    # and may be empty / still streaming in).
+    try:
+        import tempfile
+        from PIL import Image as _PI
+        _libroot = tempfile.mkdtemp(prefix="paintmanual_imglib_")
+        for _cat, _cols in (("People", [(204, 68, 68), (210, 150, 90), (120, 150, 190)]),
+                            ("Nature", [(80, 150, 90), (60, 120, 160), (200, 180, 90)]),
+                            ("City",   [(110, 110, 120), (160, 120, 90), (90, 120, 150)])):
+            _d = os.path.join(_libroot, "Premium Image Collection 6", _cat); os.makedirs(_d)
+            for _i, _c in enumerate(_cols):
+                _PI.new("RGB", (480, 360), _c).save(os.path.join(_d, "photo%d.jpg" % (_i + 1)), "JPEG")
+        PC.IMAGE_LIBRARY_DIR = _libroot
+        drive(w2.open_from_library)   # File ▸ Open from Library…
+    except Exception as e:
+        print("library picker capture failed:", e)
+
     IM["_dialogs"] = dict(DGRABS)
     return IM
 
@@ -623,6 +641,17 @@ onto its icon, or pass the file on the command line — and it opens with that i
   'Browse to a PNG, JPEG, BMP, GIF or WebP file and choose it.',
   'The picture loads onto a single <b>Background</b> layer, ready to edit.')}
 {note('PAINTcanvas opens in your shared <i>Pictures/just a…</i> folder by default, so pictures saved by the other apps are easy to find.')}"""),
+      ("Opening from your image library", f"""
+<p>If you keep a local stock-photo library, <b>File ▸ Open from Library…</b> lets you browse it by category
+and open a photo straight into PAINTcanvas — no hunting through folders.</p>
+{proc('open a photo from your library',
+  'Choose <b>File ▸ Open from Library…</b>.',
+  'Pick a <b>category</b> from the drop-down — each is one folder of your library (e.g. “Premium Image Collection 6 / People”).',
+  'Click a <b>thumbnail</b> to choose that photo, then <b>Open this photo</b>.',
+  'The picture loads onto a single <b>Background</b> layer, exactly as File ▸ Open would.')}
+{fig(dlg('Open from Library'), 'The Image Library picker: browse your stock-photo collections by category and click a thumbnail to open it.')}
+{note('Thumbnails are decoded small and fast, so even a library of thousands of high-resolution photos scrolls smoothly. The library is read straight from disk — nothing is copied until you edit and save.')}
+{tip('No library yet? The same dialog has a <b>Browse for an image…</b> button to open any image file on your computer.')}"""),
       ("Saving your work", f"""
 <p>Save with <b>File ▸ Save</b> ({K('Ctrl')}+{K('S')}) or <b>Save As…</b>. PAINTcanvas writes two formats:</p>
 <ul>

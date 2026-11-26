@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.7-00"
+VERSION = "1.7-01"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -50,6 +50,120 @@ def _justapps_recent(appkey, path):
         data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
         with open(f, 'w') as fh: json.dump(data[:50], fh)
     except Exception: pass
+
+
+IMAGE_LIBRARY_DIR = os.path.expanduser('~/.local/share/justapps/images')
+_IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp')
+
+
+def scan_image_library(root=None):
+    """Scan the local stock-photo library for LEAF directories that directly contain
+    photos, and return them as pickable categories. Read live, never copied.
+
+    Returns a list of (label, dirpath) sorted by label, where `label` is the directory's
+    path relative to the images root (e.g. 'Premium Image Collection 6 / People'). A copy
+    may still be streaming in, so a partial or absent library is handled gracefully."""
+    root = root or IMAGE_LIBRARY_DIR
+    root = os.path.realpath(os.path.expanduser(root))
+    cats = []
+    if not os.path.isdir(root):
+        return cats
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        dirnames.sort()
+        has_img = any(f.lower().endswith(_IMG_EXTS) for f in filenames)
+        if has_img:
+            rel = os.path.relpath(dirpath, root)
+            label = ' / '.join(rel.split(os.sep)) if rel != '.' else os.path.basename(root)
+            cats.append((label, dirpath))
+    cats.sort(key=lambda c: c[0].lower())
+    return cats
+
+
+def library_thumbnail(path, px=140):
+    """Decode a thumbnail for `path` SMALL and FAST via QImageReader.setScaledSize —
+    the source photos are ~6.7 MB each, so they must never be loaded at full size for a
+    grid. Returns a QPixmap scaled to roughly px×px (or a null QPixmap on failure)."""
+    from PySide6.QtGui import QImageReader
+    rd = QImageReader(path)
+    rd.setAutoTransform(True)
+    sz = rd.size()
+    if sz.isValid() and (sz.width() > px or sz.height() > px):
+        if sz.width() >= sz.height():
+            rd.setScaledSize(QSize(px, max(1, round(px * sz.height() / sz.width()))))
+        else:
+            rd.setScaledSize(QSize(max(1, round(px * sz.width() / sz.height())), px))
+    img = rd.read()
+    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+
+
+def library_picker(parent, title='Open from Library'):
+    """Shared Image-Library picker mirroring PAGEdesigner's bitmap_fill_dialog swatch
+    grid: a Browse-for-image button, a category dropdown, and a scrollable thumbnail grid.
+    Thumbnails are decoded small/fast via library_thumbnail (QImageReader scaled size) and
+    only the CURRENT category's grid is built, rebuilt lazily on category change.
+
+    Returns the chosen full image path, or None if cancelled / nothing chosen."""
+    from PySide6.QtWidgets import QScrollArea, QGridLayout, QToolButton
+    chosen = {'path': None}
+    dlg = QDialog(parent); dlg.setWindowTitle(title); dlg.resize(620, 640)
+    v = QVBoxLayout(dlg)
+    lbl = QLabel('Browse your local stock-photo library by category and open a photo '
+                 'straight in — or Browse for any image on your computer.')
+    lbl.setWordWrap(True); v.addWidget(lbl)
+    sel_lbl = QLabel('Nothing chosen yet.'); sel_lbl.setStyleSheet('color:#5c6b73')
+    row = QHBoxLayout(); bbrowse = QPushButton('Browse for an image…')
+    row.addWidget(bbrowse); row.addWidget(sel_lbl, 1); v.addLayout(row)
+
+    def choose(path):
+        chosen['path'] = path; sel_lbl.setText('Chosen: ' + os.path.basename(path))
+        okbtn.setEnabled(True)
+
+    def browse():
+        p, _ = QFileDialog.getOpenFileName(dlg, 'Choose an image', _just_dir('pics'),
+                                           'Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)')
+        if p: choose(p)
+    bbrowse.clicked.connect(browse)
+
+    cats = scan_image_library()
+    if cats:
+        v.addWidget(QLabel('<b>Image library</b> — pick a category, then click a photo:'))
+        catcombo = QComboBox()
+        for label, _d in cats: catcombo.addItem(label)
+        v.addWidget(catcombo)
+        area = QScrollArea(); area.setWidgetResizable(True); area.setMinimumHeight(360); v.addWidget(area, 1)
+        holder = QWidget(); hv = QGridLayout(holder); area.setWidget(holder)
+
+        def load_cat(idx):
+            while hv.count():
+                it = hv.takeAt(0); w = it.widget()
+                if w: w.deleteLater()
+            if idx < 0 or idx >= len(cats): return
+            d = cats[idx][1]
+            try:
+                files = sorted([f for f in os.listdir(d) if f.lower().endswith(_IMG_EXTS)])[:120]
+            except OSError:
+                files = []
+            for i, fn in enumerate(files):
+                fp = os.path.join(d, fn)
+                tb = QToolButton(); pm = library_thumbnail(fp, 140)
+                if not pm.isNull(): tb.setIcon(QIcon(pm))
+                tb.setIconSize(QSize(120, 120)); tb.setToolTip(fn)
+                tb.setCursor(Qt.PointingHandCursor); tb.setAutoRaise(True)
+                tb.clicked.connect(lambda _=0, fp=fp: choose(fp))
+                hv.addWidget(tb, i // 4, i % 4)
+        catcombo.currentIndexChanged.connect(load_cat); load_cat(0)
+    else:
+        note = QLabel('<span style="color:gray">No image library found at '
+                      '~/.local/share/justapps/images yet — use Browse for an image instead.</span>')
+        note.setWordWrap(True); v.addWidget(note)
+
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    okbtn = bb.button(QDialogButtonBox.Ok); okbtn.setText('Open this photo'); okbtn.setEnabled(False)
+    bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    return chosen['path']
+
 
 CHECK = None   # transparency checkerboard, built once
 
@@ -1519,6 +1633,7 @@ class Main(QMainWindow):
         f = m.addMenu('&File')
         f.addAction(self.act('&New…', self.new, QKeySequence.New))
         f.addAction(self.act('&Open…', self.open, QKeySequence.Open))
+        f.addAction(self.act('Open from &Library…', self.open_from_library))
         f.addAction(self.act('&Save', self.save, QKeySequence.Save))
         f.addAction(self.act('Save &As…', self.save_as, QKeySequence.SaveAs))
         f.addAction(self.act('&Export…', self.export, 'Ctrl+Shift+E'))
@@ -1975,10 +2090,23 @@ class Main(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(self, 'Open image', _just_dir('pics'),
                                               'Images (*.png *.jpg *.jpeg *.bmp *.gif *.webp);;All files (*)')
         if not path: return
+        self.open_path(path)
+
+    def open_path(self, path):
+        """Core (testable) open: load `path` as a new document. Returns True on success.
+        Reused by File ▸ Open… and File ▸ Open from Library…."""
+        if not path: return False
         img = QImage(path)
         if img.isNull():
-            QMessageBox.warning(self, APP, "Couldn't open that image."); return
+            QMessageBox.warning(self, APP, "Couldn't open that image."); return False
         self.canvas.load(img); self.path = path; self.update_title(); _justapps_recent('paint', path)
+        return True
+
+    def open_from_library(self):
+        """File ▸ Open from Library… — pick a photo from the local stock library (or Browse)
+        and open it as a new document through the normal open path."""
+        path = library_picker(self, 'Open from Library')
+        if path: self.open_path(path)
 
     def save(self):
         if not self.path or not self.path.lower().endswith(('.png', '.jpg', '.jpeg')):

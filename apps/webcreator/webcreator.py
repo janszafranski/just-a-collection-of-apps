@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.18-00"
+VERSION = "1.18-01"
 
 
 def _just_dir(kind):
@@ -63,6 +63,122 @@ def _justapps_recent(appkey, path):
         data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
         with open(f, 'w') as fh: json.dump(data[:50], fh)
     except Exception: pass
+
+
+IMAGE_LIBRARY_DIR = os.path.expanduser('~/.local/share/justapps/images')
+_IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp')
+
+
+def scan_image_library(root=None):
+    """Scan the local stock-photo library for LEAF directories that directly contain
+    photos, and return them as pickable categories. Read live, never copied.
+
+    Returns a list of (label, dirpath) sorted by label, where `label` is the directory's
+    path relative to the images root (e.g. 'Premium Image Collection 6 / People'). A copy
+    may still be streaming in, so a partial or absent library is handled gracefully."""
+    root = root or IMAGE_LIBRARY_DIR
+    root = os.path.realpath(os.path.expanduser(root))
+    cats = []
+    if not os.path.isdir(root):
+        return cats
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+        dirnames.sort()
+        has_img = any(f.lower().endswith(_IMG_EXTS) for f in filenames)
+        if has_img:
+            rel = os.path.relpath(dirpath, root)
+            label = ' / '.join(rel.split(os.sep)) if rel != '.' else os.path.basename(root)
+            cats.append((label, dirpath))
+    cats.sort(key=lambda c: c[0].lower())
+    return cats
+
+
+def library_thumbnail(path, px=140):
+    """Decode a thumbnail for `path` SMALL and FAST via QImageReader.setScaledSize —
+    the source photos are ~6.7 MB each, so they must never be loaded at full size for a
+    grid. Returns a QPixmap scaled to roughly px×px (or a null QPixmap on failure)."""
+    from PySide6.QtGui import QImageReader, QPixmap, QImage
+    from PySide6.QtCore import QSize
+    rd = QImageReader(path)
+    rd.setAutoTransform(True)
+    sz = rd.size()
+    if sz.isValid() and (sz.width() > px or sz.height() > px):
+        if sz.width() >= sz.height():
+            rd.setScaledSize(QSize(px, max(1, round(px * sz.height() / sz.width()))))
+        else:
+            rd.setScaledSize(QSize(max(1, round(px * sz.width() / sz.height())), px))
+    img = rd.read()
+    return QPixmap.fromImage(img) if not img.isNull() else QPixmap()
+
+
+def library_picker(parent, title='Picture from Library'):
+    """Shared Image-Library picker mirroring PAGEdesigner's bitmap_fill_dialog swatch
+    grid: a Browse-for-image button, a category dropdown, and a scrollable thumbnail grid.
+    Thumbnails are decoded small/fast via library_thumbnail (QImageReader scaled size) and
+    only the CURRENT category's grid is built, rebuilt lazily on category change.
+
+    Returns the chosen full image path, or None if cancelled / nothing chosen."""
+    from PySide6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QComboBox, QScrollArea,
+                                   QGridLayout, QToolButton, QWidget, QPushButton, QDialogButtonBox,
+                                   QFileDialog)
+    from PySide6.QtGui import QIcon
+    chosen = {'path': None}
+    dlg = QDialog(parent); dlg.setWindowTitle(title); dlg.resize(620, 640)
+    v = QVBoxLayout(dlg)
+    v.addWidget(QLabel('Browse your local stock-photo library by category and drop a photo '
+                       'straight in — or Browse for any image on your computer.'))
+    sel_lbl = QLabel('Nothing chosen yet.'); sel_lbl.setStyleSheet('color:#5c6b73')
+    row = QHBoxLayout(); bbrowse = QPushButton('Browse for an image…')
+    row.addWidget(bbrowse); row.addWidget(sel_lbl, 1); v.addLayout(row)
+
+    def choose(path):
+        chosen['path'] = path; sel_lbl.setText('Chosen: ' + os.path.basename(path))
+        okbtn.setEnabled(True)
+
+    def browse():
+        p, _ = QFileDialog.getOpenFileName(dlg, 'Choose a picture', os.path.expanduser('~/Pictures'),
+                                           'Pictures (*.png *.jpg *.jpeg *.gif *.webp);;All files (*)')
+        if p: choose(p)
+    bbrowse.clicked.connect(browse)
+
+    cats = scan_image_library()
+    if cats:
+        v.addWidget(QLabel('<b>Image library</b> — pick a category, then click a photo:'))
+        catcombo = QComboBox()
+        for label, _d in cats: catcombo.addItem(label)
+        v.addWidget(catcombo)
+        area = QScrollArea(); area.setWidgetResizable(True); area.setMinimumHeight(360); v.addWidget(area, 1)
+        holder = QWidget(); hv = QGridLayout(holder); area.setWidget(holder)
+
+        def load_cat(idx):
+            while hv.count():
+                it = hv.takeAt(0); w = it.widget()
+                if w: w.deleteLater()
+            if idx < 0 or idx >= len(cats): return
+            d = cats[idx][1]
+            try:
+                files = sorted([f for f in os.listdir(d) if f.lower().endswith(_IMG_EXTS)])[:120]
+            except OSError:
+                files = []
+            for i, fn in enumerate(files):
+                fp = os.path.join(d, fn)
+                tb = QToolButton(); pm = library_thumbnail(fp, 140)
+                if not pm.isNull(): tb.setIcon(QIcon(pm))
+                tb.setIconSize(QSize(120, 120)); tb.setToolTip(fn)
+                tb.setCursor(Qt.PointingHandCursor); tb.setAutoRaise(True)
+                tb.clicked.connect(lambda _=0, fp=fp: choose(fp))
+                hv.addWidget(tb, i // 4, i % 4)
+        catcombo.currentIndexChanged.connect(load_cat); load_cat(0)
+    else:
+        note = QLabel('<span style="color:gray">No image library found at '
+                      '~/.local/share/justapps/images yet — use Browse for an image instead.</span>')
+        note.setWordWrap(True); v.addWidget(note)
+
+    bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+    okbtn = bb.button(QDialogButtonBox.Ok); okbtn.setText('Use this photo'); okbtn.setEnabled(False)
+    bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+    if dlg.exec() != QDialog.Accepted:
+        return None
+    return chosen['path']
 # Bump when the default docks/toolbars change so a stale saved layout is discarded
 # (restoreState ignores a state saved under a different version) and users see the new panels.
 # v8: discard layouts that had collapsed the Site studio group (file-list + its toolbar) to zero.
@@ -6665,7 +6781,10 @@ class MainWindow(QMainWindow):
         contact_acts = [self.act(lbl, lambda _=False, fk=fld: self.insert_contact(fk), None, None)
                         for fld, lbl in (('name', 'Author / Name'), ('email', 'Email'), ('phone', 'Phone'),
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
-        menu('&Insert', [a['newpage'], a['index_page'], a['newsfromlink'], None] + ins + [a['embed'], None, ('Contact details', contact_acts), None, a['importtext'], a['link']])
+        menu('&Insert', [a['newpage'], a['index_page'], a['newsfromlink'],
+                         self.act('Picture from &Library…', lambda: self.picture_from_library(), None,
+                                  ['insert-image', 'image-x-generic', 'folder-pictures']), None]
+                        + ins + [a['embed'], None, ('Contact details', contact_acts), None, a['importtext'], a['link']])
         list_sub = [a['list_disc'], a['list_circle'], a['list_square'], None,
                     a['list_decimal'], a['list_loweralpha'], a['list_upperalpha'],
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
@@ -8505,6 +8624,52 @@ class MainWindow(QMainWindow):
         if pm and not pm.isNull() and o['w'] == DEF['picture']['w'] and o['h'] == DEF['picture']['h']:
             o['h'] = round(o['w'] * pm.height() / pm.width())
         self.refresh()
+
+    def _uri_for_path(self, path):
+        """Embed an image file as a data: URI, matching pick_picture/_load_image_uri."""
+        ext = os.path.splitext(path)[1].lower().lstrip('.')
+        mime = {'jpg': 'jpeg', 'jpeg': 'jpeg', 'png': 'png', 'gif': 'gif', 'webp': 'webp', 'svg': 'svg+xml'}.get(ext)
+        try:
+            with open(path, 'rb') as fh: data = fh.read()
+        except OSError:
+            return None
+        if not mime or mime == 'svg+xml':
+            img = QImage(path)
+            if img.isNull(): return None
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); img.save(buf, 'PNG'); data = bytes(ba); mime = 'png'
+        return f'data:image/{mime};base64,' + base64.b64encode(data).decode()
+
+    def insert_picture_from_path(self, path):
+        """Core (testable) insert used by Insert ▸ Picture from Library…: embed the image
+        file exactly as pick_picture does and add a new picture object centred on the page,
+        sized to the image's aspect. Returns the new object, or None on failure."""
+        if not path or not os.path.isfile(path): return None
+        uri = self._uri_for_path(path)
+        if not uri: return None
+        o = mk('picture', 0, 0, DEF['picture']['w'], DEF['picture']['h'], fit='stretch')
+        o['src'] = add_asset(self.site, uri)
+        pm = pixmap_for(self.site, o['src'])
+        if pm and not pm.isNull():
+            o['h'] = round(o['w'] * pm.height() / pm.width())
+        try:
+            cc = self.view.mapToScene(self.view.viewport().rect().center())
+            o['x'] = self.view.snap(max(0, cc.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, cc.y() - o['h'] / 2))
+        except Exception:
+            pass
+        self.add_object(o)
+        return o
+
+    def picture_from_library(self):
+        """Insert ▸ Picture from Library… — pick a photo from the local stock library
+        (or Browse) and insert it through the normal picture pipeline."""
+        path = library_picker(self, 'Picture from Library')
+        if not path: return
+        o = self.insert_picture_from_path(path)
+        if o is None:
+            QMessageBox.warning(self, APP, "That file couldn't be read as a picture.")
+            return
+        self.set_tool('pointer')
+        self.hint('Picture inserted from the library — drag its handles to resize or reposition it.')
 
     def _load_image_uri(self, title='Choose a picture'):
         """Pick an image file and return it as a data: URI (or None)."""
