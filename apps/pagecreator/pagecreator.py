@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.23-04"
+VERSION = "1.23-05"
 
 
 def _just_dir(kind):
@@ -10365,30 +10365,56 @@ class MainWindow(QMainWindow):
                     chosen.update(uri=u, name=os.path.basename(p)); sel_lbl.setText('Chosen: ' + chosen['name'])
         bbrowse.clicked.connect(browse)
 
-        cats = sorted([d for d in os.listdir(TEXDIR) if os.path.isdir(os.path.join(TEXDIR, d))]) if os.path.isdir(TEXDIR) else []
+        # Recursive scan: every leaf folder that directly holds images becomes a
+        # category, labelled by its path relative to the library (so nested collections
+        # like "Edge Library Backgrounds / Ageing Textures / Rust" all show).
+        def _scan_tex(root):
+            out = []
+            if os.path.isdir(root):
+                for dp, _dns, fns in os.walk(root):
+                    if any(f.lower().endswith(('.jpg', '.jpeg', '.png')) for f in fns):
+                        rel = os.path.relpath(dp, root)
+                        out.append(('Textures' if rel == '.' else rel.replace(os.sep, ' / '), dp))
+            out.sort(key=lambda t: t[0].lower())
+            return out
+
+        def _tex_thumb(fp, px=90):
+            from PySide6.QtGui import QImageReader
+            r = QImageReader(fp); r.setAutoTransform(True); sz = r.size()
+            if sz.isValid() and max(sz.width(), sz.height()) > px:
+                if sz.width() >= sz.height():
+                    r.setScaledSize(QSize(px, max(1, round(sz.height() * px / sz.width()))))
+                else:
+                    r.setScaledSize(QSize(max(1, round(sz.width() * px / sz.height())), px))
+            im = r.read()
+            return QPixmap.fromImage(im) if not im.isNull() else QPixmap()
+
+        cats = _scan_tex(TEXDIR)
         if cats:
             v.addWidget(QLabel('<b>Texture library</b> — click a swatch to use it:'))
-            catcombo = QComboBox(); catcombo.addItems(cats); v.addWidget(catcombo)
+            catcombo = QComboBox()
+            for lbl, dp in cats:
+                catcombo.addItem(lbl, dp)
+            v.addWidget(catcombo)
             area = QScrollArea(); area.setWidgetResizable(True); area.setMinimumHeight(280); v.addWidget(area, 1)
             holder = QWidget(); hv = QGridLayout(holder); area.setWidget(holder)
 
-            def load_cat(cat):
+            def load_cat(idx):
                 while hv.count():
                     it = hv.takeAt(0); w = it.widget()
                     if w:
                         w.deleteLater()
-                d = os.path.join(TEXDIR, cat)
-                files = sorted([f for f in os.listdir(d) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])[:80]
+                d = catcombo.itemData(idx)
+                if not d:
+                    return
+                files = sorted([f for f in os.listdir(d) if f.lower().endswith(('.jpg', '.jpeg', '.png'))])[:120]
                 for i, fn in enumerate(files):
                     fp = os.path.join(d, fn)
-                    tb = QToolButton(); pm = QPixmap(fp)
-                    if not pm.isNull():
-                        pm = pm.scaled(96, 96, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
-                    tb.setIcon(QIcon(pm)); tb.setIconSize(QSize(90, 90)); tb.setToolTip(fn)
+                    tb = QToolButton(); tb.setIcon(QIcon(_tex_thumb(fp, 90))); tb.setIconSize(QSize(90, 90)); tb.setToolTip(fn)
                     tb.setCursor(Qt.PointingHandCursor); tb.setAutoRaise(True)
                     tb.clicked.connect(lambda _=0, fp=fp, fn=fn: (chosen.update(uri=to_uri(fp), name=fn), sel_lbl.setText('Chosen: ' + fn)))
                     hv.addWidget(tb, i // 4, i % 4)
-            catcombo.currentTextChanged.connect(load_cat); load_cat(cats[0])
+            catcombo.currentIndexChanged.connect(load_cat); load_cat(0)
         else:
             v.addWidget(QLabel('<span style="color:gray">No local texture library found at '
                                '~/.local/share/justapps/textures — use Browse for an image.</span>'))
