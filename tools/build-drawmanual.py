@@ -362,6 +362,65 @@ def _two(off=0):
 # the booleans are rendered live from real QPainterPaths in capture()
 
 
+# --- new in 1.7: flip, lock/duplicate, texture fill, text-on-path, dimension, connector, units ---
+
+# Flip: an asymmetric "flag" shape, and its horizontal mirror beside it.
+FLIP_BEFORE = [
+    poly([(40, 40), (200, 70), (120, 120), (210, 170), (40, 200)], fill="#5b8def", stroke="#2b3a42", sw=2),
+    text("F", 70, 70, size=90, fill="#ffffff"),
+]
+def _flip_h(objs, cx):
+    out = []
+    for o in objs:
+        c = {k: v for k, v in o.items()}
+        if c["type"] == "text":
+            c = dict(c); c["x"] = 2 * cx - c["x"] - 40
+        else:
+            c = dict(c); c["pts"] = [(2 * cx - x, y) for x, y in o["pts"]]
+        out.append(c)
+    return out
+
+# Duplicate / clone: one shape, then a run of offset copies like a cascade.
+DUPLICATE_DEMO = [
+    quick("star5", 40 + i * 34, 40 + i * 24, 120, 120,
+          fill=["#e8556b", "#ef7a88", "#f49ca6", "#f8bcc3"][i], stroke="#b2374b", sw=2)
+    for i in range(4)
+][::-1]
+
+# Lock: a "background" rectangle behind freely-moved shapes (conceptual).
+LOCK_DEMO = [
+    rect(30, 30, 420, 240, fill="#eef3f6", stroke="#9fb4c0", sw=2),      # the locked backdrop
+    quick("star5", 70, 70, 110, 110, fill="#f4c96b", stroke="#c8851b", sw=2),
+    ellipse(230, 120, 120, 100, fill="#49c5b6", stroke="#2a8577", sw=2),
+    text("locked backdrop", 60, 235, size=26, fill="#6c8390"),
+]
+
+# Text on a path: a word flowing along an arc, built as a text object with pathpts.
+import math as _m
+_ARC = [(40 + i * 10, 200 - 120 * _m.sin(i / 42 * _m.pi)) for i in range(43)]
+TEXTPATH_DEMO = [
+    dict(type="path", pts=_ARC, stroke="#d7dee3", sw=2, closed=False, fill=None),
+    dict(type="text", x=40, y=200, text="curving headline", family="Noto Sans",
+         size=42, fill="#2a7d6b", stroke=None, sw=0, pathpts=_ARC),
+]
+
+# Dimension lines: a box measured on two sides.
+DIM_DEMO = [
+    rect(90, 70, 260, 150, fill="#eaf1f4", stroke="#2b3a42", sw=2),
+    dict(type="dim", pts=[(90, 245), (350, 245)], stroke="#9b3b57", sw=2, fill=None, unit="px"),
+    dict(type="dim", pts=[(60, 70), (60, 220)], stroke="#9b3b57", sw=2, fill=None, unit="px"),
+]
+
+# Connectors: two boxes joined by a connector line with an arrow.
+CONN_DEMO = [
+    rect(40, 60, 130, 90, fill="#9fc3d6", stroke="#2b3a42", sw=2, cid=1),
+    rect(330, 160, 130, 90, fill="#f4c96b", stroke="#8a6d1f", sw=2, cid=2),
+    dict(type="conn", a={"anchor": 1}, b={"anchor": 2}, stroke="#2a7d6b", sw=3, arrow="end", fill=None),
+    text("Start", 60, 80, size=30, fill="#1f2a30"),
+    text("End", 355, 185, size=30, fill="#1f2a30"),
+]
+
+
 # ------------------------------------------------------------------- capture
 def capture(full=True):
     """Return {key: PIL image} for every picture the guide needs."""
@@ -393,6 +452,45 @@ def capture(full=True):
     IM["bezier_blob"] = render_drawing(BEZIER_BLOB, 340, 260, px=560)
     IM["opacity_demo"] = render_drawing(OPACITY_DEMO, 300, 300, px=520)
     IM["dash_demo"] = render_drawing(DASH_DEMO, 400, 340, px=640)
+
+    # --- new in 1.7 -----------------------------------------------------
+    IM["flip_demo"] = render_drawing(FLIP_BEFORE + _flip_h(FLIP_BEFORE, 310), 580, 240, px=820)
+    IM["duplicate_demo"] = render_drawing(DUPLICATE_DEMO, 300, 230, px=560)
+    IM["lock_demo"] = render_drawing(LOCK_DEMO, 480, 290, px=720)
+    # connectors & text-on-path need the module's paint-object list set so anchors resolve
+    DM._PAINT_OBJS = CONN_DEMO
+    IM["conn_demo"] = render_drawing(CONN_DEMO, 500, 280, px=740)
+    DM._PAINT_OBJS = TEXTPATH_DEMO
+    IM["textpath_demo"] = render_drawing(TEXTPATH_DEMO, 480, 230, px=760)
+    DM._PAINT_OBJS = DIM_DEMO
+    IM["dim_demo"] = render_drawing(DIM_DEMO, 420, 280, px=700)
+    DM._PAINT_OBJS = []
+
+    # Texture fill: prefer a real library texture, else a generated checker, on two shapes
+    try:
+        texpath = None
+        for cat in ("Wood", "Marble", "Paper Textures", "Bricks & Tiles", "Metal"):
+            cd = os.path.join(DM.TEXTURE_LIB, cat)
+            if os.path.isdir(cd):
+                files = sorted(f for f in os.listdir(cd)
+                               if f.lower().endswith((".jpg", ".jpeg", ".png")))
+                if files:
+                    texpath = os.path.join(cd, files[0]); break
+        if texpath is None:
+            # synthesise a small checker tile so the demo always renders
+            chk = QImage(40, 40, QImage.Format_ARGB32)
+            qp = QPainter(chk); qp.fillRect(0, 0, 40, 40, QColor("#c8851b"))
+            qp.fillRect(0, 0, 20, 20, QColor("#f4c96b")); qp.fillRect(20, 20, 20, 20, QColor("#f4c96b"))
+            qp.end()
+            texpath = str(ROOT / "tools" / "_tmp_tex.png"); chk.save(texpath)
+        uri = DM.image_data_uri(texpath)
+        tex_tile = quick("star5", 30, 30, 200, 200, fill="#ccc", stroke="#1f2a30", sw=3,
+                         texfill={"src": uri, "mode": "tile"})
+        tex_stretch = rect(270, 40, 220, 180, fill="#ccc", stroke="#1f2a30", sw=3,
+                           texfill={"src": uri, "mode": "stretch"})
+        IM["texture_demo"] = render_drawing([tex_tile, tex_stretch], 520, 250, px=780)
+    except Exception as ee:
+        print("texture demo failed:", ee)
 
     # Combine: render union / subtract / intersect from real QPainterPaths, via the app
     try:
@@ -550,6 +648,8 @@ def capture(full=True):
     drive(w2.effects_dialog)
     # Gradient dialog (same selected shape works)
     drive(w2.gradient_dialog)
+    # Texture / Pattern Fill dialog (same selected shape works)
+    drive(w2.texture_fill_dialog)
     # Add Text dialog — the Text tool opens it on a canvas click
     drive(w2.place_text, (120, 120))
     # Edit Text dialog — needs a selected text object
@@ -662,7 +762,9 @@ anything that must look clean at any size, from a business-card corner to a bann
 <li><b>Lines</b> — a single straight segment;</li>
 <li><b>Freehand paths</b> — a flowing line you draw by hand, as if with a pencil;</li>
 <li><b>Pen polylines</b> — a shape built point by point, which you can leave open or close into a filled outline;</li>
-<li><b>Text</b> — artistic text that behaves like a shape (fill, outline, gradient and effects all apply).</li>
+<li><b>Text</b> — artistic text that behaves like a shape (fill, outline, gradient and effects all apply), and can be flowed along a path;</li>
+<li><b>Images</b> — a bitmap picture placed on the canvas, embedded in the drawing;</li>
+<li><b>Dimension lines</b> and <b>connectors</b> — technical-drawing objects: a measured line with a length label, and a link between two objects that follows them as they move.</li>
 </ul>
 <p>Because they are all objects, the skills are shared: whatever the kind, you select it, move it, give
 it a fill and an outline, and lift it off the page with a shadow or glow — all in exactly the same way.
@@ -739,10 +841,12 @@ around it.</p>
       ("The tool palette", f"""
 <p>The vertical <b>tool palette</b> on the left holds the tools you draw and edit with. Click one to
 select it; it stays active until you choose another.</p>
-{fig(IM.get('toolrail'), 'The tool palette, from the top: Select, Node, Freehand, Pen, Line, Rectangle, Ellipse, QuickShape, Text and Image.', 'tall')}
+{fig(IM.get('toolrail'), 'The tool palette, from the top: Select, Node, Freehand, Pen, Line, Rectangle, Ellipse, QuickShape, Text, Image, Dimension line and Connector.', 'tall')}
 <p>From the top, the tools are the <b>Select</b> pointer, the <b>Node</b> tool (for reshaping curves),
 <b>Freehand</b> (a pencil), the <b>Pen</b> (for Bézier curves), <b>Line</b>, <b>Rectangle</b>,
-<b>Ellipse</b>, <b>QuickShape</b>, <b>Text</b> and <b>Image</b>. Each is covered in detail in Part II.</p>
+<b>Ellipse</b>, <b>QuickShape</b>, <b>Text</b>, <b>Image</b>, the <b>Dimension line</b> (a measured line
+with end ticks and an automatic length label) and the <b>Connector</b> (a line that links two objects and
+stays attached as they move). Each is covered in detail in Part II.</p>
 {tip('Choosing the Select tool is the quickest way to stop drawing and go back to picking things up and moving them.')}"""),
       ("The Style toolbar", f"""
 <p>The horizontal <b>Style toolbar</b> along the top sets how the next shape will look — and restyles the
@@ -904,7 +1008,21 @@ crisp and searchable on the web.</p>"""),
 {fig(dlg('Edit Text'), 'Edit Text re-opens the same dialog to change an existing text object.')}
 <p>Set the <b>Fill</b> for the colour of the letters and, if you want an outlined look, give it a <b>Line</b>
 colour and a <b>Width</b>. A <b>gradient</b> fill and the shadow/glow <b>Effects</b> both apply to text too.</p>
-{tip('Outline-only text — no fill, a bold line colour and a wide width — gives a clean “stencil” headline; a gradient fill gives a bright, modern title.')}""")]))
+{tip('Outline-only text — no fill, a bold line colour and a wide width — gives a clean “stencil” headline; a gradient fill gives a bright, modern title.')}"""),
+      ("Fitting text to a path", f"""
+<p>Text need not run in a straight line. <b>Fit Text to Path</b> attaches a line of artistic text to a
+line, a freehand or pen path, or a Bézier curve, so the letters flow along it — for a curved headline, a
+badge rim, a ribbon or a wave.</p>
+{proc('flow text along a path',
+  'Draw the <b>path</b> the text should follow — a line, a freehand or pen stroke, or a Bézier curve (and convert a shape to curves first if you want to run text round it).',
+  'Add a line of <b>Text</b> as usual.',
+  'With the <b>Select</b> tool, select <b>both</b> the text and the path (click one, then ' + K('Shift') + '-click the other).',
+  'Choose <b>Text ▸ Fit Text to Path</b>. The glyphs lay themselves along the path, each turned to follow its direction.')}
+{fig(IM.get('textpath_demo'), 'A line of artistic text flowed along an arc with Fit Text to Path — each letter sits on the curve and turns to follow it.')}
+<p>The text keeps its fill, outline and font; change the words with <b>Edit Text</b> and they re-flow along
+the same path. To straighten it out again, choose <b>Text ▸ Detach Text from Path</b>.</p>
+{note('Text on a path is written into the exported SVG as a real <b>&lt;textPath&gt;</b> following a path definition, so the curved text renders — and stays selectable — in a web browser.')}
+{tip('Flow text around a circle you have converted to curves for a classic round “seal” or stamp; flow it along a gentle wave for a lively banner headline.')}""")]))
 
     ch.append(("Selecting and Moving Objects",
       "<p class='lede'>Once something is on the canvas you will want to pick it up, move it, and get rid "
@@ -954,7 +1072,41 @@ up with its own edges — resizing stays intuitive however far it has been spun.
 <p>Rotation is stored with the object as an angle, so it survives a save and re-open, and it is written into
 the exported SVG as a real transform — a shape rotates with a transform matrix, a piece of text with an
 explicit <b>rotate()</b> — so it renders identically on screen, in a PNG and in any web browser.</p>
-{tip('Rotation and resize combine freely: stretch a shape to the proportions you want first, then spin it to the angle you need. Undo (' + K('Ctrl') + '+' + K('Z') + ') steps back through each transform.')}""")]))
+{tip('Rotation and resize combine freely: stretch a shape to the proportions you want first, then spin it to the angle you need. Undo (' + K('Ctrl') + '+' + K('Z') + ') steps back through each transform.')}"""),
+      ("Flipping (mirroring)", f"""
+<p><b>Flipping</b> mirrors an object — turning it into its own reflection. It is the quick way to make a
+left-facing shape face right, or to build a symmetrical pair.</p>
+{proc('flip an object',
+  'Select one or more objects with the <b>Select</b> tool.',
+  'Choose <b>Arrange ▸ Flip Horizontal</b> to mirror left-to-right,',
+  'or <b>Arrange ▸ Flip Vertical</b> to mirror top-to-bottom.')}
+{fig(IM.get('flip_demo'), 'An asymmetric shape (left) and its horizontal mirror (right) — Flip Horizontal reflects the artwork about the selection’s centre.')}
+{note('Flipping mirrors the whole selection about its combined centre, so flipping several objects together keeps their arrangement and mirrors it as one.')}""")]))
+
+    ch.append(("Duplicating, Cloning and Locking",
+      "<p class='lede'>Three housekeeping commands make a busy drawing easier to manage: <b>Duplicate</b> "
+      "makes an instant copy, and <b>Lock</b> pins an object down so you cannot select or move it by "
+      "accident.</p>", [
+      ("Duplicating an object", f"""
+<p><b>Duplicate</b> (sometimes called <i>clone</i>) makes an exact copy of the selection, offset a little so
+you can see it — the fastest way to build a row of identical buttons, a scatter of stars, or a repeated
+motif.</p>
+{proc('duplicate the selection',
+  'Select one or more objects with the <b>Select</b> tool.',
+  'Choose <b>Edit ▸ Duplicate</b> (' + K('Ctrl') + '+' + K('D') + ').',
+  'A copy appears, nudged down and to the right, and is left selected — drag it into place, or duplicate again for a cascade.')}
+{fig(IM.get('duplicate_demo'), 'One star duplicated three times, each copy offset — Ctrl+D is the quick way to repeat a motif.')}
+{note('A duplicate is a fully independent object — recolour or reshape it without touching the original. Duplicating a <b>group</b> copies the whole group as a new, separate group.')}"""),
+      ("Locking and unlocking", f"""
+<p><b>Locking</b> an object pins it to the canvas: a locked object cannot be clicked, selected, dragged or
+rubber-band-picked, so it stays put while you work on everything around it. It is ideal for a background,
+a template or a traced reference you want to draw over without nudging.</p>
+{proc('lock and unlock',
+  'Select the object (or objects) you want to protect.',
+  'Choose <b>Arrange ▸ Lock / Unlock</b> (' + K('Ctrl') + '+' + K('L') + '). The object is now locked and cannot be selected by clicking.',
+  'To work on it again, it is still listed — select it through its layer, or choose <b>Lock / Unlock</b> again while it is selected to release it.')}
+{fig(IM.get('lock_demo'), 'A locked backdrop rectangle (behind) stays put while the star and ellipse in front are moved freely — clicks pass straight through the locked object.')}
+{caution('Because a locked object ignores clicks, the quickest way to reach it again is to put it on its own layer (see “Layers”), so you can always find and unlock it.')}""")]))
 
     ch.append(("Fill, Line and Width",
       "<p class='lede'>Every shape in DRAWmaster has two coats of colour — a <b>fill</b> inside and an "
@@ -982,10 +1134,11 @@ dark, thin outline makes a shape crisp; a thick, contrasting one makes it bold.<
 {tip('A shape with a bold fill and no outline (width 0) reads as a clean, modern block; a shape with no fill and a thick outline reads as a frame or a ring. The three ways — fill only, outline only, both — are shown together below.')}
 {fig(IM.get('style_demo'), 'The same star three ways: filled with no outline, outline only, and both; and a bar with no outline, a thin one and a thick one.')}""")]))
 
-    ch.append(("Gradient Fills",
+    ch.append(("Gradient and Texture Fills",
       "<p class='lede'>Instead of a single flat colour, a shape can be filled with a <b>gradient</b> — a "
-      "smooth blend between two colours. DRAWmaster offers a <b>linear</b> blend across the shape and a "
-      "<b>radial</b> blend out from its centre.</p>", [
+      "smooth blend between two colours — or with a <b>texture</b>: a tiled or stretched image. DRAWmaster "
+      "offers a <b>linear</b> and a <b>radial</b> gradient, and a <b>texture / pattern fill</b> drawn from "
+      "an image file or your local texture library.</p>", [
       ("Applying a gradient", f"""
 {proc('fill a shape with a gradient',
   'Select the shape with the <b>Select</b> tool — a rectangle, ellipse, QuickShape, a closed pen shape, or even a piece of text.',
@@ -1000,7 +1153,26 @@ with its colours and angle intact.</p>"""),
       ("Removing a gradient", f"""
 <p>To go back to a flat fill, open <b>Gradient…</b> again and click <b>Remove gradient</b> — or simply click
 the <b>Fill</b> button and pick a solid colour, which replaces the gradient.</p>
-{tip('A radial gradient from a pale centre to a deep edge gives a shape a soft, rounded, “lit” look; a linear gradient at a shallow angle makes a clean modern background bar.')}""")]))
+{tip('A radial gradient from a pale centre to a deep edge gives a shape a soft, rounded, “lit” look; a linear gradient at a shallow angle makes a clean modern background bar.')}"""),
+      ("Texture and pattern fills", f"""
+<p>A shape can also be filled with a <b>texture</b> — an image painted inside its outline. DRAWmaster can
+<b>tile</b> the image (repeating it at its natural size) or <b>stretch</b> one copy to fill the shape's box,
+and it can draw the picture from a file you choose <i>or</i> from your <b>local texture library</b> — a set
+of categorised textures (wood, marble, brick, metal, paper, foliage and more) stored on your machine.</p>
+{proc('fill a shape with a texture',
+  'Select a shape with the <b>Select</b> tool — a rectangle, ellipse, QuickShape or a closed pen shape.',
+  'Choose <b>Edit ▸ Texture / Pattern Fill…</b>.',
+  'Either pick a <b>library category</b> and a <b>texture</b> from it, or click <b>Browse for an image file…</b> to use your own picture.',
+  'Choose a <b>fill mode</b> — <b>Tile</b> to repeat the image, or <b>Stretch to fit</b> to scale one copy across the shape.',
+  'Click <b>OK</b>. The texture fills the shape.')}
+{fig(dlg('Texture / Pattern Fill'), 'The Texture / Pattern Fill dialog: a library category and texture, or a file you browse to, plus the tile/stretch mode.')}
+{fig(IM.get('texture_demo'), 'A star with a tiled texture fill (left) and a rectangle with the same texture stretched to fit (right).')}
+<p>The chosen image is <b>embedded</b> in the drawing as a self-contained data URI, exactly like a placed
+picture — so a texture-filled shape travels with the file and survives a save-and-reopen. In the exported
+SVG the texture becomes a real <b>&lt;pattern&gt;</b> with an embedded <b>&lt;image&gt;</b>, so it renders
+in any browser.</p>
+{note('The texture library is read live from <code>~/.local/share/justapps/textures</code> if it is present on your machine; DRAWmaster never copies it into itself. If the folder is absent the dialog simply offers the <b>Browse for an image file…</b> route instead.')}
+{tip('A texture fill replaces a gradient (and vice versa). To go back to a flat colour, open the dialog and click <b>Remove texture</b>, or pick a solid <b>Fill</b> colour.')}""")]))
 
     ch.append(("Opacity, Dashes, Arrowheads and Combining Shapes",
       "<p class='lede'>A handful of finishing controls give a drawing polish: making an object <b>see-through</b>, "
@@ -1042,6 +1214,33 @@ the three classic boolean operations.</p>
 <div class="cat-card">{fig(IM.get('combine_intersect'), 'Intersect — only the shared area.')}</div>
 </div>
 {note('The result is a single <b>node path</b>, so you can keep reshaping it with the Node tool, give it a gradient or an effect, or combine it again. It is the quick way to build a custom shape no single QuickShape provides.')}""")]))
+
+    ch.append(("Dimension Lines and Connectors",
+      "<p class='lede'>Two tools serve technical drawing — plans, diagrams and flow charts. A "
+      "<b>dimension line</b> draws a measured line with end ticks and an automatic length label; a "
+      "<b>connector</b> joins two objects with a line that stays attached as they move.</p>", [
+      ("Drawing a dimension line", f"""
+<p>A <b>dimension line</b> is the annotation you see on a plan: a line spanning a distance, capped with a
+short tick at each end, and labelled with the length it measures. DRAWmaster works the length out for you
+and keeps the label upright.</p>
+{proc('draw a dimension line',
+  'Choose the <b>Dimension line</b> tool from the tool palette.',
+  'Press where the measurement should start, drag to where it should end, and release.',
+  'The line appears with end ticks and a length label showing the distance in the current <b>measurement unit</b>.')}
+{fig(IM.get('dim_demo'), 'A box measured on two sides with dimension lines — each shows end ticks and an automatic length label.')}
+{note('The label reads out in whatever unit is set in <b>View ▸ Measurement Units</b> — pixels, millimetres or centimetres — and updates if you change the unit while a dimension line is selected.')}
+{tip('Dimension lines are at their most useful over a plan drawn to a sensible scale — a room, a garden bed, a piece of furniture. Set the measurement unit to millimetres or centimetres first so the labels read in real-world terms.')}"""),
+      ("Linking objects with connectors", f"""
+<p>A <b>connector</b> is a line that is <i>anchored</i> to two objects. Move or resize either object and the
+connector follows, staying attached — so a flow chart or a wiring diagram keeps its links intact however
+you rearrange it.</p>
+{proc('join two objects with a connector',
+  'Choose the <b>Connector</b> tool.',
+  'Press on the first object, drag to the second, and release. Each end that lands on an object anchors to it.',
+  'Now switch to the <b>Select</b> tool and drag either object — the connector stretches to keep them joined.')}
+{fig(IM.get('conn_demo'), 'Two boxes joined by a connector with an arrowhead. Drag either box and the connector follows, staying attached.')}
+{note('An end that is dropped on empty canvas stays a free point; an end dropped on an object anchors to that object’s centre. Connectors are saved with the drawing and exported into the SVG as real lines.')}
+{tip('Build a flow chart from a row of rectangles joined by connectors, then shuffle the boxes about to find the clearest layout — the connectors redraw themselves, so you never have to.')}""")]))
 
     ch.append(("Effects: Shadow and Glow",
       "<p class='lede'>Two filter effects lift an object off the flat canvas: a <b>drop shadow</b> that "
@@ -1171,7 +1370,17 @@ to be pixel-perfect by hand.</p>
   'Switch on the grid, or add a guide or two, to give snapping something to catch on.',
   'Drag an object near a grid line, a guide or another object’s edge — it snaps into alignment as you release.')}
 {tip('Snapping reads an object’s edges <i>and</i> its centre, and the same for its neighbours — so you can snap two shapes centre-to-centre, or butt one flush against another, as easily as snapping to the grid.')}
-{caution('If a shape refuses to sit exactly where you drop it, that is snapping doing its job. Turn it off from <b>View ▸ Snap to Grid &amp; Guides</b> for free-hand placement, then turn it back on.')}""")]))
+{caution('If a shape refuses to sit exactly where you drop it, that is snapping doing its job. Turn it off from <b>View ▸ Snap to Grid &amp; Guides</b> for free-hand placement, then turn it back on.')}"""),
+      ("Measurement units", f"""
+<p>The status bar and every dimension-line label can read out in <b>pixels</b>, <b>millimetres</b> or
+<b>centimetres</b>. The drawing itself is always stored in pixels — the unit only changes how lengths are
+<i>shown</i>, so switching units never moves or resizes anything.</p>
+{proc('choose a measurement unit',
+  'Open <b>View ▸ Measurement Units</b>.',
+  'Choose <b>Pixels</b>, <b>Millimetres</b> or <b>Centimetres</b>.',
+  'The pointer read-out in the status bar switches at once, and any selected dimension line re-labels itself in the new unit.')}
+{note('DRAWmaster converts at 96 pixels to the inch (so 96 px = 25.4 mm = 2.54 cm) — the standard screen resolution, and the same convention its PDF export uses. For a drawing whose pixel size you have chosen to match a real sheet, the millimetre and centimetre read-outs are true to size.')}
+{tip('Working on a plan or a technical drawing? Switch to millimetres or centimetres before you add dimension lines, so every measured label reads in real-world units.')}""")]))
 
     ch.append(("Undo, Redo and Working Safely",
       "<p class='lede'>Drawing is a process of trying things. DRAWmaster keeps a deep history of your "
@@ -1314,16 +1523,24 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
       ("Edit", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Undo (Ctrl+Z)</td><td>Reverse the last change; the history is deep</td></tr>
 <tr><td>Redo (Ctrl+Shift+Z)</td><td>Re-apply a change you undid</td></tr>
+<tr><td>Duplicate (Ctrl+D)</td><td>Make an offset copy of the selected object(s)</td></tr>
 <tr><td>Edit Text…</td><td>Change the words, font or size of the selected text object</td></tr>
 <tr><td>Gradient Fill…</td><td>Open the gradient dialog for the selected shape</td></tr>
+<tr><td>Texture / Pattern Fill…</td><td>Fill the selected shape with a tiled or stretched image</td></tr>
 <tr><td>Opacity…</td><td>Set the selected object’s opacity from 0 to 100%</td></tr>
 <tr><td>Line Style (Dashes &amp; Arrows)…</td><td>Dash pattern and arrowheads for a line or path</td></tr>
 <tr><td>Convert to Curves (Ctrl+Shift+C)</td><td>Turn the selected shape into an editable node path</td></tr></table>"""),
+      ("Text", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
+<tr><td>Edit Text…</td><td>Change the words, font or size of the selected text object</td></tr>
+<tr><td>Fit Text to Path</td><td>Flow a selected text object along a selected line, path or curve</td></tr>
+<tr><td>Detach Text from Path</td><td>Return text-on-a-path to an ordinary straight line of text</td></tr></table>"""),
       ("Arrange", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Bring to Front (Ctrl+Shift+])</td><td>Move the selected object to the very top of the stack</td></tr>
 <tr><td>Send to Back (Ctrl+Shift+[)</td><td>Move it to the very bottom</td></tr>
 <tr><td>Bring Forward (Ctrl+])</td><td>Move it up one step</td></tr>
 <tr><td>Send Backward (Ctrl+[)</td><td>Move it down one step</td></tr>
+<tr><td>Flip Horizontal / Vertical</td><td>Mirror the selection left-to-right or top-to-bottom</td></tr>
+<tr><td>Lock / Unlock (Ctrl+L)</td><td>Pin the selection so it can’t be clicked or dragged, or release it</td></tr>
 <tr><td>Group (Ctrl+G)</td><td>Bind the selected objects into one group</td></tr>
 <tr><td>Ungroup (Ctrl+Shift+G)</td><td>Break the selected group back into its objects</td></tr>
 <tr><td>Combine ▸ Union / Subtract / Intersect</td><td>Weld two or more shapes into one node path (boolean)</td></tr>
@@ -1336,7 +1553,8 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <tr><td>Grid Spacing…</td><td>Set the gap between grid lines, in pixels</td></tr>
 <tr><td>Snap to Grid &amp; Guides</td><td>Toggle snapping of moves and resizes to the grid, guides and other objects</td></tr>
 <tr><td>Add Horizontal / Vertical Guide…</td><td>Place a guide line at an exact pixel position</td></tr>
-<tr><td>Clear Guides</td><td>Remove every guide</td></tr></table>"""),
+<tr><td>Clear Guides</td><td>Remove every guide</td></tr>
+<tr><td>Measurement Units ▸ Pixels / Millimetres / Centimetres</td><td>Choose the unit shown in the read-out and on dimension labels</td></tr></table>"""),
       ("Help", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>User Guide</td><td>This book</td></tr>
 <tr><td>Quick Start Guide</td><td>The short, get-going guide</td></tr>
@@ -1348,7 +1566,9 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <tr><td>Shape</td><td>Which QuickShape the QuickShape tool draws</td></tr>
 <tr><td>Effects…</td><td>Drop shadow and outer glow for the selected object</td></tr>
 <tr><td>Gradient…</td><td>Linear or radial gradient fill for the selected shape</td></tr>
-<tr><td>Zoom + / − / 100%</td><td>Change the zoom level</td></tr></table>""")]))
+<tr><td>Zoom + / − / 100%</td><td>Change the zoom level</td></tr></table>
+<p>The <b>Texture / Pattern Fill</b>, <b>Fit Text to Path</b> and the dimension/connector tools are reached
+from the menus and the tool palette rather than the Style toolbar.</p>""")]))
 
     ch.append(("Appendix B — Keyboard Shortcuts", "<p class='lede'>The keys worth learning.</p>", [
       ("Shortcuts", f"""<table class="ref">
@@ -1360,6 +1580,8 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <tr><td>Bring to Front / Send to Back</td><td>{K('Ctrl')}+{K('Shift')}+{K(']')} · {K('Ctrl')}+{K('Shift')}+{K('[')}</td></tr>
 <tr><td>Bring Forward / Send Backward</td><td>{K('Ctrl')}+{K(']')} · {K('Ctrl')}+{K('[')}</td></tr>
 <tr><td>Group / Ungroup</td><td>{K('Ctrl')}+{K('G')} · {K('Ctrl')}+{K('Shift')}+{K('G')}</td></tr>
+<tr><td>Duplicate (clone)</td><td>{K('Ctrl')}+{K('D')}</td></tr>
+<tr><td>Lock / Unlock</td><td>{K('Ctrl')}+{K('L')}</td></tr>
 <tr><td>Convert to Curves</td><td>{K('Ctrl')}+{K('Shift')}+{K('C')}</td></tr>
 <tr><td>Print</td><td>{K('Ctrl')}+{K('P')}</td></tr>
 <tr><td>Show / hide the grid</td><td>{K('Ctrl')}+{K("'")}</td></tr>
@@ -1383,7 +1605,9 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <tr><td>Ellipse</td><td>Drag out an ellipse or circle</td></tr>
 <tr><td>QuickShape</td><td>Drag out the chosen ready-made shape</td></tr>
 <tr><td>Text</td><td>Click, then type a line of artistic text (font and size in the dialog)</td></tr>
-<tr><td>Image</td><td>Click, then pick a picture file to place on the canvas</td></tr></table>""")]))
+<tr><td>Image</td><td>Click, then pick a picture file to place on the canvas</td></tr>
+<tr><td>Dimension line</td><td>Drag to draw a measured line with end ticks and an automatic length label</td></tr>
+<tr><td>Connector</td><td>Drag from one object to another to join them with a line that follows them</td></tr></table>""")]))
 
     ch.append(("Appendix D — Glossary", "<p class='lede'>The drawing words used in this guide.</p>", [
       ("A–Z", """<dl class="gloss">
@@ -1392,6 +1616,14 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <dt>Bézier curve</dt><dd>A smooth curve defined by nodes and their control handles — the mathematics behind every vector curve.</dd>
 <dt>Bitmap (raster)</dt><dd>A picture made of a grid of coloured dots, such as a PNG or a photo; it blurs when enlarged.</dd>
 <dt>Combine (boolean)</dt><dd>Weld two or more shapes into one with Union, Subtract or Intersect.</dd>
+<dt>Connector</dt><dd>A line anchored to two objects that stays attached as they move or resize.</dd>
+<dt>Dimension line</dt><dd>A measured line with end ticks and an automatic length label, for plans and diagrams.</dd>
+<dt>Duplicate (clone)</dt><dd>An offset copy of the selection, made with Ctrl+D.</dd>
+<dt>Flip</dt><dd>Mirror an object left-to-right or top-to-bottom about the selection’s centre.</dd>
+<dt>Lock</dt><dd>Pin an object so it cannot be selected or moved by accident, until unlocked.</dd>
+<dt>Measurement unit</dt><dd>Pixels, millimetres or centimetres — how lengths are shown; the drawing itself stays in pixels.</dd>
+<dt>Texture (pattern) fill</dt><dd>A fill that paints a tiled or stretched image inside a shape.</dd>
+<dt>Text on a path</dt><dd>Artistic text flowed along a line or curve so its letters follow the path.</dd>
 <dt>Control handle</dt><dd>A small marker on a stalk from a node that steers how a Bézier curve bends through it.</dd>
 <dt>Convert to Curves</dt><dd>Turn a shape, line or QuickShape into an editable node path.</dd>
 <dt>Dash style</dt><dd>Whether a line is drawn solid, dashed or dotted.</dd>
@@ -1427,7 +1659,142 @@ DRAWmaster writes it as <i>vector</i>) stays razor-sharp however far it is zoome
 <dt>Width</dt><dd>The thickness of an outline, in pixels; 0 means no outline.</dd>
 </dl>""")]))
 
-    ch.append(("Appendix E — Troubleshooting", "<p class='lede'>Quick answers to common snags.</p>", [
+    # --- the full DrawPlus X3 cross-reference ---------------------------------
+    def row(topic, status, where):
+        return f"<tr><td>{topic}</td><td>{status}</td><td>{where}</td></tr>"
+    YES = '<b style="color:#2a7d4f">In DRAWmaster</b>'
+    PART = '<span style="color:#b5651d">Partly</span>'
+    NO = '<span style="color:#b24">Not in this edition</span>'
+
+    ch.append(("Appendix E — DrawPlus X3 Cross-Reference",
+      "<p class='lede'>DRAWmaster is a clean-room drawing program in the tradition of Serif's <b>DrawPlus "
+      "X3</b>. This appendix walks the thirteen chapters of the DrawPlus X3 User Guide in order and says, "
+      "honestly, where DRAWmaster does the same thing, where it does something close, and where a DrawPlus "
+      "feature is deliberately <b>not</b> part of this edition — so you have a complete map between the "
+      "two.</p>", [
+      ("How to read this appendix", f"""
+<p>Each section below corresponds to a DrawPlus X3 chapter. A table lists that chapter's main topics with
+one of three verdicts:</p>
+<ul>
+<li>{YES} — DRAWmaster has the same (or an equivalent) feature; the “where” column points to the chapter of
+this guide that covers it.</li>
+<li>{PART} — DRAWmaster does something close but not identical.</li>
+<li>{NO} — a DrawPlus feature this edition does not replicate, listed so the map is complete.</li>
+</ul>
+{note('DRAWmaster is a focused vector editor, not a full DrawPlus clone. The honest “Not in this edition” notes below are the features that make DrawPlus a much larger program — animation, pressure brushes, autotrace, 3D and the distortion tools — and are the natural places it could grow.')}"""),
+      ("Ch. 1–2 · Welcome &amp; Getting Started", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Vector-drawing concept, object model', YES, 'Ch. 1, Welcome')}
+{row('Startup Wizard', PART, 'DRAWmaster opens straight onto a canvas; File ▸ New picks a size')}
+{row('Starting from a design template', NO, 'No template gallery; start from a blank canvas')}
+{row('Starting a new drawing', YES, 'Ch. 2, Starting Out')}
+{row('Opening a saved document', YES, 'Ch. 2 — opens its own editable SVGs')}
+{row('Opening other file types', PART, 'Imports bitmap images; opens DRAWmaster SVGs for editing')}
+{row('Saving your work', YES, 'Ch. 2 — saves editable SVG')}
+{row('Saving templates', NO, 'Not in this edition')}
+</table>"""),
+      ("Ch. 3 · Working with Pages", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Setting up a document (canvas size)', YES, 'Ch. 2, New Drawing dialog')}
+{row('Page and pasteboard', YES, 'Ch. 3, The Workspace — white canvas on a grey pasteboard')}
+{row('Measurement units', YES, 'Ch. “Grid, Guides and Snapping” — px / mm / cm')}
+{row('Drawing scale', PART, '96 px = 1 inch fixed; no arbitrary named scale')}
+{row('Snapping', YES, 'Ch. “Grid, Guides and Snapping”')}
+{row('Viewing pages (zoom, pan)', YES, 'Ch. 3, Moving around and zooming')}
+{row('Adding and deleting pages (multi-page)', NO, 'Single-canvas drawings only — see PAGEdesigner for multi-page')}
+{row('Design aids (grid, guides, rulers)', YES, 'Ch. “Grid, Guides and Snapping” (no on-screen ruler bar)')}
+{row('Updating defaults', PART, 'Current Fill/Line/Width act as live defaults for new shapes')}
+</table>"""),
+      ("Ch. 4 · Lines, Curves and Shapes", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Selecting one or more objects', YES, 'Ch. “Selecting and Moving”, “Grouping, Aligning…”')}
+{row('Drawing lines and shapes', YES, 'Ch. “Drawing Shapes”, “Drawing Lines and Paths”')}
+{row('Editing lines and shapes (nodes)', YES, 'Ch. “Editing Nodes and Curves” — the Node tool')}
+{row('QuickShapes', YES, 'Ch. “Drawing Shapes” — 18 QuickShapes')}
+{row('The Gallery (reusable designs)', NO, 'Not in this edition')}
+{row('Converting a shape to editable curves', YES, 'Ch. “Editing Nodes and Curves” — Convert to Curves')}
+{row('Applying perspective', NO, 'Not in this edition')}
+{row('Applying envelopes (mesh distortion)', NO, 'Not in this edition')}
+{row('Connectors', YES, 'Ch. “Dimension Lines and Connectors”')}
+</table>
+{note('DrawPlus perspective and envelope distortions warp a shape through a draggable cage or vanishing point. DRAWmaster does not replicate these; the nearest tools are Convert to Curves plus the Node tool for freeform reshaping, and resize/rotate/flip for simple transforms.')}"""),
+      ("Ch. 5 · Brushes", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Freehand drawing', YES, 'Ch. “Drawing Lines and Paths” — the Freehand tool')}
+{row('Art &amp; paint brushes', NO, 'Not in this edition — strokes have a flat colour and width')}
+{row('Pressure sensitivity', NO, 'Not in this edition — no pen-tablet pressure')}
+</table>
+{caution('DrawPlus brushes paint textured, tapering, pressure-varying strokes from a brush library. DRAWmaster’s Freehand and Pen tools draw a clean, constant-width vector stroke instead — simpler, and still fully editable as a path.')}"""),
+      ("Ch. 6 · Text", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Artistic text', YES, 'Ch. “Working with Text”')}
+{row('Frame (story) text', NO, 'Not in this edition — see PAGEdesigner/WEBcreator for text frames')}
+{row('Fitting text to a frame', NO, 'Not in this edition')}
+{row('Fitting text to a path', YES, 'Ch. “Working with Text” — Fit Text to Path')}
+{row('Dimension lines and labels', YES, 'Ch. “Dimension Lines and Connectors”')}
+{row('Spell-checking', NO, 'Not in this edition')}
+</table>"""),
+      ("Ch. 7 · Working with Objects", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Clone / duplicate', YES, 'Ch. “Duplicating, Cloning and Locking” (Ctrl+D)')}
+{row('Resize, rotate, shear', PART, 'Resize &amp; rotate: Ch. “Transforming Objects”. Shear not in this edition')}
+{row('Flip (mirror)', YES, 'Ch. “Transforming Objects” — Flip Horizontal/Vertical')}
+{row('Crop, cut-up, erase', NO, 'Not in this edition — reshape with Node/Combine instead')}
+{row('Lock / unlock', YES, 'Ch. “Duplicating, Cloning and Locking” (Ctrl+L)')}
+{row('Find objects', NO, 'Not in this edition')}
+{row('Group / ungroup', YES, 'Ch. “Grouping, Aligning and Distributing”')}
+{row('Combine (boolean)', YES, 'Ch. “Opacity, Dashes, Arrowheads and Combining Shapes”')}
+{row('Align / distribute', YES, 'Ch. “Grouping, Aligning and Distributing”')}
+{row('Order (z-order)', YES, 'Ch. “Layers and Arranging Objects”')}
+{row('Layers', YES, 'Ch. “Layers and Arranging Objects”')}
+</table>"""),
+      ("Ch. 8 · Fills, Lines, Colours and Transparency", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Solid fills &amp; line colours', YES, 'Ch. “Fill, Line and Width”')}
+{row('Line width &amp; dash styles', YES, 'Ch. “Fill, Line and Width”, “Opacity, Dashes…”')}
+{row('Gradient fills (linear, radial)', YES, 'Ch. “Gradient and Texture Fills”')}
+{row('Bitmap / pattern fills', YES, 'Ch. “Gradient and Texture Fills” — Texture / Pattern Fill')}
+{row('Plasma &amp; mesh fills', NO, 'Not in this edition')}
+{row('Opacity / transparency', YES, 'Ch. “Opacity, Dashes…” — object opacity')}
+{row('Transparency gradients / effects', PART, 'Per-object opacity and alpha fills; no transparency gradient')}
+</table>"""),
+      ("Ch. 9 · Pictures", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Importing a picture', YES, 'Ch. “Placing Pictures” — embedded as a data URI')}
+{row('Scanner / camera import', NO, 'Not in this edition — import a saved file instead')}
+{row('Cutout Studio (background removal)', NO, 'Not in this edition — use PAINTcanvas for raster editing')}
+{row('AutoTrace (bitmap → vector)', NO, 'Not in this edition — trace by hand over a dimmed image')}
+</table>
+{tip('To “trace”, place a picture on a lower layer, drop its opacity, lock it, and draw over the top with the Pen and shapes — the manual route to the clean vector artwork AutoTrace would attempt automatically.')}"""),
+      ("Ch. 10 · Special Effects", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Drop shadows', YES, 'Ch. “Effects: Shadow and Glow”')}
+{row('Outer glow', YES, 'Ch. “Effects: Shadow and Glow”')}
+{row('2D filter effects (blur, etc.)', PART, 'Shadow and glow are blurred filter effects; no general filter set')}
+{row('Borders, blends, rough edges', NO, 'Not in this edition')}
+{row('3D filter effects', NO, 'Not in this edition')}
+{row('Paper textures', PART, 'Use a Texture / Pattern Fill with a paper texture from the library')}
+{row('Instant 3D / Pseudo-3D', NO, 'Not in this edition')}
+</table>"""),
+      ("Ch. 11 · Animations", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Stopframe animation', NO, 'Not in this edition — DRAWmaster is a still-image editor')}
+{row('Keyframe animation', NO, 'Not in this edition')}
+</table>
+{caution('Animation is the biggest DrawPlus feature DRAWmaster does not attempt. DRAWmaster makes still vector artwork — logos, icons, diagrams and illustrations — and exports it as SVG, PNG or PDF.')}"""),
+      ("Ch. 12 · Publishing &amp; Exporting", f"""
+<table class="ref"><tr><th>DrawPlus X3 topic</th><th>Status</th><th>Where in this guide</th></tr>
+{row('Printing', YES, 'Ch. “Exporting to PDF and Printing”')}
+{row('Exporting PDF', YES, 'Ch. “Exporting to PDF and Printing” — vector PDF')}
+{row('Exporting images (PNG, etc.)', YES, 'Ch. “Exporting and Sharing” — PNG')}
+{row('Exporting SVG', YES, 'Ch. “Exporting and Sharing” — editable SVG, the native format')}
+{row('Web / slideshow publishing', PART, 'Exports SVG for the web; no built-in web/slideshow builder (see WEBcreator)')}
+</table>"""),
+      ("Ch. 13 · Index", f"""
+<p>The DrawPlus X3 User Guide closes with an index. This guide has its own back-of-book
+<a href="#bookindex">Index</a>, linking every topic to the chapter that covers it.</p>""")]))
+
+    ch.append(("Appendix F — Troubleshooting", "<p class='lede'>Quick answers to common snags.</p>", [
       ("Common questions", f"""<dl class="gloss">
 <dt>My shape has no outline.</dt><dd>The <b>Width</b> is set to 0, or the <b>Line</b> colour is unset. Raise the width and pick a line colour on the Style toolbar.</dd>
 <dt>My shape has no fill — it is hollow.</dt><dd>Lines and open pen paths never fill. For a shape, click the <b>Fill</b> button and pick a colour; a filled object draws solid.</dd>

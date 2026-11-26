@@ -23,7 +23,8 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.6-00"
+VERSION = "1.7-00"
+TEXTURE_LIB = os.path.expanduser('~/.local/share/justapps/textures')
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -52,6 +53,18 @@ def _justapps_recent(appkey, path):
         data.insert(0, {'app': appkey, 'path': path, 't': int(time.time())})
         with open(f, 'w') as fh: json.dump(data[:50], fh)
     except Exception: pass
+
+
+# ---------------------------------------------------------------- measurement units
+# The drawing is always stored in pixels; units only change how lengths are *shown*
+# (the status-bar readout and dimension-line labels). 96 px = 1 inch = 25.4 mm.
+UNIT_PER_PX = {'px': 1.0, 'mm': 25.4 / 96.0, 'cm': 2.54 / 96.0}
+UNIT_LABELS = [('Pixels', 'px'), ('Millimetres', 'mm'), ('Centimetres', 'cm')]
+
+# Connectors resolve their object anchors against whatever object list is being painted.
+# The canvas sets this before each paint so draw_connector() can find anchored objects
+# even though paint_object() is otherwise given a single object.
+_PAINT_OBJS = []
 
 
 # ---------------------------------------------------------------- QuickShapes
@@ -361,6 +374,58 @@ def image_data_uri(path):
     return f'data:{mime};base64,' + base64.b64encode(raw).decode()
 
 
+# ---------------------------------------------------------------- texture / pattern fills
+_TEX_CACHE = {}
+
+def texfill_image(o):
+    """Decode a texture/pattern fill's embedded data-URI (o['texfill']['src']) to a QImage,
+    cached by src (like obj_image) so the object dict stays plain and serialisable."""
+    tf = o.get('texfill') or {}
+    src = tf.get('src', '')
+    cached = _TEX_CACHE.get(src)
+    if isinstance(cached, QImage):
+        return cached
+    qi = QImage()
+    try:
+        if src.startswith('data:'):
+            import base64
+            _, _, b64 = src.partition(',')
+            qi.loadFromData(base64.b64decode(b64))
+        elif src:
+            qi.load(src)
+    except Exception:
+        qi = QImage()
+    if src:
+        _TEX_CACHE[src] = qi
+    return qi
+
+
+def texfill_brush(o):
+    """A QBrush that paints an object's texture/pattern fill. mode='tile' tiles the image
+    at its natural size; mode='stretch' scales one copy to fill the object's bounding box.
+    Returns None if there is no (decodable) texture."""
+    tf = o.get('texfill')
+    if not tf:
+        return None
+    img = texfill_image(o)
+    if img.isNull():
+        return None
+    if tf.get('mode', 'tile') == 'stretch':
+        r = obj_rect(o); w = max(1, int(round(r.width()))); h = max(1, int(round(r.height())))
+        scaled = img.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+        br = QBrush(scaled)
+        from PySide6.QtGui import QTransform
+        br.setTransform(QTransform().translate(r.x(), r.y()))
+        return br
+    return QBrush(img)
+
+
+def _texfill_scale(o):
+    """The width/height a stretched texture copy is drawn at, for SVG <pattern> sizing."""
+    r = obj_rect(o)
+    return max(1.0, r.width()), max(1.0, r.height())
+
+
 # ---------------------------------------------------------------- Object effects
 def obj_silhouette(o):
     """(path in local 0-based coords, world x, world y, w, h) for drop-shadow/glow."""
@@ -437,16 +502,159 @@ def text_size(o):
     return max(1.0, br.width()), max(1.0, fm.height())
 
 
+# ---------------------------------------------------------------- text on a path
+def textpath_path(o):
+    """A QPainterPath along which a 'text-on-path' object's glyphs flow — built from the
+    polyline of points stored in o['pathpts'] (canvas coords). Returns None if the text
+    object is not attached to a path."""
+    pts = o.get('pathpts')
+    if not pts or len(pts) < 2:
+        return None
+    pp = QPainterPath(); pp.moveTo(pts[0][0], pts[0][1])
+    for x, y in pts[1:]:
+        pp.lineTo(x, y)
+    return pp
+
+
+def draw_text_on_path(p, o):
+    """Lay each glyph of a text-on-path object along its stored polyline, rotating each
+    character to the local tangent. Honours fill/stroke like ordinary artistic text."""
+    pp = textpath_path(o)
+    if pp is None:
+        return
+    s = o.get('text', '')
+    if not s:
+        return
+    font = text_font(o); fm = QFontMetricsF(font)
+    total = pp.length() or 1.0
+    adv = 0.0
+    p.save()
+    if o.get('stroke'):
+        p.setPen(QPen(QColor(o['stroke']), o.get('sw', 2)))
+    else:
+        p.setPen(Qt.NoPen)
+    p.setBrush(QColor(o['fill']) if o.get('fill') else Qt.NoBrush)
+    for ch in s:
+        cw = fm.horizontalAdvance(ch)
+        at = adv + cw / 2.0
+        if at > total:
+            break
+        pct = pp.percentAtLength(at)
+        pt = pp.pointAtPercent(pct)
+        ang = pp.angleAtPercent(pct)   # degrees, counter-clockwise
+        glyph = QPainterPath()
+        glyph.addText(-cw / 2.0, fm.ascent() - fm.height() / 2.0, font, ch)
+        p.save()
+        p.translate(pt.x(), pt.y()); p.rotate(-ang)
+        p.drawPath(glyph)
+        p.restore()
+        adv += cw
+    p.restore()
+
+
+# ---------------------------------------------------------------- dimension lines & connectors
+def _dim_label(o):
+    """The measured length label for a dimension object, in the drawing's units."""
+    pts = o.get('pts') or []
+    if len(pts) < 2:
+        return ''
+    dx = pts[1][0] - pts[0][0]; dy = pts[1][1] - pts[0][1]
+    dist_px = math.hypot(dx, dy)
+    unit = o.get('unit', 'px')
+    val = dist_px * UNIT_PER_PX.get(unit, 1.0)
+    txt = f'{val:.1f}'.rstrip('0').rstrip('.')
+    return f'{txt} {unit}'
+
+
+def draw_dimension(p, o):
+    """A dimension line: the measured segment, short end ticks perpendicular to it, and
+    an auto length label centred above the line."""
+    pts = o.get('pts') or []
+    if len(pts) < 2:
+        return
+    (x1, y1), (x2, y2) = pts[0], pts[1]
+    col = QColor(o.get('stroke') or '#1f2a30')
+    sw = o.get('sw', 2)
+    p.save()
+    pen = QPen(col, sw); pen.setCapStyle(Qt.RoundCap); p.setPen(pen); p.setBrush(Qt.NoBrush)
+    p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
+    ang = math.atan2(y2 - y1, x2 - x1)
+    tick = max(6.0, sw * 4.0)
+    nx, ny = -math.sin(ang) * tick, math.cos(ang) * tick
+    for (tx, ty) in ((x1, y1), (x2, y2)):
+        p.drawLine(QPointF(tx - nx, ty - ny), QPointF(tx + nx, ty + ny))
+    label = _dim_label(o)
+    if label:
+        font = text_font(o) if o.get('size') else QFont('Noto Sans')
+        if not o.get('size'):
+            font.setPixelSize(max(11, int(sw * 7)))
+        fm = QFontMetricsF(font)
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        lw = fm.horizontalAdvance(label)
+        glyph = QPainterPath(); glyph.addText(-lw / 2, -fm.descent() - tick, font, label)
+        p.save(); p.translate(mx, my)
+        a = math.degrees(ang)
+        if a > 90 or a < -90: a += 180   # keep the label upright
+        p.rotate(a)
+        p.setPen(Qt.NoPen); p.setBrush(col); p.drawPath(glyph); p.restore()
+    p.restore()
+
+
+def conn_endpoints(o, objs):
+    """Resolve a connector's two endpoints to canvas coords. Each end is either a free
+    point {pt:[x,y]} or an anchor to another object {anchor: gid} whose centre is used."""
+    def resolve(end):
+        if isinstance(end, dict) and end.get('anchor') is not None:
+            tgt = next((x for x in objs if x.get('cid') == end['anchor']), None)
+            if tgt is not None:
+                cx, cy = obj_center(tgt)
+                return (cx, cy)
+        if isinstance(end, dict):
+            return tuple(end.get('pt', (0, 0)))
+        return tuple(end)
+    return resolve(o.get('a')), resolve(o.get('b'))
+
+
+def draw_connector(p, o, objs=None):
+    """A connector line between two endpoints (free points or object anchors). Drawn as a
+    simple straight line with an arrowhead at the end, in the object's stroke colour."""
+    objs = objs if objs is not None else []
+    a, b = conn_endpoints(o, objs)
+    col = QColor(o.get('stroke') or '#1f2a30')
+    sw = o.get('sw', 2)
+    p.save()
+    pen = QPen(col, sw); pen.setCapStyle(Qt.RoundCap)
+    if o.get('dash', 'solid') != 'solid':
+        apply_dash(pen, o.get('dash'))
+    p.setPen(pen); p.setBrush(Qt.NoBrush)
+    p.drawLine(QPointF(*a), QPointF(*b))
+    if o.get('arrow', 'end') != 'none':
+        size = max(8.0, sw * 3.0); p.setPen(Qt.NoPen); p.setBrush(col)
+        which = o.get('arrow', 'end')
+        if which in ('end', 'both'): p.drawPath(_arrow_head_path(b, a, size))
+        if which in ('start', 'both'): p.drawPath(_arrow_head_path(a, b, size))
+    p.restore()
+
+
 def obj_rect(o):
     t = o['type']
     if t in ('rect', 'ellipse', 'quick', 'image'):
         return QRectF(o['x'], o['y'], o['w'], o['h']).normalized()
     if t == 'text':
+        if o.get('pathpts'):
+            pp = textpath_path(o)
+            if pp is not None:
+                br = pp.boundingRect(); m = max(2.0, o.get('size', 48))
+                return QRectF(br.x() - m, br.y() - m, (br.width() or 1) + 2 * m, (br.height() or 1) + 2 * m)
         tw, th = text_size(o)
         return QRectF(o['x'], o['y'], tw, th)
     if t == 'nodes':
         br = node_painter_path(o).boundingRect()
         return QRectF(br.x(), br.y(), br.width() or 1, br.height() or 1)
+    if t == 'conn':
+        a, b = conn_endpoints(o, _PAINT_OBJS)
+        xs = [a[0], b[0]]; ys = [a[1], b[1]]
+        return QRectF(min(xs), min(ys), abs(xs[1] - xs[0]) or 1, abs(ys[1] - ys[0]) or 1)
     xs = [p[0] for p in o['pts']]; ys = [p[1] for p in o['pts']]
     return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
 
@@ -494,9 +702,13 @@ def obj_hit(o, pt):
 
 
 def fill_brush(o):
-    """The fill brush for an object — a gradient (grad dict) or a flat colour.
-    Gradients are mapped across the object's bounding box, so they render the same
-    on screen, in PNG and (via the SVG defs) in a browser. Mirrors PAGEdesigner."""
+    """The fill brush for an object — a texture/pattern, a gradient (grad dict) or a flat
+    colour. A texture fill wins over a gradient, which wins over a flat colour. Gradients
+    and textures are mapped across the object's bounding box, so they render the same on
+    screen, in PNG and (via the SVG defs) in a browser. Mirrors PAGEdesigner."""
+    tb = texfill_brush(o)
+    if tb is not None:
+        return tb
     g = o.get('grad')
     if g:
         r = obj_rect(o); w = r.width() or 1; h = r.height() or 1
@@ -524,6 +736,43 @@ def svg_grad_def(g, gid):
     return (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
             f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
             f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+
+
+def svg_texfill_def(o, pid):
+    """An SVG <pattern> (with an embedded <image>) that paints an object's texture fill.
+    A stretched fill uses one image scaled to the object's bounding box (patternUnits=
+    objectBoundingBox, width/height 100%); a tiled fill repeats the image at its natural
+    pixel size in userSpaceOnUse. Returns '' if there is no decodable texture."""
+    import html as _H
+    tf = o.get('texfill')
+    if not tf:
+        return ''
+    img = texfill_image(o)
+    if img.isNull():
+        return ''
+    src = _H.escape(tf.get('src', ''), quote=True)
+    iw, ih = img.width() or 1, img.height() or 1
+    if tf.get('mode', 'tile') == 'stretch':
+        return (f'<pattern id="{pid}" patternUnits="objectBoundingBox" width="1" height="1">'
+                f'<image href="{src}" x="0" y="0" width="{iw}" height="{ih}" '
+                f'preserveAspectRatio="none"/></pattern>')
+    r = obj_rect(o)
+    return (f'<pattern id="{pid}" patternUnits="userSpaceOnUse" '
+            f'x="{r.x():.2f}" y="{r.y():.2f}" width="{iw}" height="{ih}">'
+            f'<image href="{src}" x="0" y="0" width="{iw}" height="{ih}"/></pattern>')
+
+
+def svg_fill_value(o, idx=0):
+    """(defs, fill) for a shape object's fill: a texture <pattern>, a gradient, or a flat
+    colour — the value to drop into fill="…". Used by node/shape SVG splicing."""
+    if o.get('texfill'):
+        pid = f'tex{idx}'; d = svg_texfill_def(o, pid)
+        if d:
+            return d, f'url(#{pid})'
+    g = o.get('grad')
+    if g:
+        gid = f'fgrad{idx}'; return svg_grad_def(g, gid), f'url(#{gid})'
+    return '', (o.get('fill') or 'none')
 
 
 def svg_text_el(o, idx=0):
@@ -574,17 +823,65 @@ def svg_image_el(o):
             f'{_rot_transform(o)}{_opacity_attr(o)}/>')
 
 
+def svg_shape_el(o, idx=0):
+    """(defs, element) for a basic shape (rect/ellipse/quick/poly) that carries a texture
+    fill — spliced explicitly so the <pattern> fill renders in a browser (QSvgGenerator
+    can't express a texture). Returns ('', '') for anything without a texfill."""
+    if not o.get('texfill'):
+        return '', ''
+    t = o.get('type')
+    defs, fill = svg_fill_value(o, idx)
+    stroke = o.get('stroke') or 'none'
+    sw = o.get('sw', 2)
+    common = f'fill="{fill}" stroke="{stroke}" stroke-width="{sw}"{_rot_transform(o)}{_opacity_attr(o)}'
+    if t == 'rect':
+        el = f'<rect x="{o["x"]:.2f}" y="{o["y"]:.2f}" width="{o["w"]:.2f}" height="{o["h"]:.2f}" {common}/>'
+    elif t == 'ellipse':
+        cx = o['x'] + o['w'] / 2; cy = o['y'] + o['h'] / 2
+        el = f'<ellipse cx="{cx:.2f}" cy="{cy:.2f}" rx="{o["w"]/2:.2f}" ry="{o["h"]/2:.2f}" {common}/>'
+    elif t == 'quick':
+        pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+        el = f'<path d="{_painterpath_svg_d(pp)}" {common}/>'
+    elif t in ('poly', 'path'):
+        pts = ' '.join(f'{x:.2f},{y:.2f}' for x, y in o.get('pts', []))
+        tag = 'polygon' if o.get('closed') else 'polyline'
+        el = f'<{tag} points="{pts}" {common}/>'
+    else:
+        return '', ''
+    return defs, el
+
+
+def _painterpath_svg_d(pp):
+    """A best-effort SVG 'd' string from a QPainterPath (lines + cubics), for splicing a
+    QuickShape with a texture fill as a real <path>."""
+    d = []
+    i = 0; n = pp.elementCount()
+    while i < n:
+        el = pp.elementAt(i)
+        if el.type == QPainterPath.MoveToElement:
+            d.append(f'M {el.x:.2f} {el.y:.2f}'); i += 1
+        elif el.type == QPainterPath.LineToElement:
+            d.append(f'L {el.x:.2f} {el.y:.2f}'); i += 1
+        elif el.type == QPainterPath.CurveToElement:
+            c2 = pp.elementAt(i + 1); ep = pp.elementAt(i + 2)
+            d.append(f'C {el.x:.2f} {el.y:.2f} {c2.x:.2f} {c2.y:.2f} {ep.x:.2f} {ep.y:.2f}'); i += 3
+        else:
+            i += 1
+    d.append('Z')
+    return ' '.join(d)
+
+
 def svg_node_el(o, idx=0):
     """(defs, element) for a node ('nodes') object: a real <path d="M.. C..">, with its
     fill/stroke/dash, opacity and rotation — plus any arrowheads, so it is browser-true."""
     d = node_svg_d(o)
     if not d:
         return '', ''
-    g = o.get('grad'); defs = ''
-    if g and o.get('closed'):
-        gid = f'ndgrad{idx}'; defs = svg_grad_def(g, gid); fill = f'url(#{gid})'
+    defs = ''
+    if o.get('closed'):
+        defs, fill = svg_fill_value(o, idx)
     else:
-        fill = (o.get('fill') if (o.get('closed') and o.get('fill')) else 'none')
+        fill = 'none'
     stroke = o.get('stroke') or 'none'
     sw = o.get('sw', 2)
     el = (f'<path d="{d}" fill="{fill}" stroke="{stroke}" stroke-width="{sw}" '
@@ -598,6 +895,78 @@ def svg_node_el(o, idx=0):
             heads = f'<g{tr}{op}>{heads}</g>'
         el = el + heads
     return defs, el
+
+
+def svg_textpath_el(o, idx=0):
+    """(defs, element) for a text-on-path object: a <path> def the text follows, plus a
+    <text><textPath href="#..."> that lays the glyphs along it — browser-true."""
+    import html as _H
+    pp = textpath_path(o)
+    if pp is None:
+        return '', ''
+    pts = o.get('pathpts') or []
+    d = 'M ' + ' L '.join(f'{x:.2f} {y:.2f}' for x, y in pts)
+    pid = f'tpath{idx}'
+    defs = f'<path id="{pid}" d="{d}" fill="none"/>'
+    fam = _H.escape(o.get('family', 'Noto Sans'), quote=True)
+    sz = max(1, int(o.get('size', 48)))
+    fill = o.get('fill') or 'none'
+    stroke = f' stroke="{o["stroke"]}" stroke-width="{o.get("sw", 2)}"' if o.get('stroke') else ''
+    body = _H.escape(o.get('text', ''))
+    el = (f'<text font-family="{fam}" font-size="{sz}" fill="{fill}"{stroke}'
+          f'{_opacity_attr(o)}><textPath href="#{pid}" xlink:href="#{pid}">{body}</textPath></text>')
+    return defs, el
+
+
+def svg_dim_el(o, idx=0):
+    """(defs, element) for a dimension object: the measured line with end ticks and an
+    auto length label — assembled as plain SVG so it renders in any browser."""
+    import html as _H
+    pts = o.get('pts') or []
+    if len(pts) < 2:
+        return '', ''
+    (x1, y1), (x2, y2) = pts[0], pts[1]
+    col = o.get('stroke') or '#1f2a30'; sw = o.get('sw', 2)
+    ang = math.atan2(y2 - y1, x2 - x1); tick = max(6.0, sw * 4.0)
+    nx, ny = -math.sin(ang) * tick, math.cos(ang) * tick
+    parts = [f'<line x1="{x1:.2f}" y1="{y1:.2f}" x2="{x2:.2f}" y2="{y2:.2f}" '
+             f'stroke="{col}" stroke-width="{sw}" stroke-linecap="round"/>']
+    for (tx, ty) in ((x1, y1), (x2, y2)):
+        parts.append(f'<line x1="{tx - nx:.2f}" y1="{ty - ny:.2f}" x2="{tx + nx:.2f}" y2="{ty + ny:.2f}" '
+                     f'stroke="{col}" stroke-width="{sw}" stroke-linecap="round"/>')
+    label = _dim_label(o)
+    if label:
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        a = math.degrees(ang)
+        if a > 90 or a < -90: a += 180
+        fs = int(o.get('size') or max(11, int(sw * 7)))
+        parts.append(f'<text x="{mx:.2f}" y="{my - tick:.2f}" fill="{col}" font-size="{fs}" '
+                     f'font-family="Noto Sans" text-anchor="middle" '
+                     f'transform="rotate({a:.2f} {mx:.2f} {my:.2f})">{_H.escape(label)}</text>')
+    return '', f'<g{_opacity_attr(o)}>{"".join(parts)}</g>'
+
+
+def svg_conn_el(o, idx=0, objs=None):
+    """(defs, element) for a connector: a straight line between its resolved endpoints,
+    with an end arrowhead, written as plain SVG."""
+    objs = objs if objs is not None else _PAINT_OBJS
+    a, b = conn_endpoints(o, objs)
+    col = o.get('stroke') or '#1f2a30'; sw = o.get('sw', 2)
+    parts = [f'<line x1="{a[0]:.2f}" y1="{a[1]:.2f}" x2="{b[0]:.2f}" y2="{b[1]:.2f}" '
+             f'stroke="{col}" stroke-width="{sw}" stroke-linecap="round"{svg_dash_attr(o)}/>']
+    which = o.get('arrow', 'end')
+    if which != 'none':
+        size = max(8.0, sw * 3.0)
+
+        def tri(tip, frm):
+            pp = _arrow_head_path(tip, frm, size); d = []
+            for i in range(pp.elementCount()):
+                el = pp.elementAt(i)
+                d.append(('M' if el.type == QPainterPath.MoveToElement else 'L') + f' {el.x:.2f} {el.y:.2f}')
+            return f'<path d="{" ".join(d)} Z" fill="{col}" stroke="none"/>'
+        if which in ('end', 'both'): parts.append(tri(b, a))
+        if which in ('start', 'both'): parts.append(tri(a, b))
+    return '', f'<g{_opacity_attr(o)}>{"".join(parts)}</g>'
 
 
 def obj_opacity(o):
@@ -630,7 +999,7 @@ def paint_object(p, o, selected=False, skip_text=False):
 
 
 def _paint_object_body(p, o, selected=False, skip_text=False):
-    if skip_text and o.get('type') == 'text':
+    if skip_text and o.get('type') == 'text' and not o.get('pathpts'):
         draw_object_fx(p, o); return   # keep shadow/glow; the SVG <text> draws the glyphs
     draw_object_fx(p, o)
     pen = QPen(QColor(o['stroke']), o.get('sw', 2)) if o.get('stroke') else QPen(Qt.NoPen)
@@ -660,13 +1029,20 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
             p.setBrush(Qt.NoBrush); p.drawPath(pp)
         draw_arrowheads(p, o)
     elif t == 'text':
-        # Draw glyphs as a filled path so a fill/gradient/outline all apply, and so
-        # it renders identically offscreen (a bare QPainter.drawText can misbehave
-        # headless). Baseline sits at the font ascent inside the object's box.
-        fm = QFontMetricsF(text_font(o)); tp = QPainterPath()
-        tp.addText(o['x'], o['y'] + fm.ascent(), text_font(o), o.get('text', ''))
-        if not o.get('stroke'): p.setPen(Qt.NoPen)
-        p.drawPath(tp)
+        if o.get('pathpts'):
+            draw_text_on_path(p, o)   # glyphs flow along the attached path
+        else:
+            # Draw glyphs as a filled path so a fill/gradient/outline all apply, and so
+            # it renders identically offscreen (a bare QPainter.drawText can misbehave
+            # headless). Baseline sits at the font ascent inside the object's box.
+            fm = QFontMetricsF(text_font(o)); tp = QPainterPath()
+            tp.addText(o['x'], o['y'] + fm.ascent(), text_font(o), o.get('text', ''))
+            if not o.get('stroke'): p.setPen(Qt.NoPen)
+            p.drawPath(tp)
+    elif t == 'dim':
+        draw_dimension(p, o)
+    elif t == 'conn':
+        draw_connector(p, o, _PAINT_OBJS)
     elif t in ('line', 'path', 'poly'):
         poly = QPolygonF([QPointF(x, y) for x, y in o['pts']])
         if o.get('fill') and len(o['pts']) > 2:
@@ -715,6 +1091,8 @@ class Canvas(QWidget):
         self.show_grid = False
         self.grid = 20
         self.snap = True
+        self.unit = 'px'        # measurement unit for the readout & dimension labels
+        self._next_cid = 1      # next connector-anchor id to hand out
         self.guides_h = []       # horizontal guide y-positions
         self.guides_v = []       # vertical guide x-positions
         self.undo, self.redo = [], []
@@ -818,6 +1196,83 @@ class Canvas(QWidget):
         elif where == 'backward': self.objs.insert(max(0, i - 1), o)
         self.update()
 
+    # ---------------------------------------------------------------- flip
+    def flip_selection(self, axis):
+        """Mirror the selection horizontally ('h') or vertically ('v') about the combined
+        bounding box of the selection, moving/reflecting every member's geometry."""
+        sel = self._selection()
+        if not sel: return
+        self.snapshot()
+        rects = [obj_bounds(o) for o in sel]; combo = rects[0]
+        for r in rects[1:]: combo = combo.united(r)
+        cx = combo.center().x(); cy = combo.center().y()
+        for o in sel: self._flip_obj(o, axis, cx, cy)
+        self.update()
+
+    def _flip_obj(self, o, axis, cx, cy):
+        """Reflect one object's geometry across the vertical line x=cx (axis 'h') or the
+        horizontal line y=cy (axis 'v'). Point lists mirror directly; boxed shapes mirror
+        their top-left corner; node handles flip sign on the mirrored axis."""
+        def fx(x): return 2 * cx - x if axis == 'h' else x
+        def fy(y): return 2 * cy - y if axis == 'v' else y
+        t = o['type']
+        if t in ('rect', 'ellipse', 'quick', 'text', 'image'):
+            if t == 'text' and o.get('pathpts'):
+                o['pathpts'] = [(fx(x), fy(y)) for x, y in o['pathpts']]; return
+            r = obj_rect(o)
+            o['x'] = (2 * cx - (r.x() + r.width())) if axis == 'h' else r.x()
+            o['y'] = (2 * cy - (r.y() + r.height())) if axis == 'v' else r.y()
+        elif t == 'nodes':
+            for nd in o.get('nodes', []):
+                nd['x'], nd['y'] = fx(nd['x']), fy(nd['y'])
+                hin = nd.get('hin', [0, 0]); hout = nd.get('hout', [0, 0])
+                if axis == 'h':
+                    nd['hin'] = [-hin[0], hin[1]]; nd['hout'] = [-hout[0], hout[1]]
+                else:
+                    nd['hin'] = [hin[0], -hin[1]]; nd['hout'] = [hout[0], -hout[1]]
+        elif t == 'conn':
+            for key in ('a', 'b'):
+                end = o.get(key)
+                if isinstance(end, dict) and end.get('anchor') is None and 'pt' in end:
+                    px, py = end['pt']; end['pt'] = [fx(px), fy(py)]
+        else:   # line / path / poly / dim (all carry 'pts')
+            o['pts'] = [(fx(x), fy(y)) for x, y in o['pts']]
+
+    # ---------------------------------------------------------------- lock / duplicate
+    def toggle_lock(self):
+        """Lock or unlock the selected objects. Locked objects set o['locked']=True and
+        are skipped by click selection and dragging until unlocked."""
+        sel = self._selection()
+        if not sel: return
+        self.snapshot()
+        new_state = not all(o.get('locked') for o in sel)
+        for o in sel:
+            if new_state: o['locked'] = True
+            else: o.pop('locked', None)
+        self.update()
+
+    def duplicate_selection(self, dx=16, dy=16):
+        """Duplicate (clone) the selected objects as fresh copies offset by (dx, dy), and
+        select the copies. Group membership is preserved by re-mapping group ids."""
+        sel = self._selection()
+        if not sel: return []
+        self.snapshot()
+        gid_map = {}; copies = []
+        for o in sel:
+            c = copy.deepcopy(o)
+            c.pop('locked', None)
+            g = c.get('gid')
+            if g is not None:
+                if g not in gid_map:
+                    gid_map[g] = self._next_gid; self._next_gid += 1
+                c['gid'] = gid_map[g]
+            if c.get('cid') is not None:
+                c['cid'] = self._next_cid; self._next_cid += 1
+            self._shift_obj(c, dx, dy)
+            self.objs.append(c); copies.append(c)
+        self.set_selection(copies); self.update()
+        return copies
+
     # ---------------------------------------------------------------- selection
     def _selection(self):
         """The current selection as a list (sel first), de-duplicated."""
@@ -899,11 +1354,19 @@ class Canvas(QWidget):
 
     def _shift_obj(self, o, dx, dy):
         """Translate a single object by (dx, dy) in canvas coords."""
-        if o['type'] in ('rect', 'ellipse', 'quick', 'text', 'image'):
+        t = o['type']
+        if t == 'text' and o.get('pathpts'):
+            o['pathpts'] = [(x + dx, y + dy) for x, y in o['pathpts']]
+        elif t in ('rect', 'ellipse', 'quick', 'text', 'image'):
             o['x'] += dx; o['y'] += dy
-        elif o['type'] == 'nodes':
+        elif t == 'nodes':
             for nd in o.get('nodes', []):
                 nd['x'] += dx; nd['y'] += dy
+        elif t == 'conn':
+            for key in ('a', 'b'):
+                end = o.get(key)
+                if isinstance(end, dict) and end.get('anchor') is None and 'pt' in end:
+                    px, py = end['pt']; end['pt'] = [px + dx, py + dy]
         else:
             o['pts'] = [(x + dx, y + dy) for x, y in o['pts']]
 
@@ -955,6 +1418,7 @@ class Canvas(QWidget):
         return (bx or 0.0), (by or 0.0)
 
     def paintEvent(self, e):
+        global _PAINT_OBJS; _PAINT_OBJS = self.objs
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor('#e9ebee'))
         p.fillRect(QRectF(0, 0, self.W * self.zoom, self.H * self.zoom), QColor('#ffffff'))
@@ -964,7 +1428,7 @@ class Canvas(QWidget):
         sel_set = set(id(o) for o in self._selection())
         for o in self.ordered_objs():
             paint_object(p, o, id(o) in sel_set)
-        if self.start and self.cur and self.tool in ('rect', 'ellipse', 'line', 'quick'):
+        if self.start and self.cur and self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn'):
             tmp = self._shape_from(self.start, self.cur)
             if tmp: paint_object(p, tmp)
         if self.poly_pts and len(self.poly_pts) >= 1:
@@ -1229,10 +1693,36 @@ class Canvas(QWidget):
                     layer=self.active_layer)
         if self.tool == 'line':
             return dict(type='line', pts=[a, b], **base)
+        if self.tool == 'dim':
+            return dict(type='dim', pts=[a, b], stroke=self.stroke.name(), sw=self.sw,
+                        fill=None, unit=self.unit, layer=self.active_layer)
+        if self.tool == 'conn':
+            return dict(type='conn', a={'pt': list(a)}, b={'pt': list(b)},
+                        stroke=self.stroke.name(), sw=self.sw, arrow='end',
+                        fill=None, layer=self.active_layer)
         if self.tool == 'quick':
             return dict(type='quick', shape=self.quick_shape, x=min(x1, x2), y=min(y1, y2),
                         w=abs(x2 - x1) or 1, h=abs(y2 - y1) or 1, **base)
         return dict(type=self.tool, x=min(x1, x2), y=min(y1, y2), w=abs(x2 - x1), h=abs(y2 - y1), **base)
+
+    def _cid_for(self, o):
+        """The connector-anchor id of an object, assigning a fresh one the first time it
+        is anchored so a connector can follow it when it moves."""
+        if o.get('cid') is None:
+            o['cid'] = self._next_cid; self._next_cid += 1
+        return o['cid']
+
+    def _make_connector(self, a, b):
+        """Build a connector between two drag points. If a point lands on an object, that
+        end anchors to the object's centre (and follows it); otherwise it stays a free point."""
+        def end_for(pt):
+            hit = next((o for o in reversed(self.ordered_objs())
+                        if o.get('type') not in ('conn', 'dim') and obj_hit(o, pt)), None)
+            if hit is not None:
+                return {'anchor': self._cid_for(hit)}
+            return {'pt': list(pt)}
+        return dict(type='conn', a=end_for(a), b=end_for(b), stroke=self.stroke.name(),
+                    sw=self.sw, arrow='end', fill=None, layer=self.active_layer)
 
     def mousePressEvent(self, e):
         if e.button() != Qt.LeftButton: return
@@ -1244,7 +1734,8 @@ class Canvas(QWidget):
                 self.handle = h; self.drag_start = pt
                 self.drag_orig = copy.deepcopy(self._selection())
                 self.snapshot(); return
-            hit = next((o for o in reversed(self.ordered_objs()) if obj_hit(o, pt)), None)
+            hit = next((o for o in reversed(self.ordered_objs())
+                        if not o.get('locked') and obj_hit(o, pt)), None)
             shift = bool(e.modifiers() & Qt.ShiftModifier)
             if hit is None:
                 if not shift: self.set_selection([])
@@ -1261,7 +1752,9 @@ class Canvas(QWidget):
                 self.set_selection([hit])
             self.drag_off = (pt[0], pt[1]); self.drag_orig = None
             self.update(); return
-        if self.tool in ('rect', 'ellipse', 'line', 'quick'):
+        if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim'):
+            self.start = pt; self.cur = pt; return
+        if self.tool == 'conn':
             self.start = pt; self.cur = pt; return
         if self.tool == 'text':
             self.win.place_text(pt); return
@@ -1300,7 +1793,7 @@ class Canvas(QWidget):
             self.rubber = (self.drag_start, pt); self.update(); return
         if self.tool == 'select' and self.sel is not None and (e.buttons() & Qt.LeftButton) and self.drag_off:
             self._move_sel(pt); self.update(); return
-        if self.tool in ('rect', 'ellipse', 'line', 'quick') and self.start and (e.buttons() & Qt.LeftButton):
+        if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn') and self.start and (e.buttons() & Qt.LeftButton):
             self.cur = pt; self.update()
         elif self.tool == 'freehand' and (e.buttons() & Qt.LeftButton) and self.objs:
             self.objs[-1]['pts'].append(pt); self.update()
@@ -1396,9 +1889,14 @@ class Canvas(QWidget):
             o['pts'] = [(nx + (x - ox) * sx, ny + (y - oy) * sy) for x, y in orig['pts']]
 
     def mouseReleaseEvent(self, e):
-        if self.tool in ('rect', 'ellipse', 'line', 'quick') and self.start:
+        if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim') and self.start:
             if self.cur and (abs(self.cur[0] - self.start[0]) > 2 or abs(self.cur[1] - self.start[1]) > 2):
                 self.snapshot(); self.objs.append(self._shape_from(self.start, self.cur))
+                self.set_selection([self.objs[-1]])
+            self.start = self.cur = None; self.update(); self.win.sync_props()
+        elif self.tool == 'conn' and self.start:
+            if self.cur and (abs(self.cur[0] - self.start[0]) > 2 or abs(self.cur[1] - self.start[1]) > 2):
+                self.snapshot(); self.objs.append(self._make_connector(self.start, self.cur))
                 self.set_selection([self.objs[-1]])
             self.start = self.cur = None; self.update(); self.win.sync_props()
         elif self.tool == 'select' and self.handle is not None:
@@ -1407,8 +1905,8 @@ class Canvas(QWidget):
             a, b = self.rubber; box = QRectF(QPointF(*a), QPointF(*b)).normalized()
             self.rubber = None
             if box.width() > 3 or box.height() > 3:
-                picked = [o for o in self.ordered_objs() if box.contains(obj_bounds(o))
-                          or box.intersects(obj_bounds(o))]
+                picked = [o for o in self.ordered_objs() if not o.get('locked')
+                          and (box.contains(obj_bounds(o)) or box.intersects(obj_bounds(o)))]
                 self.set_selection(picked)
             self.drag_start = None; self.update()
         elif self.tool == 'select' and self.sel is not None and self.drag_off:
@@ -1458,10 +1956,12 @@ class Canvas(QWidget):
         self.update()
 
     def render_to(self, painter, skip_text=False, skip_special=False):
-        """Paint every object. For SVG export, skip_special also omits image and node
-        objects so they can be spliced as explicit <image>/<path> elements afterwards."""
+        """Paint every object. For SVG export, skip_special also omits image, node,
+        texture-filled, dimension and connector objects so they can be spliced as explicit
+        elements afterwards."""
+        global _PAINT_OBJS; _PAINT_OBJS = self.objs
         for o in self.ordered_objs():
-            if skip_special and o.get('type') in ('image', 'nodes'):
+            if skip_special and (o.get('type') in ('image', 'nodes', 'dim', 'conn') or o.get('texfill')):
                 continue
             paint_object(painter, o, False, skip_text=skip_text)
 
@@ -1487,12 +1987,20 @@ class Canvas(QWidget):
         defs, els = [], []
         for i, o in enumerate(self.ordered_objs()):
             t = o.get('type')
-            if t == 'text':
+            if t == 'text' and o.get('pathpts'):
+                d, e = svg_textpath_el(o, i)
+            elif t == 'text':
                 d, e = svg_text_el(o, i)
             elif t == 'image':
                 d, e = '', svg_image_el(o)
             elif t == 'nodes':
                 d, e = svg_node_el(o, i)
+            elif t == 'dim':
+                d, e = svg_dim_el(o, i)
+            elif t == 'conn':
+                d, e = svg_conn_el(o, i, self.objs)
+            elif o.get('texfill'):
+                d, e = svg_shape_el(o, i)
             else:
                 continue
             if d: defs.append(d)
@@ -1524,6 +2032,8 @@ class Canvas(QWidget):
             self.restore_layers(data.get('layers')); self._fit()
             gids = [o['gid'] for o in self.objs if isinstance(o.get('gid'), int)]
             self._next_gid = (max(gids) + 1) if gids else 1
+            cids = [o['cid'] for o in self.objs if isinstance(o.get('cid'), int)]
+            self._next_cid = (max(cids) + 1) if cids else 1
             return True
         except Exception:
             return False
@@ -1538,7 +2048,8 @@ class Main(QMainWindow):
     TOOLS = [('select', 'Select', '⬚'), ('node', 'Node (edit curves)', '⌇'),
              ('freehand', 'Freehand', '✎'), ('pen', 'Pen (Bézier curves)', '✐'),
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
-             ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻')]
+             ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻'),
+             ('dim', 'Dimension line', '↔'), ('conn', 'Connector', '⌐')]
 
     def __init__(self):
         super().__init__()
@@ -1847,6 +2358,152 @@ class Main(QMainWindow):
         if o.get('grad'):
             self.canvas.snapshot(); o.pop('grad', None); self.canvas.update()
 
+    # ---------------------------------------------------------------- texture / pattern fill
+    def _scan_texture_lib(self):
+        """Return {category: [paths]} for the user's local texture library, if present.
+        Scanned live from ~/.local/share/justapps/textures — never copied into the app."""
+        lib = {}
+        if not os.path.isdir(TEXTURE_LIB):
+            return lib
+        try:
+            for cat in sorted(os.listdir(TEXTURE_LIB)):
+                cd = os.path.join(TEXTURE_LIB, cat)
+                if not os.path.isdir(cd):
+                    continue
+                files = sorted(os.path.join(cd, fn) for fn in os.listdir(cd)
+                               if fn.lower().endswith(('.jpg', '.jpeg', '.png', '.bmp', '.webp', '.gif')))
+                if files:
+                    lib[cat] = files
+        except OSError:
+            pass
+        return lib
+
+    def texture_fill_dialog(self):
+        """Fill the selected shape with a tiled or stretched image — chosen from a file, or
+        from the user's local texture library (15 categories). Stored on the object as a
+        self-contained data-URI (o['texfill']) so it round-trips through the SVG."""
+        o = self.canvas.sel
+        if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'poly', 'nodes', 'path'):
+            QMessageBox.information(self, APP, 'Select a shape first (rectangle, ellipse, QuickShape or a '
+                                   'closed pen shape), then add a texture or pattern fill.')
+            return
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        lib = self._scan_texture_lib()
+        dlg = QDialog(self); dlg.setWindowTitle('Texture / Pattern Fill'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        cat = QComboBox(); pic = QComboBox()
+        cat.addItem('(choose a file…)', None)
+        for c in lib: cat.addItem(c, c)
+        def refill(_i=0):
+            pic.clear(); key = cat.currentData()
+            if key and key in lib:
+                for f in lib[key]: pic.addItem(os.path.basename(f), f)
+            pic.setEnabled(pic.count() > 0)
+        cat.activated.connect(refill); refill()
+        mode = QComboBox(); mode.addItem('Tile (repeat)', 'tile'); mode.addItem('Stretch to fit', 'stretch')
+        cur = o.get('texfill') or {}
+        mode.setCurrentIndex(1 if cur.get('mode') == 'stretch' else 0)
+        chosen = ['']; browse = QPushButton('Browse for an image file…')
+        def do_browse():
+            path, _ = QFileDialog.getOpenFileName(self, 'Pick a texture image', _just_dir('pics'),
+                                                  'Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*)')
+            if path: chosen[0] = path; browse.setText(os.path.basename(path))
+        browse.clicked.connect(do_browse)
+        form.addRow('Library category:', cat); form.addRow('Texture:', pic)
+        form.addRow('Or a file:', browse); form.addRow('Fill mode:', mode)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        rm = QPushButton('Remove texture'); bb.addButton(rm, QDialogButtonBox.ResetRole)
+        rm.clicked.connect(lambda: (self._remove_texfill(o), dlg.reject()))
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        src = chosen[0] or (pic.currentData() if pic.isEnabled() else '')
+        if not src:
+            QMessageBox.information(self, APP, 'No image was chosen for the texture fill.')
+            return
+        try:
+            uri = image_data_uri(src)
+        except OSError:
+            QMessageBox.warning(self, APP, 'Could not read that image file.'); return
+        self.canvas.snapshot()
+        o['texfill'] = {'src': uri, 'mode': mode.currentData()}
+        o.pop('grad', None)   # a texture replaces any gradient
+        self.canvas.update()
+
+    def _remove_texfill(self, o):
+        if o.get('texfill'):
+            self.canvas.snapshot(); o.pop('texfill', None); self.canvas.update()
+
+    # ---------------------------------------------------------------- fit text to a path
+    def fit_text_to_path(self):
+        """Attach a selected artistic-text object to a selected path/curve so its glyphs
+        flow along it. Expects exactly one text object and one line/path/node object in the
+        selection (or a selected text object and the top-most path beneath it)."""
+        sel = self.canvas._selection()
+        txt = next((o for o in sel if o.get('type') == 'text'), None)
+        path = next((o for o in sel if o.get('type') in ('line', 'path', 'poly', 'nodes')), None)
+        if txt is None:
+            QMessageBox.information(self, APP, 'Select an artistic-text object and a line, freehand/pen path '
+                                   'or node path, then Fit Text to Path.')
+            return
+        if path is None:
+            QMessageBox.information(self, APP, 'Also select the line, path or curve for the text to follow '
+                                   '(Shift-click to add it to the selection).')
+            return
+        pts = self._path_polyline(path)
+        if len(pts) < 2:
+            QMessageBox.information(self, APP, 'That path is too short to flow text along.')
+            return
+        self.canvas.snapshot()
+        txt['pathpts'] = pts
+        self.canvas.set_selection([txt]); self.canvas.update()
+
+    def _path_polyline(self, o, samples=120):
+        """A polyline [(x,y), …] sampling the given path object — straight points for a
+        line/poly/path, and a dense sample of the Bézier for a node path."""
+        t = o.get('type')
+        if t in ('line', 'path', 'poly'):
+            return [tuple(p) for p in o.get('pts', [])]
+        if t == 'nodes':
+            pp = node_painter_path(o); n = max(2, min(samples, int(pp.length() / 6) or samples))
+            return [(pp.pointAtPercent(i / n).x(), pp.pointAtPercent(i / n).y()) for i in range(n + 1)]
+        return []
+
+    def detach_text_from_path(self):
+        o = self.canvas.sel
+        if o is None or o.get('type') != 'text' or not o.get('pathpts'):
+            QMessageBox.information(self, APP, 'Select a text-on-a-path object first, then Detach Text from Path.')
+            return
+        self.canvas.snapshot(); o.pop('pathpts', None); self.canvas.update()
+
+    # ---------------------------------------------------------------- flip / lock / duplicate
+    def flip(self, axis):
+        if not self.canvas._selection():
+            QMessageBox.information(self, APP, 'Select an object first, then flip it.')
+            return
+        self.canvas.flip_selection(axis)
+
+    def toggle_lock(self):
+        if not self.canvas._selection():
+            QMessageBox.information(self, APP, 'Select an object first, then lock or unlock it.')
+            return
+        self.canvas.toggle_lock(); self.canvas.update()
+
+    def duplicate(self):
+        if not self.canvas._selection():
+            QMessageBox.information(self, APP, 'Select an object first, then duplicate it.')
+            return
+        self.canvas.duplicate_selection(); self.refresh_layers()
+
+    # ---------------------------------------------------------------- measurement units
+    def set_unit(self, unit):
+        self.canvas.unit = unit
+        for u, act in getattr(self, 'unit_acts', {}).items():
+            act.setChecked(u == unit)
+        # restyle any selected dimension line to the new unit's label
+        for o in self.canvas._selection():
+            if o.get('type') == 'dim': o['unit'] = unit
+        self.canvas.update()
+
     # ---------------------------------------------------------------- curves / combine
     def convert_to_curves(self):
         o = self.canvas.sel
@@ -1972,17 +2629,28 @@ class Main(QMainWindow):
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
         e.addSeparator()
+        e.addAction(self.act('&Duplicate', self.duplicate, QKeySequence('Ctrl+D')))
+        e.addSeparator()
         e.addAction(self.act('Edit &Text…', self.edit_text))
         e.addAction(self.act('&Gradient Fill…', self.gradient_dialog))
+        e.addAction(self.act('Te&xture / Pattern Fill…', self.texture_fill_dialog))
         e.addAction(self.act('&Opacity…', self.opacity_dialog))
         e.addAction(self.act('&Line Style (Dashes & Arrows)…', self.line_style_dialog))
         e.addSeparator()
         e.addAction(self.act('Convert to &Curves', self.convert_to_curves, QKeySequence('Ctrl+Shift+C')))
+        tm = m.addMenu('&Text')
+        tm.addAction(self.act('Edit &Text…', self.edit_text))
+        tm.addAction(self.act('&Fit Text to Path', self.fit_text_to_path))
+        tm.addAction(self.act('&Detach Text from Path', self.detach_text_from_path))
         a = m.addMenu('&Arrange')
         a.addAction(self.act('Bring to &Front', lambda: self.canvas.z_order('front'), QKeySequence('Ctrl+Shift+]')))
         a.addAction(self.act('Send to &Back', lambda: self.canvas.z_order('back'), QKeySequence('Ctrl+Shift+[')))
         a.addAction(self.act('Bring For&ward', lambda: self.canvas.z_order('forward'), QKeySequence('Ctrl+]')))
         a.addAction(self.act('Send Back&ward', lambda: self.canvas.z_order('backward'), QKeySequence('Ctrl+[')))
+        a.addSeparator()
+        a.addAction(self.act('Flip &Horizontal', lambda: self.flip('h')))
+        a.addAction(self.act('Flip &Vertical', lambda: self.flip('v')))
+        a.addAction(self.act('Loc&k / Unlock', self.toggle_lock, QKeySequence('Ctrl+L')))
         a.addSeparator()
         a.addAction(self.act('&Group', self.canvas.group_selection, QKeySequence('Ctrl+G')))
         a.addAction(self.act('&Ungroup', self.canvas.ungroup_selection, QKeySequence('Ctrl+Shift+G')))
@@ -2009,6 +2677,13 @@ class Main(QMainWindow):
         v.addAction(self.act('Add &Horizontal Guide…', lambda: self.add_guide_dialog('h')))
         v.addAction(self.act('Add &Vertical Guide…', lambda: self.add_guide_dialog('v')))
         v.addAction(self.act('&Clear Guides', self.canvas.clear_guides))
+        v.addSeparator()
+        um = v.addMenu('&Measurement Units')
+        ug = QActionGroup(self); self.unit_acts = {}
+        for lbl, u in UNIT_LABELS:
+            ua = self.act(lbl, lambda _=0, uu=u: self.set_unit(uu))
+            ua.setCheckable(True); ua.setChecked(u == self.canvas.unit)
+            ug.addAction(ua); um.addAction(ua); self.unit_acts[u] = ua
         h = m.addMenu('&Help')
         h.addAction(self.act('&User Guide', self.open_manual)); h.addAction(self.act('&Quick Start Guide', self.open_quickstart))
         h.addSeparator(); h.addAction(self.act('&About', self.about))
@@ -2036,7 +2711,12 @@ class Main(QMainWindow):
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         self.statusBar().showMessage(f'Opened {os.path.basename(path)} in PAINTcanvas for raster editing.', 5000)
 
-    def set_pos(self, p): self.pos_lbl.setText(f'{int(p[0])}, {int(p[1])}   ')
+    def set_pos(self, p):
+        u = self.canvas.unit; k = UNIT_PER_PX.get(u, 1.0)
+        if u == 'px':
+            self.pos_lbl.setText(f'{int(p[0])}, {int(p[1])} px   ')
+        else:
+            self.pos_lbl.setText(f'{p[0] * k:.1f}, {p[1] * k:.1f} {u}   ')
     def set_sw(self, v): self.canvas.sw = v; self.canvas.apply_to_sel(sw=v)
 
     # ---------------------------------------------------------------- view: grid/snap/guides
