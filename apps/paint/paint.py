@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-05"
+VERSION = "1.4-06"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -178,6 +178,7 @@ class Canvas(QWidget):
         self.tool = 'brush'
         self.color = QColor('#1f2a30')
         self.size = 6
+        self.cutout_tol = 45
         self.last = None
         self.start = None
         self.preview = None            # (tool, QPoint start, QPoint cur) while dragging a shape
@@ -361,6 +362,8 @@ class Canvas(QWidget):
             return
         if self.tool == 'fill':
             self.snapshot(); self.flood_fill(pos, self.color); self.update(); return
+        if self.tool == 'cutout':
+            self.cutout_at(pos, self.cutout_tol); return
         if self.tool == 'text':
             txt, ok = QInputDialog.getText(self.win, 'Text', 'Text to add:')
             if ok and txt:
@@ -561,6 +564,45 @@ class Canvas(QWidget):
             seen.add((x, y)); self.img.setPixel(x, y, nc)
             stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
 
+    def _flood_transparent(self, seeds, target_rgb, tol):
+        """Erase to transparency the region connected to `seeds` whose colour is within
+        `tol` of target_rgb. Already-transparent pixels are passable (so you can clear
+        across a background that already has holes). The active layer must have alpha."""
+        img = self.img; w, h = img.width(), img.height()
+        tr, tg, tb = target_rgb; thr = tol * 3
+        stack = list(seeds); seen = set()
+        while stack:
+            x, y = stack.pop()
+            if x < 0 or y < 0 or x >= w or y >= h or (x, y) in seen:
+                continue
+            seen.add((x, y))
+            px = img.pixel(x, y)
+            if (px >> 24) & 0xff:                       # opaque enough to test
+                r = (px >> 16) & 0xff; g = (px >> 8) & 0xff; b = px & 0xff
+                if abs(r - tr) + abs(g - tg) + abs(b - tb) > thr:
+                    continue                            # a boundary — don't cross it
+                img.setPixel(x, y, 0)                   # fully transparent
+            stack.extend(((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)))
+
+    def cutout_at(self, pos, tol):
+        """Erase the background region you click on, to transparency."""
+        if not self.img.rect().contains(pos):
+            return
+        self.snapshot()
+        px = self.img.pixel(pos.x(), pos.y())
+        self._flood_transparent([(pos.x(), pos.y())], ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff), tol)
+        self.update(); self.win.update_title()
+
+    def remove_bg_edges(self, tol):
+        """Auto-remove the background that touches the four edges of the picture."""
+        from collections import Counter
+        self.snapshot()
+        w, h = self.img.width(), self.img.height()
+        corners = [(0, 0), (w - 1, 0), (0, h - 1), (w - 1, h - 1)]
+        px = Counter(self.img.pixel(x, y) for (x, y) in corners).most_common(1)[0][0]
+        self._flood_transparent(corners, ((px >> 16) & 0xff, (px >> 8) & 0xff, px & 0xff), tol)
+        self.update(); self.win.update_title()
+
     def apply_fx(self, color, blur, dx, dy, opacity, twice=False):
         """Composite a soft drop shadow / glow of the drawing's opaque pixels behind it."""
         self.snapshot()
@@ -642,7 +684,8 @@ class Main(QMainWindow):
              ('text', 'Text', 'A'), ('clone', 'Clone — Ctrl-click to set source', '❏'),
              ('redeye', 'Red-eye removal', '◉'), ('dodge', 'Dodge — lighten', '☀'),
              ('burn', 'Burn — darken', '◐'),
-             ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌')]
+             ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
+             ('cutout', 'Cutout — click a background to erase it to transparency', '✂')]
 
     def __init__(self):
         super().__init__()
@@ -764,6 +807,8 @@ class Main(QMainWindow):
         img.addAction(self.act('Rotate &180°', lambda: self.canvas.rotate(180)))
         img.addAction(self.act('Flip &Horizontal', lambda: self.canvas.flip(True)))
         img.addAction(self.act('Flip &Vertical', lambda: self.canvas.flip(False)))
+        img.addSeparator()
+        img.addAction(self.act('Cu&tout Studio… (remove background)', self.cutout_studio))
 
         adj = m.addMenu('&Adjust')
         adj.addAction(self.act('&Brightness / Contrast…', self.dlg_brightness))
@@ -814,6 +859,32 @@ class Main(QMainWindow):
         a = QAction(text, self);  a.triggered.connect(slot)
         if sc: a.setShortcut(sc)
         return a
+
+    def cutout_studio(self):
+        """Remove a background to transparency: click it with the Cutout tool, or
+        auto-remove the background that touches the edges."""
+        from PySide6.QtWidgets import QSlider, QVBoxLayout, QHBoxLayout, QPushButton, QDialogButtonBox
+        if not self.canvas.img.hasAlphaChannel():
+            self.canvas.layers[self.canvas.active].img = self.canvas.img.convertToFormat(QImage.Format_ARGB32)
+            self.canvas.update()
+        dlg = QDialog(self); dlg.setWindowTitle('Cutout Studio'); dlg.resize(400, 240)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('<b>Remove a background to transparency.</b>'))
+        info = QLabel('Pick the <b>Cutout</b> tool, then click the background colour to erase it. '
+                      'Raise the tolerance to catch more shades; lower it to protect the edges of your subject.')
+        info.setWordWrap(True); v.addWidget(info)
+        v.addWidget(QLabel('Tolerance:'))
+        row = QHBoxLayout(); s = QSlider(Qt.Horizontal); s.setRange(0, 100); s.setValue(int(self.canvas.cutout_tol))
+        val = QLabel(str(int(self.canvas.cutout_tol)))
+        s.valueChanged.connect(lambda x: (setattr(self.canvas, 'cutout_tol', x), val.setText(str(x))))
+        row.addWidget(s, 1); row.addWidget(val); v.addLayout(row)
+        be = QPushButton('Remove background from the edges now')
+        be.clicked.connect(lambda: self.canvas.remove_bg_edges(self.canvas.cutout_tol))
+        v.addWidget(be)
+        bb = QDialogButtonBox(QDialogButtonBox.Close); bb.rejected.connect(dlg.reject); bb.accepted.connect(dlg.accept)
+        v.addWidget(bb)
+        self.set_tool('cutout')
+        dlg.exec()
 
     # ---- state ----
     def set_tool(self, t): self.canvas.tool = t

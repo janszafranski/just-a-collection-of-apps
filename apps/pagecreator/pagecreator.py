@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.19-00"
+VERSION = "1.20-00"
 
 
 def _just_dir(kind):
@@ -6235,7 +6235,9 @@ class MainWindow(QMainWindow):
                 elif isinstance(it, tuple): sub = m.addMenu(it[0]); [sub.addAction(x) if x else sub.addSeparator() for x in it[1]]
                 else: m.addAction(it)
             return m
-        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], None, a['save'], a['saveas'], None, a['docsetup'], a['preflight'], a['printdoc'], None, a['quit']])
+        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], None, a['save'], a['saveas'], None, a['docsetup'], a['preflight'],
+                       self.act('Print / PDF &Preview…', self.print_preview_dialog, None, ['document-print-preview', 'document-preview', 'document-print']),
+                       a['printdoc'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall']])
         self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
@@ -10745,6 +10747,40 @@ class MainWindow(QMainWindow):
         else:
             v.addWidget(QLabel('✓  No problems found — the document looks ready to print or export.'))
         bb = QDialogButtonBox(QDialogButtonBox.Ok); bb.accepted.connect(dlg.accept); v.addWidget(bb)
+        dlg.exec()
+
+    def print_preview_dialog(self):
+        """Show every page as it will print/export, then print or save a PDF from here."""
+        from PySide6.QtWidgets import QScrollArea, QWidget, QVBoxLayout, QHBoxLayout, QPushButton
+        pages = self.site.get('pages', [])
+        if not pages:
+            self.hint('There is nothing to preview yet.'); return
+        dlg = QDialog(self); dlg.setWindowTitle('Print / PDF Preview'); dlg.resize(620, 820)
+        outer = QVBoxLayout(dlg)
+        head = QLabel(f'<b>{len(pages)} page{"s" if len(pages) != 1 else ""}</b> — exactly how your document '
+                      'will print and export. Send it to a printer or save a PDF from the buttons below.')
+        head.setWordWrap(True); outer.addWidget(head)
+        area = QScrollArea(); area.setWidgetResizable(True)
+        area.setStyleSheet('QScrollArea{background:#8a929a;border:1px solid #6f7a82}')
+        outer.addWidget(area, 1)
+        inner = QWidget(); area.setWidget(inner); col = QVBoxLayout(inner); col.setSpacing(18); col.setContentsMargins(16, 16, 16, 16)
+        for i, pg in enumerate(pages, 1):
+            img = render_page_image(self.site, pg, width=460)
+            lab = QLabel(); lab.setPixmap(QPixmap.fromImage(img)); lab.setAlignment(Qt.AlignCenter)
+            lab.setStyleSheet('background:#ffffff;border:1px solid #3a4248')
+            col.addWidget(lab, 0, Qt.AlignHCenter)
+            cap = QLabel(f'Page {i}' + (f' — {pg.get("title")}' if pg.get('title') else ''))
+            cap.setAlignment(Qt.AlignHCenter); cap.setStyleSheet('color:#e8edf0;font-size:12px')
+            col.addWidget(cap)
+        col.addStretch()
+        row = QHBoxLayout(); row.addStretch()
+        bprint = QPushButton('Print…'); bpdf = QPushButton('Export PDF…'); bclose = QPushButton('Close')
+        for b in (bprint, bpdf, bclose):
+            row.addWidget(b)
+        outer.addLayout(row)
+        bprint.clicked.connect(lambda: (dlg.accept(), self.print_document()))
+        bpdf.clicked.connect(lambda: (dlg.accept(), self.export_pdf()))
+        bclose.clicked.connect(dlg.reject)
         dlg.exec()
 
     def print_document(self):

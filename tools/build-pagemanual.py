@@ -314,6 +314,7 @@ def capture(full=True):
     drive(w2.effects_dialog)
     drive(w2.gradient_dialog, "linear")
     drive(w2.replace_colour_dialog)
+    drive(w2.print_preview_dialog)
     drive(w2.guides_dialog)
     drive(w2.spell_dialog)
     drive(w2.insert_asset_dialog)   # this one .show()s rather than .exec()s
@@ -1058,6 +1059,13 @@ before you commit it to paper or PDF.</p>""")]))
     ch.append(("Printing and Exporting",
       "<p class='lede'>When the layout is ready, you put it into the world — on paper, as a PDF, or as "
       "an eBook. This chapter covers each, and importing work from other programs.</p>", [
+      ("Previewing before you print", f"""
+<p>Before committing a document to paper or PDF, look it over whole. <b>File ▸ Print / PDF Preview</b>
+shows every page exactly as it will come out, one after another, so you can catch a stray object or a
+page in the wrong order.</p>
+{fig(dlg('Print / PDF Preview'), 'The preview shows every page as it will print; print or save a PDF straight from here.')}
+<p>From the preview you can go straight to <b>Print…</b> or <b>Export PDF…</b>, or close it and keep
+editing.</p>"""),
       ("Printing", f"""
 {proc('print the document',
   'Choose <b>File ▸ Print</b>.',
