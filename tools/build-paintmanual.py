@@ -344,6 +344,40 @@ def capture(full=True):
     except Exception as e:
         print("smart mask demo failed:", e)
 
+    # Smooth Skin demo: a self-made face-ish patch — a skin-tone oval with heavy
+    # noise (uneven, blotchy skin) plus sharp non-skin features (eyes, lips). Show the
+    # auto-detected skin mask and the before/after of smooth_skin(). All synthetic.
+    try:
+        import numpy as _np
+        kw, kh = 360, 300
+        rng = _np.random.default_rng(11)
+        canvasrgb = _np.full((kh, kw, 3), (223, 225, 230), _np.float32)  # pale backdrop
+        yy, xx = _np.ogrid[0:kh, 0:kw]
+        face = ((xx - kw / 2) / 120.0) ** 2 + ((yy - kh / 2) / 135.0) ** 2 <= 1.0
+        # blotchy skin tone + strong noise so the smoothing has something to do
+        skin = _np.array([226, 182, 162], _np.float32)
+        noise = rng.normal(0, 26, (kh, kw, 3))
+        blotch = (18 * _np.sin(xx / 22.0) * _np.cos(yy / 26.0))[..., None]
+        canvasrgb[face] = _np.clip(skin + noise + blotch, 0, 255)[face]
+        img = canvasrgb.astype(_np.uint8).copy()
+        # sharp features that must stay crisp: two dark eyes and a red mouth
+        def disc(cx, cy, r, col):
+            d = ((xx - cx) ** 2 + (yy - cy) ** 2) <= r * r
+            img[d] = col
+        disc(kw * 0.40, kh * 0.44, 15, (40, 42, 50))
+        disc(kw * 0.60, kh * 0.44, 15, (40, 42, 50))
+        mouth = (((xx - kw / 2) / 48.0) ** 2 + ((yy - kh * 0.66) / 14.0) ** 2) <= 1.0
+        img[mouth] = (176, 70, 78)
+        IM["smooth_before"] = Image.fromarray(img, "RGB")
+        mask = PC.skin_mask(img)
+        IM["smooth_mask"] = Image.fromarray(mask, "L").convert("RGB")
+        after = PC.smooth_skin(img, amount=0.75, radius=9, detail=0.3, skin_only=True)
+        IM["smooth_after"] = Image.fromarray(after, "RGB")
+        IM["smooth_engine"] = ("OpenCV bilateral (edge-preserving)" if PC.HAS_CV2
+                               else "NumPy median smoothing")
+    except Exception as e:
+        print("smooth skin demo failed:", e)
+
     # effects demo: a shape on transparent bg with a drop shadow composited in.
     try:
         ew, eh = 420, 260
@@ -518,6 +552,15 @@ def capture(full=True):
     drive(w2._fx_dialog, "shadow")
     drive(w2._fx_dialog, "glow")
     drive(w2.dlg_lens_flare)      # Image ▸ Lens Flare… studio
+    try:                          # Smooth Skin — seed a skin-tone picture so the preview has skin
+        if IM.get("smooth_before") is not None:
+            from PIL import Image as _PI
+            w2.canvas.load(PC.pil2q(IM["smooth_before"]))
+            for _ in range(4):
+                app.processEvents()
+    except Exception as e:
+        print("smooth skin seed failed:", e)
+    drive(w2.dlg_smooth_skin)     # Adjust ▸ Smooth Skin… studio
     drive(w2.new)                 # New Image dialog
     drive(w2.cutout_studio)       # Cutout Studio
     try:                          # Smart Mask — seed scribbles so the dialog (not the hint) opens
@@ -886,9 +929,9 @@ two-tone background, or a coloured fade behind a subject.</p>
 {caution('Because the text becomes pixels immediately, you cannot re-edit the words afterwards — only paint over them or undo. For headline text you will keep tweaking, set it in PAGEdesigner or DRAWmaster instead, where text stays editable.')}""")]))
 
     ch.append(("Retouching",
-      "<p class='lede'>Four tools repair and refine a photograph by hand: the Clone stamp copies one part "
-      "of a picture over another, Red-eye removal fixes flash-reddened eyes, and Dodge and Burn lighten and "
-      "darken by brushing.</p>", [
+      "<p class='lede'>These tools repair and refine a photograph: the Clone stamp copies one part of a "
+      "picture over another, Red-eye removal fixes flash-reddened eyes, Dodge and Burn lighten and darken by "
+      "brushing, and Smooth Skin gives a portrait a tasteful retouch automatically.</p>", [
       ("The Clone tool", f"""
 <p>The <b>Clone</b> (rubber-stamp) tool paints with pixels copied from somewhere else in the picture —
 the standard way to cover a blemish, remove an object, or extend a texture.</p>
@@ -911,7 +954,37 @@ shadow or deepening a highlight a little at a time.</p>
   'Choose <b>Dodge</b> to lighten or <b>Burn</b> to darken.',
   'Set a generous brush size.',
   'Brush gently over the area. The effect builds up as you go over it, so start light and repeat.')}
-{note('Dodge and burn are subtle on purpose — each pass changes the pixels only a little, so you keep control. For a big, even change, reach for <b>Adjust ▸ Brightness / Contrast</b> instead.')}""")]))
+{note('Dodge and burn are subtle on purpose — each pass changes the pixels only a little, so you keep control. For a big, even change, reach for <b>Adjust ▸ Brightness / Contrast</b> instead.')}"""),
+      ("Smooth skin (portrait retouch)", f"""
+<p><b>Smooth Skin</b> is an automatic portrait retouch, in the spirit of a professional skin-smoothing
+plug-in. It finds the skin in a photo by its <b>tone</b>, smooths it with an <b>edge-preserving</b> filter —
+one that evens out blotches, shine and fine blemishes while leaving the sharp features (eyes, brows, lips,
+nostrils, the hairline) crisp — and blends the result back by an amount you control. It lives on
+<b>Adjust ▸ Smooth Skin (portrait retouch)…</b>.</p>
+{fig(IM.get('smooth_mask'), 'The skin is detected automatically by its tone (white = full retouch, black = left alone). Eyes and lips fall outside the mask and stay sharp.')}
+<div class="imgrow">
+{fig(IM.get('smooth_before'), 'Before: blotchy, noisy skin.')}
+{fig(IM.get('smooth_after'), 'After: the skin is evened out, but the eyes and mouth stay crisp.')}
+</div>
+{fig(dlg('Smooth Skin'), 'The Smooth Skin studio, previewed live on the picture: Amount, Smoothing radius and Detail preserve, with auto skin detection and a mask peek.')}
+<p>Three sliders shape the look:</p>
+<ul>
+<li><b>Amount</b> — how strongly the smoothed skin is blended back in. The master control; ease it up until
+blemishes fade but the face still looks real.</li>
+<li><b>Smoothing radius</b> — how large an area each smoothing step samples. Small for freckly or finely
+textured skin; larger to even out big blotches (too large starts to flatten the face).</li>
+<li><b>Detail preserve</b> — adds a fraction of the original fine texture (pores, grain) back on top of the
+smooth result. This is the trick that stops the retouch looking plastic — keep a little of it.</li>
+</ul>
+{proc('retouch a portrait',
+  'Choose <b>Adjust ▸ Smooth Skin (portrait retouch)…</b>.',
+  'Leave <b>Skin only (auto-detect)</b> ticked so only the skin is touched — the eyes, lips and hair are left alone. (Untick it to retouch the current selection, or the whole picture, instead.)',
+  'Raise <b>Amount</b> until the skin evens out, watching the live preview; nudge <b>Smoothing radius</b> for blotchy skin.',
+  'Keep a little <b>Detail preserve</b> so the skin does not look plastic.',
+  'Tick <b>Show skin mask</b> at any time to check what the auto-detect has selected.',
+  'Click <b>Apply</b>. The retouch lands on its own new layer, so you can ease the whole effect back later with the layer’s opacity, or hide it to compare.')}
+{note('Smooth Skin uses OpenCV’s bilateral filter for the best edge-preserving result, and the installer adds OpenCV automatically. If it is not present the tool falls back to a built-in NumPy smoother — a little less refined, but it needs nothing extra and always works.')}
+{tip('The classic advice: do not over-smooth. A retouched face should still have skin texture — the goal is to remove blemishes and even out tone, not to turn the subject into a mannequin. Leave some Detail, and lower the layer opacity if the effect feels too strong.')}""")]))
 
     ch.append(("Selecting (Magic Wand, Feather, Invert)",
       "<p class='lede'>A selection fences off part of the picture so the next thing you do affects only "

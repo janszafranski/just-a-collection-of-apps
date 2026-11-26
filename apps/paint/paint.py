@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.9-00"
+VERSION = "1.10-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -337,6 +337,113 @@ def smart_mask(rgb, keep, remove, feather=0, force_fallback=False):
         except Exception:
             pass
     return _smart_mask_fallback(rgb, keep, remove, feather)
+
+
+# ---------------------------------------------------------------- skin smoothing
+# A portrait-retouch filter in the spirit of a skin-smoothing plug-in: find the skin
+# by its tone, smooth it with an EDGE-PRESERVING filter (so eyes, lips, hair and
+# nostrils stay sharp), then blend the smoothed version back by an amount while
+# keeping some of the original fine texture so it never looks plastic. Pure functions
+# (no Qt): they take and return numpy RGB arrays so they can be unit-tested headless.
+
+def skin_mask(rgb):
+    """Detect skin in an HxWx3 (or x4) uint8 RGB image by its tone. Uses the classic
+    YCrCb skin box (133<=Cr<=173, 77<=Cb<=127) intersected with a permissive HSV hue
+    band, then lightly morphs/feathers the result. Returns a 0..255 uint8 HxW mask
+    (255 = confident skin). Needs numpy (HAS_PIL)."""
+    rgb = _np.ascontiguousarray(rgb[..., :3].astype(_np.float32))
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    # YCrCb (ITU-R BT.601) — the Cr/Cb skin box is the workhorse skin detector.
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cr = (r - y) * 0.713 + 128.0
+    cb = (b - y) * 0.564 + 128.0
+    skin = (cr >= 133) & (cr <= 173) & (cb >= 77) & (cb <= 127)
+    # HSV guard: skin hue sits in the red–yellow wedge, and must have some saturation
+    # (so near-grey pixels in the Cr/Cb box — e.g. teeth, whites of eyes — drop out).
+    mx = _np.maximum(_np.maximum(r, g), b)
+    mn = _np.minimum(_np.minimum(r, g), b)
+    diff = mx - mn
+    sat = _np.where(mx > 0, diff / _np.maximum(mx, 1.0), 0.0)
+    hue = _np.zeros_like(mx)
+    nz = diff > 1e-6
+    rc = _np.where(mx == r, (g - b) / _np.where(nz, diff, 1.0), 0.0)
+    gc = _np.where(mx == g, 2.0 + (b - r) / _np.where(nz, diff, 1.0), 0.0)
+    bc = _np.where(mx == b, 4.0 + (r - g) / _np.where(nz, diff, 1.0), 0.0)
+    hue = (_np.where(mx == r, rc, _np.where(mx == g, gc, bc)) * 60.0) % 360.0
+    hue_ok = ((hue <= 55) | (hue >= 335)) & (sat >= 0.12) & (sat <= 0.75) & (mx >= 50)
+    binary = _np.where(skin & hue_ok, 255, 0).astype(_np.uint8)
+    # clean up: close small holes, drop specks, then feather the edge.
+    if HAS_CV2:
+        k = _cv2.getStructuringElement(_cv2.MORPH_ELLIPSE, (5, 5))
+        binary = _cv2.morphologyEx(binary, _cv2.MORPH_CLOSE, k)
+        binary = _cv2.morphologyEx(binary, _cv2.MORPH_OPEN, k)
+    else:
+        soft = Image.fromarray(binary, 'L').filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
+        binary = _np.asarray(soft).astype(_np.uint8)
+    return _feather_mask(binary, 3)
+
+
+def _edge_preserving_smooth(rgb, radius, force_fallback=False):
+    """Return an edge-preserving smoothed copy of an HxWx3 uint8 RGB image. Prefers
+    cv2.bilateralFilter (big flats smoothed, strong edges kept); otherwise a NumPy
+    fallback: a median pass (kills speckle/pores) followed by a light Gaussian, both
+    edge-friendlier than a plain blur."""
+    radius = max(1, int(round(radius)))
+    if HAS_CV2 and not force_fallback:
+        d = max(5, radius * 2 + 1)
+        sigma = 35.0 + radius * 12.0
+        out = rgb
+        for _ in range(2):                           # two passes deepen the smoothing
+            out = _cv2.bilateralFilter(out, d, sigma, float(radius * 2))
+        return out
+    # pure-NumPy / Pillow fallback. The MEDIAN filter is the edge-preserving workhorse
+    # (a hard black/white step survives it); repeat it to deepen the smoothing. A
+    # tiny Gaussian only knocks off the last of the speckle without greying edges.
+    im = Image.fromarray(rgb, 'RGB')
+    msz = radius if radius % 2 else radius + 1
+    msz = max(3, min(9, msz))
+    passes = 2 + min(3, radius // 3)
+    for _ in range(passes):
+        im = im.filter(ImageFilter.MedianFilter(size=msz))
+    return _np.asarray(im).astype(_np.uint8)
+
+
+def smooth_skin(rgb, amount=0.7, radius=8, detail=0.3, skin_only=True,
+                extra_mask=None, force_fallback=False):
+    """Portrait skin-retouch. Edge-preservingly smooth an HxWx3 (or x4) uint8 RGB
+    image, add back a `detail` fraction of the original high-frequency texture so it
+    does not go plastic, then blend the result over the original by `amount`,
+    restricted to the detected skin when `skin_only` (optionally intersected with
+    `extra_mask`, a 0..255 HxW weight — e.g. the current selection). The mask edge is
+    feathered so the retouch fades in. Returns a fresh HxWx3 uint8 array.
+
+    With OpenCV present (and force_fallback False) the smooth is cv2.bilateralFilter;
+    otherwise a NumPy median+Gaussian fallback. A pure function — no Qt."""
+    src = _np.ascontiguousarray(rgb[..., :3].astype(_np.uint8))
+    h, w = src.shape[:2]
+    amount = float(max(0.0, min(1.0, amount)))
+    detail = float(max(0.0, min(1.0, detail)))
+
+    smoothed = _edge_preserving_smooth(src, radius, force_fallback=force_fallback)
+    sf = smoothed.astype(_np.float32)
+    of = src.astype(_np.float32)
+    # detail-preserve: give back a fraction of the original minus smoothed (the fine
+    # high-frequency skin texture) so pores/freckles aren't fully erased.
+    retouch = sf + (of - sf) * detail
+
+    # per-pixel blend weight (0..1): amount, gated by the skin mask / selection.
+    weight = _np.full((h, w), amount, _np.float32)
+    if skin_only:
+        m = skin_mask(src).astype(_np.float32) / 255.0
+        weight = weight * m
+    if extra_mask is not None:
+        em = extra_mask
+        if em.shape[:2] != (h, w):
+            em = _np.asarray(Image.fromarray(em.astype('uint8'), 'L').resize((w, h), Image.NEAREST))
+        weight = weight * (em.astype(_np.float32) / 255.0)
+
+    out = of * (1.0 - weight[..., None]) + retouch * weight[..., None]
+    return _np.clip(out, 0, 255).astype(_np.uint8)
 
 
 EXPORT_FORMATS = [
@@ -1840,6 +1947,121 @@ class LensFlareDialog(QDialog):
         super().accept()
 
 
+class SmoothSkinDialog(QDialog):
+    """Portrait skin-retouch studio with a live preview on the canvas. Sliders for
+    Amount, Smoothing radius and Detail preserve; a "Skin only (auto-detect)"
+    checkbox (off = retouch the current selection, or the whole picture); and a
+    "Show skin mask" peek. On OK the retouched picture lands on its own new layer so
+    the strength can be dialled back later with the layer opacity."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Smooth Skin'); self.setMinimumWidth(360)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()           # the layer we preview over
+        self._busy = False
+
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Smooth skin — portrait retouch</b>'))
+        engine = 'OpenCV bilateral (edge-preserving)' if HAS_CV2 else 'NumPy median + blur'
+        info = QLabel('Skin is detected by its tone and smoothed with an edge-preserving '
+                      'filter, so eyes, lips, brows and hair stay sharp. Keep some Detail so '
+                      'the skin does not look plastic.<br>'
+                      f'<i>Engine: {engine}.</i>')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+
+        form = QFormLayout(); v.addLayout(form)
+        self.s_amount = self._slider(0, 100, 70)
+        self.s_radius = self._slider(1, 30, 8)
+        self.s_detail = self._slider(0, 100, 30)
+        self.l_amount = self._val(); self.l_radius = self._val(); self.l_detail = self._val()
+        form.addRow('Amount:', self._row(self.s_amount, self.l_amount))
+        form.addRow('Smoothing radius:', self._row(self.s_radius, self.l_radius))
+        form.addRow('Detail preserve:', self._row(self.s_detail, self.l_detail))
+        for s in (self.s_amount, self.s_radius, self.s_detail):
+            s.valueChanged.connect(self._refresh)
+
+        self.cb_skin = QCheckBox('Skin only (auto-detect)'); self.cb_skin.setChecked(True)
+        self.cb_mask = QCheckBox('Show skin mask')
+        self.cb_newlayer = QCheckBox('Put the result on a new layer'); self.cb_newlayer.setChecked(True)
+        for cb in (self.cb_skin, self.cb_mask, self.cb_newlayer):
+            cb.toggled.connect(self._refresh); v.addWidget(cb)
+        note = QLabel('With "Skin only" off, the retouch is limited to the current selection '
+                      '(or the whole picture if nothing is selected).')
+        note.setWordWrap(True); note.setStyleSheet('color:#889'); v.addWidget(note)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._refresh()
+
+    def _slider(self, lo, hi, val):
+        s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(val); return s
+
+    def _val(self):
+        l = QLabel(); l.setMinimumWidth(46); l.setAlignment(Qt.AlignRight | Qt.AlignVCenter); return l
+
+    def _row(self, s, val):
+        rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+        holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250); return holder
+
+    def _values(self):
+        return (self.s_amount.value() / 100.0, self.s_radius.value(), self.s_detail.value() / 100.0,
+                self.cb_skin.isChecked())
+
+    def _compute(self):
+        """The retouched RGBA PIL image for the current settings (whole layer)."""
+        amount, radius, detail, skin_only = self._values()
+        base = q2pil(self.base)
+        rgb = _np.asarray(base.convert('RGB'))
+        extra = None
+        if not skin_only:
+            extra = self.canvas.sel_mask()           # limit to the selection when not auto-skin
+        out = smooth_skin(rgb, amount=amount, radius=radius, detail=detail,
+                           skin_only=skin_only, extra_mask=extra)
+        alpha = _np.asarray(base.convert('RGBA'))[..., 3]
+        return Image.fromarray(_np.dstack([out, alpha]).astype('uint8'), 'RGBA')
+
+    def _refresh(self):
+        if self._busy: return
+        self._busy = True
+        for s, l in ((self.s_amount, self.l_amount), (self.s_radius, self.l_radius),
+                     (self.s_detail, self.l_detail)):
+            l.setText(f'{s.value()}')
+        try:
+            if self.cb_mask.isChecked():
+                rgb = _np.asarray(q2pil(self.base).convert('RGB'))
+                m = skin_mask(rgb)
+                vis = _np.dstack([m, m, m, _np.full_like(m, 255)])
+                self.canvas.img = pil2q(Image.fromarray(vis.astype('uint8'), 'RGBA'))
+            else:
+                self.canvas.img = pil2q(self._compute())
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+        self._busy = False
+
+    def accept(self):
+        try:
+            retouched = pil2q(self._compute())
+        except Exception:
+            self.canvas.img = self.base; self.canvas._fit(); super().reject(); return
+        c = self.canvas
+        self.canvas.img = self.base                  # undo the preview before committing
+        if self.cb_newlayer.isChecked():
+            c.snapshot_full()
+            layer = Layer(retouched, c._unique_name('Smooth Skin'))
+            c.active += 1; c.layers.insert(c.active, layer)
+            c.update(); self.win.refresh_layers()
+        else:
+            c.push_undo_layer(self.active_idx, self.base.copy())
+            c.img = retouched; c._fit()
+        super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
 class CurveWidget(QWidget):
     """A small editable tone curve: draggable control points over a 0–255 diagonal.
     Points are stored in curve space (x,y both 0..255, origin bottom-left). Emits via
@@ -2284,6 +2506,8 @@ class Main(QMainWindow):
         adj.addAction(self.act('&Greyscale', lambda: self.canvas.apply_region(adj_grayscale)))
         adj.addAction(self.act('&Invert (Negative)', lambda: self.canvas.apply_region(adj_invert)))
         adj.addAction(self.act('Se&pia', lambda: self.canvas.apply_region(adj_sepia)))
+        adj.addSeparator()
+        adj.addAction(self.act('Smooth &Skin (portrait retouch)…', self.dlg_smooth_skin))
 
         flt = m.addMenu('Fil&ter')
         flt.addAction(self.act('&Gaussian Blur…', self.dlg_blur))
@@ -2605,6 +2829,11 @@ class Main(QMainWindow):
         if self._need_pil():
             AdjustDialog(self, 'Posterize', [('b', 'Levels:', 1, 8, 4, 1.0)],
                          lambda v: adj_posterize(v['b'])).exec()
+
+    def dlg_smooth_skin(self):
+        """Open the Smooth Skin portrait-retouch studio (live preview on the canvas)."""
+        if self._need_pil():
+            SmoothSkinDialog(self).exec()
 
     def dlg_blur(self):
         if self._need_pil():
