@@ -8,9 +8,11 @@ import sys, os, copy, math
 try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QToolBar, QColorDialog,
                                    QFileDialog, QMessageBox, QSpinBox, QLabel, QDialog, QVBoxLayout,
-                                   QHBoxLayout, QPushButton, QComboBox, QScrollArea)
+                                   QHBoxLayout, QPushButton, QComboBox, QScrollArea, QDockWidget,
+                                   QListWidget, QListWidgetItem, QLineEdit, QFontComboBox, QInputDialog)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
-                               QKeySequence, QFont, QPainterPath, QActionGroup, QPolygonF)
+                               QKeySequence, QFont, QFontMetricsF, QPainterPath, QActionGroup, QPolygonF,
+                               QLinearGradient, QRadialGradient)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings
     from PySide6.QtSvg import QSvgGenerator
 except ImportError:
@@ -20,7 +22,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.3-00"
+VERSION = "1.4-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -127,6 +129,11 @@ def obj_silhouette(o):
     if t == 'rect': pp.addRect(QRectF(0, 0, o['w'], o['h']))
     elif t == 'ellipse': pp.addEllipse(QRectF(0, 0, o['w'], o['h']))
     elif t == 'quick': pp = quickshape_path(o['shape'], o['w'], o['h'])
+    elif t == 'text':
+        fm = QFontMetricsF(text_font(o))
+        pp.addText(0, fm.ascent(), text_font(o), o.get('text', ''))
+        br = pp.boundingRect(); pp.translate(-br.x(), -br.y())
+        return pp, o['x'] + br.x(), o['y'] + br.y(), br.width() or 1, br.height() or 1
     elif t in ('line', 'path', 'poly'):
         from PySide6.QtGui import QPainterPathStroker
         r = obj_rect(o); poly = QPolygonF([QPointF(x - r.x(), y - r.y()) for x, y in o['pts']])
@@ -168,20 +175,91 @@ def draw_object_fx(p, o):
     if sh: stamp(sh.get('color', '#000000'), max(0, sh.get('blur', 8)), sh.get('dx', 6), sh.get('dy', 6), sh.get('opacity', 45))
 
 
+def text_font(o):
+    """The QFont for a text object (family + pixel size)."""
+    f = QFont(o.get('family', 'Noto Sans')); f.setPixelSize(max(1, int(o.get('size', 48)))); return f
+
+def text_size(o):
+    """(width, height) of a text object's drawn box, measured from its font."""
+    fm = QFontMetricsF(text_font(o))
+    br = fm.boundingRect(o.get('text', ''))
+    return max(1.0, br.width()), max(1.0, fm.height())
+
+
 def obj_rect(o):
     t = o['type']
     if t in ('rect', 'ellipse', 'quick'):
         return QRectF(o['x'], o['y'], o['w'], o['h']).normalized()
+    if t == 'text':
+        tw, th = text_size(o)
+        return QRectF(o['x'], o['y'], tw, th)
     xs = [p[0] for p in o['pts']]; ys = [p[1] for p in o['pts']]
     return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
 
 
-def paint_object(p, o, selected=False):
+def fill_brush(o):
+    """The fill brush for an object — a gradient (grad dict) or a flat colour.
+    Gradients are mapped across the object's bounding box, so they render the same
+    on screen, in PNG and (via the SVG defs) in a browser. Mirrors PAGEdesigner."""
+    g = o.get('grad')
+    if g:
+        r = obj_rect(o); w = r.width() or 1; h = r.height() or 1
+        if g.get('type') == 'radial':
+            rg = QRadialGradient(r.x() + w / 2, r.y() + h / 2, max(w, h) / 2)
+            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            return QBrush(rg)
+        ang = math.radians(g.get('angle', 90)); cx, cy = r.x() + w / 2, r.y() + h / 2
+        dx, dy = math.cos(ang), math.sin(ang)
+        lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
+        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        return QBrush(lg)
+    return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
+
+
+def svg_grad_def(g, gid):
+    """A <linearGradient>/<radialGradient> def (objectBoundingBox) for the given grad dict."""
+    if g.get('type') == 'radial':
+        return (f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">'
+                f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
+                f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></radialGradient>')
+    rad = math.radians(g.get('angle', 90))
+    x1, y1 = 50 - 50 * math.cos(rad), 50 - 50 * math.sin(rad)
+    x2, y2 = 50 + 50 * math.cos(rad), 50 + 50 * math.sin(rad)
+    return (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
+            f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
+            f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+
+
+def svg_text_el(o, idx=0):
+    """A real SVG <text> element for a text object — font-family/size/fill, baseline at
+    the object's ascent, so it renders in any browser and round-trips (the full editable
+    model also rides along in the SVG <desc>). Returns (defs, element): a gradient-filled
+    text carries its own <linearGradient>/<radialGradient> def."""
+    import html as _H
+    fm = QFontMetricsF(text_font(o))
+    x = o['x']; y = o['y'] + fm.ascent()
+    fam = _H.escape(o.get('family', 'Noto Sans'), quote=True)
+    sz = max(1, int(o.get('size', 48)))
+    g = o.get('grad'); defs = ''
+    if g:
+        gid = f'txtgrad{idx}'; defs = svg_grad_def(g, gid); fill = f'url(#{gid})'
+    else:
+        fill = o.get('fill') or 'none'
+    stroke = f' stroke="{o["stroke"]}" stroke-width="{o.get("sw", 2)}"' if o.get('stroke') else ''
+    body = _H.escape(o.get('text', ''))
+    el = (f'<text x="{x:.2f}" y="{y:.2f}" font-family="{fam}" font-size="{sz}" '
+          f'fill="{fill}"{stroke} xml:space="preserve">{body}</text>')
+    return defs, el
+
+
+def paint_object(p, o, selected=False, skip_text=False):
+    if skip_text and o.get('type') == 'text':
+        draw_object_fx(p, o); return   # keep shadow/glow; the SVG <text> draws the glyphs
     draw_object_fx(p, o)
     pen = QPen(QColor(o['stroke']), o.get('sw', 2)) if o.get('stroke') else QPen(Qt.NoPen)
     pen.setJoinStyle(Qt.RoundJoin); pen.setCapStyle(Qt.RoundCap)
     p.setPen(pen)
-    p.setBrush(QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush))
+    p.setBrush(fill_brush(o))
     t = o['type']
     if t == 'rect':
         p.drawRect(QRectF(o['x'], o['y'], o['w'], o['h']))
@@ -189,6 +267,14 @@ def paint_object(p, o, selected=False):
         p.drawEllipse(QRectF(o['x'], o['y'], o['w'], o['h']))
     elif t == 'quick':
         p.save(); p.translate(o['x'], o['y']); p.drawPath(quickshape_path(o['shape'], o['w'], o['h'])); p.restore()
+    elif t == 'text':
+        # Draw glyphs as a filled path so a fill/gradient/outline all apply, and so
+        # it renders identically offscreen (a bare QPainter.drawText can misbehave
+        # headless). Baseline sits at the font ascent inside the object's box.
+        fm = QFontMetricsF(text_font(o)); tp = QPainterPath()
+        tp.addText(o['x'], o['y'] + fm.ascent(), text_font(o), o.get('text', ''))
+        if not o.get('stroke'): p.setPen(Qt.NoPen)
+        p.drawPath(tp)
     elif t in ('line', 'path', 'poly'):
         poly = QPolygonF([QPointF(x, y) for x, y in o['pts']])
         if o.get('fill') and len(o['pts']) > 2:
@@ -210,6 +296,12 @@ class Canvas(QWidget):
         self.W, self.H = w, h
         self.zoom = 1.0
         self.objs = []
+        # Layers: metadata kept apart from the flat object list for backward compatibility.
+        # Each object carries o['layer'] = a layer id; the list order within a layer is the
+        # z-order. Paint = each visible layer in order, its objects in list order.
+        self.layers = [{'id': 1, 'name': 'Layer 1', 'visible': True}]
+        self._next_layer = 2
+        self.active_layer = 1
         self.sel = None
         self.tool = 'select'
         self.fill = QColor('#cfe3ef'); self.stroke = QColor('#1f2a30'); self.sw = 2
@@ -234,12 +326,93 @@ class Canvas(QWidget):
 
     def set_zoom(self, z): self.zoom = max(0.1, min(16, z)); self._fit()
 
+    # ---------------------------------------------------------------- layers / z-order
+    def _layer_ids(self):
+        return [ly['id'] for ly in self.layers]
+
+    def obj_layer(self, o):
+        """The layer id an object belongs to — falling back to the first layer so old
+        files (and objects without a 'layer' key) always have somewhere to live."""
+        lid = o.get('layer')
+        return lid if lid in self._layer_ids() else self.layers[0]['id']
+
+    def ordered_objs(self, visible_only=True):
+        """Objects in paint order: each layer (bottom→top), its objects in list order."""
+        out = []
+        for ly in self.layers:
+            if visible_only and not ly.get('visible', True): continue
+            out += [o for o in self.objs if self.obj_layer(o) == ly['id']]
+        return out
+
+    def reset_layers(self):
+        self.layers = [{'id': 1, 'name': 'Layer 1', 'visible': True}]
+        self._next_layer = 2; self.active_layer = 1
+
+    def restore_layers(self, layers):
+        """Rebuild the layer stack from a loaded file, or synthesise one for an older
+        file (no 'layers' key) so every object still has a home layer."""
+        if layers:
+            self.layers = [{'id': ly.get('id'), 'name': ly.get('name', 'Layer'),
+                            'visible': ly.get('visible', True)} for ly in layers if ly.get('id') is not None]
+        if not self.layers:
+            self.reset_layers()
+        self._next_layer = max([ly['id'] for ly in self.layers] + [0]) + 1
+        self.active_layer = self.layers[0]['id']
+
+    def add_layer(self):
+        self.snapshot()
+        lid = self._next_layer; self._next_layer += 1
+        self.layers.append({'id': lid, 'name': f'Layer {lid}', 'visible': True})
+        self.active_layer = lid; self.update(); return lid
+
+    def delete_layer(self, lid):
+        if len(self.layers) <= 1: return
+        self.snapshot()
+        self.objs = [o for o in self.objs if self.obj_layer(o) != lid]
+        self.layers = [ly for ly in self.layers if ly['id'] != lid]
+        if self.active_layer == lid: self.active_layer = self.layers[0]['id']
+        if self.sel is not None and self.sel not in self.objs: self.sel = None
+        self.update()
+
+    def rename_layer(self, lid, name):
+        for ly in self.layers:
+            if ly['id'] == lid: ly['name'] = name
+        self.update()
+
+    def toggle_layer(self, lid, vis):
+        for ly in self.layers:
+            if ly['id'] == lid: ly['visible'] = bool(vis)
+        self.update()
+
+    def move_layer(self, lid, delta):
+        """Shuffle a layer up/down the stack (delta -1 = down in paint order)."""
+        i = next((k for k, ly in enumerate(self.layers) if ly['id'] == lid), None)
+        if i is None: return
+        j = max(0, min(len(self.layers) - 1, i + delta))
+        if i == j: return
+        self.snapshot(); self.layers.insert(j, self.layers.pop(i)); self.update()
+
+    def sel_to_layer(self, lid):
+        if self.sel is None: return
+        self.snapshot(); self.sel['layer'] = lid; self.update()
+
+    def z_order(self, where):
+        """Move the selected object within self.objs: 'front'/'back'/'forward'/'backward'."""
+        o = self.sel
+        if o is None or o not in self.objs: return
+        self.snapshot(); i = self.objs.index(o); self.objs.remove(o)
+        if where == 'front': self.objs.append(o)
+        elif where == 'back': self.objs.insert(0, o)
+        elif where == 'forward': self.objs.insert(min(len(self.objs), i + 1), o)
+        elif where == 'backward': self.objs.insert(max(0, i - 1), o)
+        self.update()
+
     def paintEvent(self, e):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor('#e9ebee'))
         p.fillRect(QRectF(0, 0, self.W * self.zoom, self.H * self.zoom), QColor('#ffffff'))
         p.scale(self.zoom, self.zoom)
-        for o in self.objs:
+        for o in self.ordered_objs():
             paint_object(p, o, o is self.sel)
         if self.start and self.cur and self.tool in ('rect', 'ellipse', 'line', 'quick'):
             tmp = self._shape_from(self.start, self.cur)
@@ -255,7 +428,8 @@ class Canvas(QWidget):
 
     def _shape_from(self, a, b):
         x1, y1 = a; x2, y2 = b
-        base = dict(stroke=self.stroke.name(), sw=self.sw, fill=self.fill.name() if self.tool != 'line' else None)
+        base = dict(stroke=self.stroke.name(), sw=self.sw, fill=self.fill.name() if self.tool != 'line' else None,
+                    layer=self.active_layer)
         if self.tool == 'line':
             return dict(type='line', pts=[a, b], **base)
         if self.tool == 'quick':
@@ -267,16 +441,19 @@ class Canvas(QWidget):
         if e.button() != Qt.LeftButton: return
         pt = self.pos(e)
         if self.tool == 'select':
-            hit = next((o for o in reversed(self.objs) if obj_rect(o).adjusted(-3, -3, 3, 3).contains(QPointF(*pt))), None)
+            hit = next((o for o in reversed(self.ordered_objs()) if obj_rect(o).adjusted(-3, -3, 3, 3).contains(QPointF(*pt))), None)
             self.sel = hit
             if hit:
                 r = obj_rect(hit); self.drag_off = (pt[0] - r.x(), pt[1] - r.y())
             self.update(); self.win.sync_props(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick'):
             self.start = pt; self.cur = pt; return
+        if self.tool == 'text':
+            self.win.place_text(pt); return
         if self.tool == 'freehand':
             self.snapshot()
-            self.objs.append(dict(type='path', pts=[pt], stroke=self.stroke.name(), sw=self.sw, fill=None, closed=False))
+            self.objs.append(dict(type='path', pts=[pt], stroke=self.stroke.name(), sw=self.sw, fill=None,
+                                  closed=False, layer=self.active_layer))
             self.cur = pt; return
         if self.tool == 'pen':
             if self.poly_pts is None: self.snapshot(); self.poly_pts = []
@@ -300,7 +477,7 @@ class Canvas(QWidget):
     def _move_sel(self, pt):
         o = self.sel; r = obj_rect(o); nx = pt[0] - self.drag_off[0]; ny = pt[1] - self.drag_off[1]
         dx, dy = nx - r.x(), ny - r.y()
-        if o['type'] in ('rect', 'ellipse'):
+        if o['type'] in ('rect', 'ellipse', 'quick', 'text'):
             o['x'] += dx; o['y'] += dy
         else:
             o['pts'] = [(x + dx, y + dy) for x, y in o['pts']]
@@ -316,36 +493,55 @@ class Canvas(QWidget):
     def mouseDoubleClickEvent(self, e):
         if self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
             self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw,
-                                  fill=self.fill.name(), closed=True))
+                                  fill=self.fill.name(), closed=True, layer=self.active_layer))
             self.sel = self.objs[-1]; self.poly_pts = None; self.cur = None; self.update()
 
     def keyPressEvent(self, e):
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.sel is not None:
             self.snapshot(); self.objs.remove(self.sel); self.sel = None; self.update()
         elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
-            self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw, fill=None, closed=False))
+            self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw,
+                                  fill=None, closed=False, layer=self.active_layer))
             self.poly_pts = None; self.cur = None; self.update()
 
     def apply_to_sel(self, fill=None, stroke=None, sw=None):
         if self.sel is None: return
         self.snapshot()
-        if fill is not None: self.sel['fill'] = fill
+        if fill is not None: self.sel['fill'] = fill; self.sel.pop('grad', None)  # a solid fill replaces any gradient
         if stroke is not None: self.sel['stroke'] = stroke
         if sw is not None: self.sel['sw'] = sw
         self.update()
 
-    def render_to(self, painter):
-        for o in self.objs:
-            paint_object(painter, o, False)
+    def render_to(self, painter, skip_text=False):
+        for o in self.ordered_objs():
+            paint_object(painter, o, False, skip_text=skip_text)
 
     def export_svg(self, path):
-        import json, base64
+        import json, base64, re
         gen = QSvgGenerator(); gen.setFileName(path); gen.setSize(QSize(self.W, self.H))
         gen.setViewBox(QRect(0, 0, self.W, self.H)); gen.setTitle('just a... DRAWmaster')
         # Embed the editable object model so DRAWmaster can re-open its own SVGs losslessly.
-        blob = base64.b64encode(json.dumps({'W': self.W, 'H': self.H, 'objs': self.objs}).encode()).decode()
+        blob = base64.b64encode(json.dumps({'W': self.W, 'H': self.H, 'objs': self.objs,
+                                             'layers': self.layers}).encode()).decode()
         gen.setDescription('justadraw1:' + blob)
-        p = QPainter(gen); p.setRenderHint(QPainter.Antialiasing); self.render_to(p); p.end()
+        # QSvgGenerator renders shapes (gradients become <linearGradient>/<radialGradient>
+        # natively) but turns glyphs into paths — so we skip text here and splice real
+        # <text> elements in afterwards, in paint order, for an editable, browser-true SVG.
+        p = QPainter(gen); p.setRenderHint(QPainter.Antialiasing); self.render_to(p, skip_text=True); p.end()
+        tobjs = [o for o in self.ordered_objs() if o.get('type') == 'text']
+        if tobjs:
+            defs, els = [], []
+            for i, o in enumerate(tobjs):
+                d, e = svg_text_el(o, i)
+                if d: defs.append(d)
+                els.append(e)
+            inject = (f'<defs>{"".join(defs)}</defs>' if defs else '') + ''.join(els)
+            try:
+                with open(path, encoding='utf-8') as fh: txt = fh.read()
+                txt = re.sub(r'</svg>\s*$', inject + '</svg>\n', txt, count=1)
+                with open(path, 'w', encoding='utf-8') as fh: fh.write(txt)
+            except OSError:
+                pass
 
     def load_svg(self, path):
         """True = opened an editable DRAWmaster SVG; None = foreign SVG; False = error."""
@@ -361,7 +557,8 @@ class Canvas(QWidget):
         try:
             data = json.loads(base64.b64decode(tag[len('justadraw1:'):]).decode())
             self.snapshot(); self.objs = data.get('objs', []); self.sel = None
-            self.W = int(data.get('W', self.W)); self.H = int(data.get('H', self.H)); self._fit()
+            self.W = int(data.get('W', self.W)); self.H = int(data.get('H', self.H))
+            self.restore_layers(data.get('layers')); self._fit()
             return True
         except Exception:
             return False
@@ -375,7 +572,7 @@ class Canvas(QWidget):
 class Main(QMainWindow):
     TOOLS = [('select', 'Select', '⬚'), ('freehand', 'Freehand', '✎'), ('pen', 'Pen (polyline)', '✐'),
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
-             ('quick', 'QuickShape', '★')]
+             ('quick', 'QuickShape', '★'), ('text', 'Text', 'T')]
 
     def __init__(self):
         super().__init__()
@@ -386,9 +583,11 @@ class Main(QMainWindow):
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
         sa.setStyleSheet('QScrollArea{background:#cfd4da;border:none}')
         self.setCentralWidget(sa)
+        self.build_layers_dock()
         self.build_menu(); self.build_tools()
         self.setWindowTitle(APP); self.resize(1180, 820)
         self.pos_lbl = QLabel('  '); self.statusBar().addPermanentWidget(self.pos_lbl)
+        self.refresh_layers()
 
     def load_bundled_fonts(self):
         """Register the display/script fonts shipped in fonts/ (shared with the rest of
@@ -399,6 +598,86 @@ class Main(QMainWindow):
             for fn in sorted(os.listdir(d)):
                 if fn.lower().endswith(('.ttf', '.otf')):
                     QFontDatabase.addApplicationFont(os.path.join(d, fn))
+
+    # ---------------------------------------------------------------- Layers panel
+    def build_layers_dock(self):
+        """A dock listing layers top (front) to bottom (back): add, delete, rename,
+        show/hide, reorder, and move the selected object between layers."""
+        from PySide6.QtWidgets import QCheckBox, QWidget as _W
+        self.layers_dock = QDockWidget('Layers', self)
+        self.layers_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable |
+                                     QDockWidget.DockWidgetClosable)
+        body = _W(); v = QVBoxLayout(body); v.setContentsMargins(6, 6, 6, 6)
+        self.layer_list = QListWidget()
+        self.layer_list.currentRowChanged.connect(self._layer_row_changed)
+        self.layer_list.itemChanged.connect(self._layer_item_changed)
+        v.addWidget(self.layer_list)
+        row = QHBoxLayout()
+        for txt, tip, slot in (('＋', 'Add a new layer', self._ui_add_layer),
+                               ('－', 'Delete the current layer', self._ui_del_layer),
+                               ('▲', 'Move layer up (towards front)', lambda: self._ui_move_layer(1)),
+                               ('▼', 'Move layer down (towards back)', lambda: self._ui_move_layer(-1)),
+                               ('✎', 'Rename the current layer', self._ui_rename_layer)):
+            b = QPushButton(txt); b.setToolTip(tip); b.setFixedWidth(34); b.clicked.connect(slot); row.addWidget(b)
+        v.addLayout(row)
+        mv = QHBoxLayout(); mv.addWidget(QLabel('Selection →'))
+        self.move_to_cb = QComboBox(); self.move_to_cb.setToolTip('Move the selected object to this layer')
+        self.move_to_cb.activated.connect(self._ui_move_sel_to_layer); mv.addWidget(self.move_to_cb, 1)
+        v.addLayout(mv)
+        self.layers_dock.setWidget(body)
+        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
+
+    def refresh_layers(self):
+        """Rebuild the layers list to match the canvas. The list shows layers front→back
+        (so the top row is the frontmost), each with a show/hide checkbox."""
+        c = self.canvas; lst = self.layer_list
+        lst.blockSignals(True); lst.clear()
+        for ly in reversed(c.layers):              # front (last painted) at the top
+            it = QListWidgetItem(ly['name'])
+            it.setData(Qt.UserRole, ly['id'])
+            it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
+            it.setCheckState(Qt.Checked if ly.get('visible', True) else Qt.Unchecked)
+            lst.addItem(it)
+            if ly['id'] == c.active_layer: lst.setCurrentItem(it)
+        lst.blockSignals(False)
+        self.move_to_cb.blockSignals(True); self.move_to_cb.clear()
+        for ly in reversed(c.layers): self.move_to_cb.addItem(ly['name'], ly['id'])
+        self.move_to_cb.blockSignals(False)
+
+    def _cur_layer_id(self):
+        it = self.layer_list.currentItem()
+        return it.data(Qt.UserRole) if it else None
+
+    def _layer_row_changed(self, _row):
+        lid = self._cur_layer_id()
+        if lid is not None: self.canvas.active_layer = lid
+
+    def _layer_item_changed(self, it):
+        lid = it.data(Qt.UserRole)
+        if lid is not None:
+            self.canvas.toggle_layer(lid, it.checkState() == Qt.Checked)
+
+    def _ui_add_layer(self):
+        self.canvas.add_layer(); self.refresh_layers()
+
+    def _ui_del_layer(self):
+        lid = self._cur_layer_id()
+        if lid is not None: self.canvas.delete_layer(lid); self.refresh_layers()
+
+    def _ui_move_layer(self, delta):
+        lid = self._cur_layer_id()
+        if lid is not None: self.canvas.move_layer(lid, delta); self.refresh_layers()
+
+    def _ui_rename_layer(self):
+        lid = self._cur_layer_id()
+        if lid is None: return
+        cur = next((ly['name'] for ly in self.canvas.layers if ly['id'] == lid), '')
+        name, ok = QInputDialog.getText(self, 'Rename layer', 'Layer name:', text=cur)
+        if ok and name.strip(): self.canvas.rename_layer(lid, name.strip()); self.refresh_layers()
+
+    def _ui_move_sel_to_layer(self, _i):
+        lid = self.move_to_cb.currentData()
+        if lid is not None: self.canvas.sel_to_layer(lid)
 
     def build_tools(self):
         tt = QToolBar('Tools'); tt.setOrientation(Qt.Vertical); tt.setIconSize(QSize(22, 22))
@@ -424,6 +703,8 @@ class Main(QMainWindow):
         self.shape_cb.activated.connect(self.pick_quickshape); top.addWidget(self.shape_cb)
         self.fx_btn = QPushButton('Effects…'); self.fx_btn.setToolTip('Drop shadow & glow on the selected object')
         self.fx_btn.clicked.connect(self.effects_dialog); top.addWidget(self.fx_btn)
+        self.grad_btn = QPushButton('Gradient…'); self.grad_btn.setToolTip('Linear or radial gradient fill for the selected shape')
+        self.grad_btn.clicked.connect(self.gradient_dialog); top.addWidget(self.grad_btn)
         top.addSeparator()
         for txt, slot in (('Zoom +', lambda: self.canvas.set_zoom(self.canvas.zoom * 1.25)),
                           ('Zoom −', lambda: self.canvas.set_zoom(self.canvas.zoom / 1.25)),
@@ -476,6 +757,88 @@ class Main(QMainWindow):
         if not o['glow']: o.pop('glow', None)
         self.canvas.update()
 
+    # ---------------------------------------------------------------- text (artistic)
+    def _text_dialog(self, text='Text', family=None, size=48, title='Add Text'):
+        """Collect the string, font family (bundled + system fonts) and pixel size.
+        Returns (text, family, size) or None if cancelled."""
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        dlg = QDialog(self); dlg.setWindowTitle(title); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        te = QLineEdit(text); te.setMinimumWidth(240)
+        fc = QFontComboBox(); fc.setCurrentFont(QFont(family or 'Noto Sans'))
+        sz = QSpinBox(); sz.setRange(4, 800); sz.setSuffix(' px'); sz.setValue(int(size))
+        form.addRow('Text:', te); form.addRow('Font:', fc); form.addRow('Size:', sz)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return None
+        s = te.text() or 'Text'
+        return s, fc.currentFont().family(), sz.value()
+
+    def place_text(self, pt):
+        """Called by the canvas when the Text tool is clicked — opens the dialog and
+        drops a new text object at the click, with the current fill as its colour."""
+        res = self._text_dialog(title='Add Text')
+        if not res: return
+        s, fam, size = res
+        self.canvas.snapshot()
+        o = dict(type='text', x=pt[0], y=pt[1], text=s, family=fam, size=size,
+                 fill=self.canvas.fill.name(), stroke=None, sw=0, layer=self.canvas.active_layer)
+        self.canvas.objs.append(o); self.canvas.sel = o
+        self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True)
+        self.canvas.update(); self.refresh_layers()
+
+    def edit_text(self):
+        """Re-open the text dialog on the selected text object to change its words/font/size."""
+        o = self.canvas.sel
+        if o is None or o.get('type') != 'text':
+            QMessageBox.information(self, APP, 'Select a text object first, then Edit Text.')
+            return
+        res = self._text_dialog(o.get('text', ''), o.get('family'), o.get('size', 48), 'Edit Text')
+        if not res: return
+        self.canvas.snapshot()
+        o['text'], o['family'], o['size'] = res
+        self.canvas.update()
+
+    # ---------------------------------------------------------------- gradient fill
+    def gradient_dialog(self):
+        """Linear or radial gradient fill for the selected shape — two colours + angle.
+        Mirrors PAGEdesigner's 'grad' dict ({c1,c2,angle,type}). Cleared via Remove."""
+        o = self.canvas.sel
+        if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'poly', 'text'):
+            QMessageBox.information(self, APP, 'Select a shape first (rectangle, ellipse, QuickShape, '
+                                   'a closed pen shape or text), then add a gradient fill.')
+            return
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        g0 = o.get('grad') or {}
+        c1 = [g0.get('c1', '#ffd54a')]; c2 = [g0.get('c2', '#2a7d6b')]
+        dlg = QDialog(self); dlg.setWindowTitle('Gradient Fill'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        kind = QComboBox(); kind.addItem('Linear', 'linear'); kind.addItem('Radial', 'radial')
+        kind.setCurrentIndex(1 if g0.get('type') == 'radial' else 0)
+        b1 = QPushButton('Start colour'); b2 = QPushButton('End colour')
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
+        def tint(btn, holder):
+            c = QColor(holder[0]); btn.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"}')
+        def pick(holder, btn):
+            c = QColorDialog.getColor(QColor(holder[0]), self, 'Gradient colour')
+            if c.isValid(): holder[0] = c.name(); tint(btn, holder)
+        b1.clicked.connect(lambda: pick(c1, b1)); b2.clicked.connect(lambda: pick(c2, b2))
+        tint(b1, c1); tint(b2, c2)
+        form.addRow('Type:', kind); form.addRow('Start colour:', b1)
+        form.addRow('End colour:', b2); form.addRow('Angle (linear):', ang)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        rm = QPushButton('Remove gradient'); bb.addButton(rm, QDialogButtonBox.ResetRole)
+        rm.clicked.connect(lambda: (self._remove_gradient(o), dlg.reject()))
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        self.canvas.snapshot()
+        o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind.currentData()}
+        self.canvas.update()
+
+    def _remove_gradient(self, o):
+        if o.get('grad'):
+            self.canvas.snapshot(); o.pop('grad', None); self.canvas.update()
+
     def build_menu(self):
         m = self.menuBar()
         f = m.addMenu('&File')
@@ -488,6 +851,16 @@ class Main(QMainWindow):
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
         e.addAction(self.act('&Redo', self.canvas.do_redo, QKeySequence.Redo))
+        e.addSeparator()
+        e.addAction(self.act('Edit &Text…', self.edit_text))
+        e.addAction(self.act('&Gradient Fill…', self.gradient_dialog))
+        a = m.addMenu('&Arrange')
+        a.addAction(self.act('Bring to &Front', lambda: self.canvas.z_order('front'), QKeySequence('Ctrl+Shift+]')))
+        a.addAction(self.act('Send to &Back', lambda: self.canvas.z_order('back'), QKeySequence('Ctrl+Shift+[')))
+        a.addAction(self.act('Bring For&ward', lambda: self.canvas.z_order('forward'), QKeySequence('Ctrl+]')))
+        a.addAction(self.act('Send Back&ward', lambda: self.canvas.z_order('backward'), QKeySequence('Ctrl+[')))
+        a.addSeparator()
+        a.addAction(self.act('Show &Layers Panel', lambda: self.layers_dock.setVisible(True)))
         h = m.addMenu('&Help')
         h.addAction(self.act('&User Guide', self.open_manual)); h.addAction(self.act('&Quick Start Guide', self.open_quickstart))
         h.addSeparator(); h.addAction(self.act('&About', self.about))
@@ -551,7 +924,7 @@ class Main(QMainWindow):
         if dlg.exec():
             _, w, h = PRE[cb.currentIndex()]
             self.canvas.snapshot(); self.canvas.objs = []; self.canvas.sel = None; self.canvas.W, self.canvas.H = w, h
-            self.canvas._fit(); self.path = None
+            self.canvas.reset_layers(); self.canvas._fit(); self.refresh_layers(); self.path = None
 
     def save_svg(self):
         start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('docs'), 'drawing')) + '.svg'
@@ -576,7 +949,8 @@ class Main(QMainWindow):
     def _open_path(self, path):
         r = self.canvas.load_svg(path)
         if r is True:
-            self.path = path; _justapps_recent('draw', path); self.statusBar().showMessage(f'Opened {path}', 4000)
+            self.path = path; self.refresh_layers()
+            _justapps_recent('draw', path); self.statusBar().showMessage(f'Opened {path}', 4000)
         elif r is None:
             QMessageBox.information(self, APP, 'That SVG wasn’t made by DRAWmaster, so its shapes can’t be loaded '
                                    'for editing here. DRAWmaster can re-open the drawings it saved itself.')

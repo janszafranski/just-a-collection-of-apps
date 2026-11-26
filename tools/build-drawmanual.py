@@ -144,6 +144,14 @@ def poly(pts, stroke="#1f2a30", sw=3, closed=True, fill="#cfe3ef", **k):
     return dict(type="poly", pts=pts, stroke=stroke, sw=sw, closed=closed, fill=fill, **k)
 
 
+def text(s, x, y, size=64, family="Noto Sans", fill="#1f2a30", stroke=None, sw=0, **k):
+    return dict(type="text", text=s, x=x, y=y, size=size, family=family, fill=fill, stroke=stroke, sw=sw, **k)
+
+
+def grad(c1, c2, angle=90, type="linear"):
+    return dict(c1=c1, c2=c2, angle=angle, type=type)
+
+
 # ------------------------------------------------------------------- demo drawings
 # A hand-drawn-looking freehand wave, for the freehand/pencil illustration.
 def _wave(x0, y0, amp, length, n=60):
@@ -206,6 +214,32 @@ FILLSTROKE_DEMO = [
     line([(40, 300), (770, 300)], stroke="#2b3a42", sw=10),
 ]
 
+# --- new in 1.4: text, gradients, layers -----------------------------
+TEXT_DEMO = [
+    text("DRAWmaster", 30, 30, size=86, fill="#2a7d6b"),
+    text("artistic text", 34, 150, size=58, fill=None, stroke="#b2374b", sw=3),
+    text("gradient", 34, 250, size=72, grad=grad("#e8556b", "#5b8def", 20)),
+]
+
+GRADIENT_DEMO = [
+    rect(30, 50, 180, 150, stroke="#1f2a30", sw=2, grad=grad("#f4c96b", "#e8556b", 90)),
+    rect(240, 50, 180, 150, stroke="#1f2a30", sw=2, grad=grad("#5b8def", "#9b6bd8", 20)),
+    ellipse(450, 50, 170, 150, stroke=None, sw=0, grad=grad("#ffffff", "#2a7d6b", type="radial")),
+    quick("star5", 650, 44, 160, 160, stroke="#8a6d1f", sw=2, grad=grad("#fff0b0", "#c8851b", 60)),
+]
+
+# Three overlapping shapes, re-ordered three ways, to show z-order / layers.
+def _zset(order):
+    shp = {
+        "A": quick("star5", 40, 40, 150, 150, fill="#e8556b", stroke="#b2374b", sw=2),
+        "B": ellipse(110, 90, 150, 130, fill="#5b8def", stroke="#2b3a42", sw=2),
+        "C": rect(170, 120, 150, 110, fill="#f4c96b", stroke="#8a6d1f", sw=2),
+    }
+    return [shp[k] for k in order]
+
+LAYERS_DEMO = _zset("ABC")    # drawn in order: star, then ellipse, then rect on top
+LAYERS_FRONT = _zset("BCA")   # the star brought to the front
+
 # A finished worked example: a simple logo / badge.
 LOGO_DEMO = [
     quick("octagon", 70, 40, 260, 260, fill="#2a7d6b", stroke="#143f36", sw=6,
@@ -240,6 +274,10 @@ def capture(full=True):
     IM["logo1"] = render_drawing(LOGO_STEP1, 800, 340, px=760)
     IM["logo2"] = render_drawing(LOGO_STEP2, 800, 340, px=760)
     IM["logo3"] = render_drawing(LOGO_STEP3, 800, 380, px=760)
+    IM["text_demo"] = render_drawing(TEXT_DEMO, 620, 330, px=820)
+    IM["gradient_demo"] = render_drawing(GRADIENT_DEMO, 830, 220, px=880)
+    IM["layers_demo"] = render_drawing(LAYERS_DEMO, 360, 260, px=600)
+    IM["layers_front"] = render_drawing(LAYERS_FRONT, 360, 260, px=600)
 
     # --- QuickShape catalogue: every shape in a labelled grid ------------
     # Rendered shapes only (no text drawn via Qt — offscreen text can abort).
@@ -277,7 +315,7 @@ def capture(full=True):
     except Exception as e:
         print("tool palette grab failed:", e)
 
-    # the top Style toolbar (fill/line/width/shape/effects/zoom)
+    # the top Style toolbar (fill/line/width/shape/gradient/effects/zoom)
     try:
         for child in w.findChildren(DM.QToolBar):
             if child.windowTitle() == "Style":
@@ -285,6 +323,21 @@ def capture(full=True):
                 break
     except Exception as e:
         print("style bar grab failed:", e)
+
+    # the Layers dock — seed a second layer so the panel shows a real stack
+    try:
+        w.canvas.add_layer()
+        w.canvas.rename_layer(w.canvas.layers[-1]["id"], "Text & labels")
+        w.canvas.rename_layer(w.canvas.layers[0]["id"], "Background")
+        w.refresh_layers()
+        w.layers_dock.setFloating(True)
+        w.layers_dock.widget().setMinimumWidth(240)
+        w.layers_dock.widget().adjustSize()
+        for _ in range(6):
+            app.processEvents()
+        IM["layerpanel"] = _grab(w.layers_dock.widget())
+    except Exception as e:
+        print("layers panel grab failed:", e)
 
     # --- dialogs: drive the real commands; _cap_exec stores them ---------
     def drive(fn, *a):
@@ -308,6 +361,20 @@ def capture(full=True):
     except Exception as e:
         print("seed shape failed:", e)
     drive(w2.effects_dialog)
+    # Gradient dialog (same selected shape works)
+    drive(w2.gradient_dialog)
+    # Add Text dialog — the Text tool opens it on a canvas click
+    drive(w2.place_text, (120, 120))
+    # Edit Text dialog — needs a selected text object
+    try:
+        t = text("Headline", 80, 80, size=72, fill="#2a7d6b")
+        w2.canvas.objs.append(t)
+        w2.canvas.sel = t
+        for _ in range(4):
+            app.processEvents()
+    except Exception as e:
+        print("seed text failed:", e)
+    drive(w2.edit_text)
 
     IM["_dialogs"] = dict(DGRABS)
     return IM
@@ -397,7 +464,8 @@ anything that must look clean at any size, from a business-card corner to a bann
 <li><b>QuickShapes</b> — ready-made outlines such as stars, arrows, hearts and speech bubbles;</li>
 <li><b>Lines</b> — a single straight segment;</li>
 <li><b>Freehand paths</b> — a flowing line you draw by hand, as if with a pencil;</li>
-<li><b>Pen polylines</b> — a shape built point by point, which you can leave open or close into a filled outline.</li>
+<li><b>Pen polylines</b> — a shape built point by point, which you can leave open or close into a filled outline;</li>
+<li><b>Text</b> — artistic text that behaves like a shape (fill, outline, gradient and effects all apply).</li>
 </ul>
 <p>Because they are all objects, the skills are shared: whatever the kind, you select it, move it, give
 it a fill and an outline, and lift it off the page with a shadow or glow — all in exactly the same way.
@@ -563,6 +631,31 @@ polygon, a zig-zag or a many-sided star of your own.</p>
   'To finish as an <b>open line</b> instead, press ' + K('Enter') + ' — the points stay joined but the shape is not closed and not filled.')}
 {note('A closed pen shape behaves like any other filled object — it takes a fill, an outline and effects. An open pen line behaves like a multi-segment line. Choose which you want by how you finish: double-click to close, ' + K('Enter') + ' to leave open.')}""")]))
 
+    ch.append(("Working with Text",
+      "<p class='lede'>The <b>Text</b> tool adds <i>artistic text</i> — words that are a drawing object in "
+      "their own right, so they take a fill, an outline, a gradient and effects exactly like a shape, and "
+      "stay perfectly sharp at any size.</p>", [
+      ("Adding text", f"""
+{proc('add a line of text',
+  'Choose the <b>Text</b> tool (the <b>T</b> at the foot of the tool palette).',
+  'Click on the canvas where the text should begin.',
+  'In the dialog, type your <b>text</b>, choose a <b>font</b> — every font bundled with the suite is offered, alongside your system fonts — and set a pixel <b>size</b>.',
+  'Click <b>OK</b>. The text appears in the current fill colour and is left selected.')}
+{fig(dlg('Add Text'), 'The Add Text dialog: the words, the font and the size.')}
+{fig(IM.get('text_demo'), 'Artistic text: a solid heading, an outline-only line, and text filled with a gradient — all sharp vector type.')}
+<p>Because text is a true object, you move it, recolour it, outline it and give it a shadow or glow just as
+you would a shape — and it is exported as real, selectable <b>&lt;text&gt;</b> in the SVG, so it stays
+crisp and searchable on the web.</p>"""),
+      ("Editing and styling text", f"""
+{proc('change the words, font or size',
+  'Select the text object with the <b>Select</b> tool.',
+  'Choose <b>Edit ▸ Edit Text…</b>.',
+  'Change the text, font or size, and click <b>OK</b>.')}
+{fig(dlg('Edit Text'), 'Edit Text re-opens the same dialog to change an existing text object.')}
+<p>Set the <b>Fill</b> for the colour of the letters and, if you want an outlined look, give it a <b>Line</b>
+colour and a <b>Width</b>. A <b>gradient</b> fill and the shadow/glow <b>Effects</b> both apply to text too.</p>
+{tip('Outline-only text — no fill, a bold line colour and a wide width — gives a clean “stencil” headline; a gradient fill gives a bright, modern title.')}""")]))
+
     ch.append(("Selecting and Moving Objects",
       "<p class='lede'>Once something is on the canvas you will want to pick it up, move it, and get rid "
       "of mistakes. Those moves all start with the Select tool.</p>", [
@@ -609,6 +702,26 @@ dark, thin outline makes a shape crisp; a thick, contrasting one makes it bold.<
 {tip('A shape with a bold fill and no outline (width 0) reads as a clean, modern block; a shape with no fill and a thick outline reads as a frame or a ring. The three ways — fill only, outline only, both — are shown together below.')}
 {fig(IM.get('style_demo'), 'The same star three ways: filled with no outline, outline only, and both; and a bar with no outline, a thin one and a thick one.')}""")]))
 
+    ch.append(("Gradient Fills",
+      "<p class='lede'>Instead of a single flat colour, a shape can be filled with a <b>gradient</b> — a "
+      "smooth blend between two colours. DRAWmaster offers a <b>linear</b> blend across the shape and a "
+      "<b>radial</b> blend out from its centre.</p>", [
+      ("Applying a gradient", f"""
+{proc('fill a shape with a gradient',
+  'Select the shape with the <b>Select</b> tool — a rectangle, ellipse, QuickShape, a closed pen shape, or even a piece of text.',
+  'Click <b>Gradient…</b> on the Style toolbar (or <b>Edit ▸ Gradient Fill…</b>).',
+  'Choose <b>Linear</b> or <b>Radial</b>, pick the <b>start</b> and <b>end</b> colours, and for a linear gradient set the <b>angle</b>.',
+  'Click <b>OK</b>. The gradient fills the shape, mapped across its bounding box.')}
+{fig(dlg('Gradient Fill'), 'The Gradient Fill dialog: type, two colours, and the angle for a linear blend.')}
+{fig(IM.get('gradient_demo'), 'Linear gradients at two angles, a radial gradient in an ellipse, and a gradient-filled star.')}
+<p>A gradient is exported as a real SVG <b>&lt;linearGradient&gt;</b> or <b>&lt;radialGradient&gt;</b>, so it
+renders identically on screen, in an exported PNG, and in any web browser — and it survives a save-and-reopen
+with its colours and angle intact.</p>"""),
+      ("Removing a gradient", f"""
+<p>To go back to a flat fill, open <b>Gradient…</b> again and click <b>Remove gradient</b> — or simply click
+the <b>Fill</b> button and pick a solid colour, which replaces the gradient.</p>
+{tip('A radial gradient from a pale centre to a deep edge gives a shape a soft, rounded, “lit” look; a linear gradient at a shallow angle makes a clean modern background bar.')}""")]))
+
     ch.append(("Effects: Shadow and Glow",
       "<p class='lede'>Two filter effects lift an object off the flat canvas: a <b>drop shadow</b> that "
       "casts it forward, and an <b>outer glow</b> that haloes it. Both are set in one dialog and can be "
@@ -635,6 +748,35 @@ dark background. An object can carry a shadow <i>and</i> a glow at the same time
       ("Removing an effect", """
 <p>To take an effect off again, open <b>Effects…</b> and untick the box for the shadow or the glow, then
 click <b>OK</b>. The effect is removed; the object itself is untouched.</p>""")]))
+
+    ch.append(("Layers and Arranging Objects",
+      "<p class='lede'>Every object sits in a stack, and newer objects cover older ones. Two tools control "
+      "that stack: <b>z-order</b> commands that shuffle one object up or down, and <b>layers</b> that group "
+      "objects so you can hide, reorder or re-home a whole set at once.</p>", [
+      ("Stacking order (z-order)", f"""
+<p>When objects overlap, the one drawn later sits on top. The <b>Arrange</b> menu lets you change which is
+in front without redrawing anything.</p>
+{proc('change the stacking order',
+  'Select an object with the <b>Select</b> tool.',
+  'Choose <b>Arrange ▸ Bring to Front</b> (' + K('Ctrl') + '+' + K('Shift') + '+' + K(']') + ') or <b>Send to Back</b> (' + K('Ctrl') + '+' + K('Shift') + '+' + K('[') + ') to jump it to the very top or bottom,',
+  'or <b>Bring Forward</b> (' + K('Ctrl') + '+' + K(']') + ') / <b>Send Backward</b> (' + K('Ctrl') + '+' + K('[') + ') to move it one step at a time.')}
+<div class="catgrid">
+<div class="cat-card">{fig(IM.get('layers_demo'), 'Three overlapping shapes — the yellow rectangle is on top.')}</div>
+<div class="cat-card">{fig(IM.get('layers_front'), 'The same three after Bring to Front on the star — now it leads.')}</div>
+</div>"""),
+      ("The Layers panel", f"""
+<p>For anything more than a few objects, <b>layers</b> keep a drawing organised. A layer is a named,
+show/hideable group; objects on a higher layer always sit above those on a lower one.</p>
+{fig(IM.get('layerpanel'), 'The Layers panel: layers front-to-back, each with a show/hide tick, plus add, delete, reorder, rename and “move selection to layer”.', 'tall')}
+<p>Open it from <b>Arrange ▸ Show Layers Panel</b> if it is closed. The panel lists layers with the
+front-most at the top; the row's tick shows or hides that layer.</p>
+{proc('work with layers',
+  'Click <b>＋</b> to add a new layer, or <b>－</b> to delete the current one (and everything on it).',
+  'Use <b>▲</b> and <b>▼</b> to move the selected layer up or down the stack — which changes the paint order.',
+  'Click <b>✎</b> to rename a layer; untick its box to hide it.',
+  'New objects are drawn onto the <b>currently selected</b> layer. To move an existing object, select it, then pick a layer from the <b>Selection →</b> list.')}
+{note('Layers are saved inside the SVG along with the drawing, so a reopened file keeps its exact layer stack, names and visibility. Older DRAWmaster files that pre-date layers still open perfectly — every object simply lands on a single default layer.')}
+{tip('A common scheme: a <i>Background</i> layer for a filled rectangle or gradient, a middle layer for the main shapes, and a <i>Text &amp; labels</i> layer on top — hide the text layer while you arrange the artwork, then show it again.')}""")]))
 
     ch.append(("Undo, Redo and Working Safely",
       "<p class='lede'>Drawing is a process of trying things. DRAWmaster keeps a deep history of your "
@@ -753,7 +895,15 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Quit</td><td>Close the program</td></tr></table>"""),
       ("Edit", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>Undo (Ctrl+Z)</td><td>Reverse the last change; the history is deep</td></tr>
-<tr><td>Redo (Ctrl+Shift+Z)</td><td>Re-apply a change you undid</td></tr></table>"""),
+<tr><td>Redo (Ctrl+Shift+Z)</td><td>Re-apply a change you undid</td></tr>
+<tr><td>Edit Text…</td><td>Change the words, font or size of the selected text object</td></tr>
+<tr><td>Gradient Fill…</td><td>Open the gradient dialog for the selected shape</td></tr></table>"""),
+      ("Arrange", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
+<tr><td>Bring to Front (Ctrl+Shift+])</td><td>Move the selected object to the very top of the stack</td></tr>
+<tr><td>Send to Back (Ctrl+Shift+[)</td><td>Move it to the very bottom</td></tr>
+<tr><td>Bring Forward (Ctrl+])</td><td>Move it up one step</td></tr>
+<tr><td>Send Backward (Ctrl+[)</td><td>Move it down one step</td></tr>
+<tr><td>Show Layers Panel</td><td>Reveal the Layers dock if it was closed</td></tr></table>"""),
       ("Help", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>User Guide</td><td>This book</td></tr>
 <tr><td>Quick Start Guide</td><td>The short, get-going guide</td></tr>
@@ -764,6 +914,7 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Width</td><td>The outline thickness in pixels (0 = no outline)</td></tr>
 <tr><td>Shape</td><td>Which QuickShape the QuickShape tool draws</td></tr>
 <tr><td>Effects…</td><td>Drop shadow and outer glow for the selected object</td></tr>
+<tr><td>Gradient…</td><td>Linear or radial gradient fill for the selected shape</td></tr>
 <tr><td>Zoom + / − / 100%</td><td>Change the zoom level</td></tr></table>""")]))
 
     ch.append(("Appendix B — Keyboard Shortcuts", "<p class='lede'>The keys worth learning.</p>", [
@@ -773,6 +924,8 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Open SVG</td><td>{K('Ctrl')}+{K('O')}</td></tr>
 <tr><td>Save as SVG</td><td>{K('Ctrl')}+{K('S')}</td></tr>
 <tr><td>Undo / Redo</td><td>{K('Ctrl')}+{K('Z')} · {K('Ctrl')}+{K('Shift')}+{K('Z')}</td></tr>
+<tr><td>Bring to Front / Send to Back</td><td>{K('Ctrl')}+{K('Shift')}+{K(']')} · {K('Ctrl')}+{K('Shift')}+{K('[')}</td></tr>
+<tr><td>Bring Forward / Send Backward</td><td>{K('Ctrl')}+{K(']')} · {K('Ctrl')}+{K('[')}</td></tr>
 <tr><td>Delete the selected object</td><td>{K('Delete')} · {K('Backspace')}</td></tr>
 <tr><td>Finish a pen shape (closed, filled)</td><td>double-click</td></tr>
 <tr><td>Finish a pen shape (open line)</td><td>{K('Enter')}</td></tr>
@@ -788,7 +941,8 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Line</td><td>Draw a single straight segment</td></tr>
 <tr><td>Rectangle</td><td>Drag out a rectangle</td></tr>
 <tr><td>Ellipse</td><td>Drag out an ellipse or circle</td></tr>
-<tr><td>QuickShape</td><td>Drag out the chosen ready-made shape</td></tr></table>""")]))
+<tr><td>QuickShape</td><td>Drag out the chosen ready-made shape</td></tr>
+<tr><td>Text</td><td>Click, then type a line of artistic text (font and size in the dialog)</td></tr></table>""")]))
 
     ch.append(("Appendix D — Glossary", "<p class='lede'>The drawing words used in this guide.</p>", [
       ("A–Z", """<dl class="gloss">
@@ -797,7 +951,9 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <dt>Drop shadow</dt><dd>A soft, offset copy behind an object that makes it look raised off the page.</dd>
 <dt>Fill</dt><dd>The colour inside a shape.</dd>
 <dt>Freehand</dt><dd>A path drawn by hand, following the pointer like a pencil.</dd>
-<dt>Object</dt><dd>Anything you draw — a shape, a line or a path; each is selected and styled on its own.</dd>
+<dt>Gradient</dt><dd>A fill that blends smoothly between two colours — linear (across the shape) or radial (out from the centre).</dd>
+<dt>Layer</dt><dd>A named, show/hideable group of objects; higher layers sit above lower ones in the drawing.</dd>
+<dt>Object</dt><dd>Anything you draw — a shape, a line, a path or text; each is selected and styled on its own.</dd>
 <dt>Outer glow</dt><dd>A soft halo of colour around an object.</dd>
 <dt>Outline (line / stroke)</dt><dd>The coloured edge around a shape, or the body of a line.</dd>
 <dt>Path</dt><dd>A freehand stroke, stored as the series of points it followed.</dd>
@@ -805,7 +961,9 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <dt>PNG</dt><dd>A common bitmap image format; DRAWmaster exports to it for fixed-size pictures.</dd>
 <dt>QuickShape</dt><dd>A ready-made shape outline (star, arrow, heart, speech bubble…).</dd>
 <dt>SVG</dt><dd>Scalable Vector Graphics — DRAWmaster’s editable save format, and a web standard.</dd>
+<dt>Text (artistic text)</dt><dd>Words as a drawing object — fillable, outlinable, gradient-fillable, and exported as real SVG text.</dd>
 <dt>Vector</dt><dd>Artwork defined by maths, not pixels — sharp at any size.</dd>
+<dt>Z-order</dt><dd>The front-to-back stacking of overlapping objects; set with the Arrange commands.</dd>
 <dt>Width</dt><dd>The thickness of an outline, in pixels; 0 means no outline.</dd>
 </dl>""")]))
 
@@ -881,6 +1039,12 @@ to leave it as an open line.</p>"""))
 <p>With an object selected, click <b>Effects…</b>. Tick <b>drop shadow</b> for depth or <b>outer glow</b>
 for a halo — or both — and set each one's spread, strength and colour.</p>
 {f('effects_demo', 'A shadow, a glow, and an object using both.')}"""))
+    S.append(("Add text, gradients and layers", f"""
+<p>The <b>Text</b> tool (the <b>T</b> in the palette) drops a line of artistic text — click, then type and
+pick a font and size. The <b>Gradient…</b> button fills the selected shape with a two-colour blend. And the
+<b>Layers</b> panel (and the <b>Arrange</b> menu) controls which objects sit in front of which.</p>
+{f('text_demo', 'Artistic text — solid, outlined, and gradient-filled.')}
+{f('gradient_demo', 'Linear and radial gradient fills.')}"""))
     S.append(("Save and export", f"""
 <p>Choose <b>File ▸ Save as SVG…</b> ({K('Ctrl')}+{K('S')}) to keep an editable master, and
 <b>File ▸ Export PNG…</b> for a ready-to-use bitmap to drop into a document, website or email.</p>"""))
