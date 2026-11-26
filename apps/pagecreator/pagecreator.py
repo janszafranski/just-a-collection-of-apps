@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.20-00"
+VERSION = "1.21-00"
 
 
 def _just_dir(kind):
@@ -5998,6 +5998,7 @@ class MainWindow(QMainWindow):
         self.setWindowIcon(ticon(['pagecreator', 'x-office-document', 'application-pdf'], 'P'))
         self.resize(1360, 860)
         self.build_canvas_area()
+        self.load_bundled_fonts()
         self.build_actions()
         self.build_menus()
         self.build_toolbars()
@@ -6620,6 +6621,31 @@ class MainWindow(QMainWindow):
         try: w.setTextElideMode(Qt.ElideNone)   # show the whole label, don't truncate to '…'
         except Exception: pass
 
+    def load_bundled_fonts(self):
+        """Register the display/script fonts that ship in the app's fonts/ folder so they
+        appear in every font picker — and remember their family names for the Fonts panel.
+        These are the open-licence (SIL OFL / Apache) faces Serif's packages bundled, so
+        they travel with the app even on a machine that doesn't have them installed."""
+        from PySide6.QtGui import QFontDatabase
+        self.bundled_fonts = []
+        seen = set()
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts')
+        if os.path.isdir(d):
+            for fn in sorted(os.listdir(d)):
+                if fn.lower().endswith(('.ttf', '.otf')):
+                    fid = QFontDatabase.addApplicationFont(os.path.join(d, fn))
+                    for fam in QFontDatabase.applicationFontFamilies(fid):
+                        if fam not in seen:
+                            seen.add(fam); self.bundled_fonts.append(fam)
+        self.bundled_fonts.sort(key=str.lower)
+
+    def apply_font_family(self, fam):
+        """Apply a font to the selected text (or the highlighted words if you're editing)."""
+        if not (self.editor or any(o['type'] in ('text', 'artistic', 'button') for o in self.sel_objs())):
+            self.hint('Select a text object first, then click a font.'); return
+        self.set_prop('font', fam)
+        self.hint(f'Applied font: {fam}')
+
     def build_studio(self):
         # Site
         sw = QWidget(); sl = QVBoxLayout(sw); sl.setContentsMargins(4, 4, 4, 4)
@@ -6759,6 +6785,31 @@ class MainWindow(QMainWindow):
         yl.addWidget(ytb)
         self.d_layers = self.dock('Layers', yw, 'layers')
 
+        # Fonts — the bundled display/script faces, each shown large as a pangram you
+        # click to apply to the selected text (PagePlus's "Fonts" studio tab).
+        from PySide6.QtWidgets import QScrollArea
+        fw = QWidget(); fl = QVBoxLayout(fw); fl.setContentsMargins(6, 8, 6, 6); fl.setSpacing(6)
+        fl.addWidget(QLabel('<b>Fonts</b> — click a sample to apply it to the selected text.'))
+        fscroll = QScrollArea(); fscroll.setWidgetResizable(True); fscroll.setFrameShape(QFrame.NoFrame)
+        finner = QWidget(); fil = QVBoxLayout(finner); fil.setContentsMargins(0, 0, 0, 0); fil.setSpacing(0)
+        PANGRAM = 'A young fox jumped over the lazy dog'
+        if getattr(self, 'bundled_fonts', None):
+            for fam in self.bundled_fonts:
+                b = QPushButton(PANGRAM); b.setCursor(Qt.PointingHandCursor); b.setToolTip(f'Apply {fam}')
+                bf = QFont(fam); bf.setPixelSize(21); b.setFont(bf)
+                b.setStyleSheet('QPushButton{text-align:left;padding:7px 10px 1px;border:0;'
+                                'border-bottom:1px solid #e6ebee;background:transparent}'
+                                'QPushButton:hover{background:#eef5f3}')
+                b.clicked.connect(lambda _=False, fam=fam: self.apply_font_family(fam))
+                fil.addWidget(b)
+                nm = QLabel(fam); nm.setStyleSheet('color:#8b97a0;font-size:10px;padding:0 10px 7px;border-bottom:1px solid #e6ebee')
+                fil.addWidget(nm)
+        else:
+            fil.addWidget(QLabel('<span style="color:gray">No bundled fonts were found.</span>'))
+        fil.addStretch()
+        fscroll.setWidget(finner); fl.addWidget(fscroll, 1)
+        self.d_fonts = self.dock('Fonts', fw, 'fonts')
+
         # Assets — a thumbnail library of every picture in the site (uploaded + AI-made).
         aw = QWidget(); aw.setObjectName('assetpanel'); aw.setMinimumWidth(104); al = QVBoxLayout(aw); al.setContentsMargins(4, 4, 4, 4); al.setSpacing(4)
         # a single thin edge on this panel's right side (same Mid colour as the rulers draw), so the
@@ -6808,7 +6859,7 @@ class MainWindow(QMainWindow):
         # switch with its tabs, defaulting to Site.
         self.setTabPosition(Qt.RightDockWidgetArea, QTabWidget.North)
         self.splitDockWidget(self.d_colour, self.d_site, Qt.Vertical)
-        for d in (self.d_swatch, self.d_line, self.d_trans, self.d_xform, self.d_layers):
+        for d in (self.d_swatch, self.d_line, self.d_trans, self.d_xform, self.d_layers, self.d_fonts):
             self.tabifyDockWidget(self.d_site, d)
             # Suppress each panel's own title strip: the tab above it already names the panel,
             # so the in-panel title is redundant. windowTitle is kept so the TAB stays labelled.
@@ -6822,7 +6873,7 @@ class MainWindow(QMainWindow):
         sm = self.view_menu.addMenu('Studio')
         for d, lbl in ((self.d_site, 'Site'), (self.d_assets, 'Assets'), (self.d_swatch, 'Swatches'),
                        (self.d_colour, 'Colour'), (self.d_line, 'Line'), (self.d_trans, 'Transparency'),
-                       (self.d_xform, 'Transform'), (self.d_layers, 'Layers')):
+                       (self.d_xform, 'Transform'), (self.d_layers, 'Layers'), (self.d_fonts, 'Fonts')):
             a = d.toggleViewAction()
             if not a.text(): a.setText(lbl)  # d_site/d_colour have a blank windowTitle (hidden dock title)
             sm.addAction(a)

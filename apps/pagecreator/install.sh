@@ -62,6 +62,19 @@ for d in manual.pdf quickstart.pdf manual.html quickstart.html; do
   [[ -f "$SELF/$d" ]] && install -Dm644 "$SELF/$d" "$APPDIR/$d"
 done
 
+# Bundled display/script fonts: keep a copy beside the app (so it loads them even
+# where they aren't installed) and register them with the desktop for every app.
+if compgen -G "$SELF/fonts/*.ttf" >/dev/null; then
+  log "Installing the bundled fonts"
+  install -d "$APPDIR/fonts"
+  cp "$SELF/fonts/"*.ttf "$APPDIR/fonts/" 2>/dev/null || true
+  [[ -f "$SELF/fonts/README.txt" ]] && cp "$SELF/fonts/README.txt" "$APPDIR/fonts/" 2>/dev/null || true
+  FONTDIR="$DATA/fonts/just-a-pagedesigner"
+  install -d "$FONTDIR"
+  cp "$SELF/fonts/"*.ttf "$FONTDIR/" 2>/dev/null || true
+  command -v fc-cache >/dev/null && fc-cache -f "$FONTDIR" >/dev/null 2>&1 || true
+fi
+
 log "Installing the icon"
 for sz in 32 48 64 128 256; do
   [[ -f "$SELF/icon-$sz.png" ]] && install -Dm644 "$SELF/icon-$sz.png" "$DATA/icons/hicolor/${sz}x${sz}/apps/pagecreator.png"

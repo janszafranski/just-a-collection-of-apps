@@ -275,6 +275,24 @@ def capture(full=True):
     IM["panelstack"] = full_ws.crop((max(0, W - 300), 74, W, min(Hh, 520)))
     IM["statusbar"] = full_ws.crop((0, Hh - 32, W, Hh))
 
+    # Fonts panel — draw each bundled family as a pangram sample (what the panel shows)
+    try:
+        from PySide6.QtGui import QFont, QPainter, QColor, QImage
+        fams = getattr(w, "bundled_fonts", [])[:14]
+        if fams:
+            fi = QImage(760, 46 * len(fams) + 16, QImage.Format_RGB32); fi.fill(QColor("#ffffff"))
+            qp = QPainter(fi); y = 8
+            for fam in fams:
+                qp.setPen(QColor("#8b97a0")); nf = QFont("Noto Sans"); nf.setPixelSize(10); qp.setFont(nf)
+                qp.drawText(14, y + 12, fam)
+                qp.setPen(QColor("#243137")); sf = QFont(fam); sf.setPixelSize(24); qp.setFont(sf)
+                qp.drawText(12, y + 40, "A young fox jumped over the lazy dog")
+                y += 46
+            qp.end()
+            IM["fonts_panel"] = _pil(fi).convert("RGB")
+    except Exception as e:
+        print("fonts panel image failed:", e)
+
     # Startup Assistant pages
     try:
         dlg = PC.StartupAssistant(w)
@@ -708,6 +726,19 @@ the text controls:</p>
   'Select the paragraphs.',
   'Choose a style from <b>Format ▸ Lists / Bullets</b> — a disc, circle or square bullet, or 1-2-3, a-b-c or i-ii-iii numbering.',
   'The list indents neatly; a numbered list renumbers itself if you add or remove an item.')}"""),
+      ("The Fonts panel and special fonts", f"""
+<p>PAGEdesigner ships with a set of distinctive <b>display, script and slab fonts</b> — the kind you
+reach for on a poster title, a certificate or a café menu — the same open-licence faces the old Serif
+packages bundled. They are installed with the app, so they are there even on a computer that has never
+seen them, and they appear in every font list.</p>
+<p>The quickest way to choose one is the <b>Fonts</b> panel in the studio (the tab beside Layers). It
+shows each font as a large sample so you can see it before you commit:</p>
+{fig(IM.get('fonts_panel'), 'The Fonts panel shows each bundled font as a sample; click one to apply it to the selected text.')}
+{proc('apply a special font',
+  'Select a text frame or artistic text (or highlight some words while editing).',
+  'Open the <b>Fonts</b> panel and click a sample.',
+  'The text takes on that font at once. The same fonts are also in the ordinary font drop-down, listed by name.')}
+{tip('Pair a decorative font for the headline with a plain one (such as Open Sans) for the body — one personality per page is plenty.')}"""),
       ("Text styles", """
 <p>When a document has several headings, you want them to match without setting each by hand. <b>Text
 styles</b> do that: apply a named style — <i>Heading</i>, <i>Subheading</i>, <i>Body</i> — from
