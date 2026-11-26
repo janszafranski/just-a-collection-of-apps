@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.12-00"
+VERSION = "1.13-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -576,6 +576,129 @@ def export_bytes(img, fmt, quality=90, keep_alpha=True):
     qfmt = {'PNG': 'PNG', 'JPEG': 'JPG', 'WEBP': 'WEBP', 'GIF': 'GIF', 'BMP': 'BMP'}[fmt]
     img.save(b, qfmt, int(quality) if fmt in ('JPEG', 'WEBP') else -1)
     return bytes(ba)
+
+
+# ---- Reduce File Size (optimise / save for web) engine -----------------------
+# Modern codecs — AVIF and WebP — beat JPEG badly at equal quality, so the
+# optimiser recommends them. AVIF is only offered if this Pillow build can
+# actually encode it (older builds, or ones without libavif, can't).
+_AVIF_OK = None
+
+
+def avif_available():
+    """True only if this Pillow can genuinely SAVE an AVIF (probed once, lazily).
+    Guards the whole feature so we never offer a format that would error on save."""
+    global _AVIF_OK
+    if _AVIF_OK is None:
+        _AVIF_OK = False
+        if HAS_PIL:
+            try:
+                import io
+                b = io.BytesIO()
+                Image.new('RGB', (8, 8), (90, 120, 160)).save(b, 'AVIF', quality=50)
+                _AVIF_OK = len(b.getvalue()) > 0
+            except Exception:
+                _AVIF_OK = False
+    return _AVIF_OK
+
+
+# (label, pillow format, extension, lossy?)  — PNG is lossless.
+def optimise_formats():
+    """The formats the optimiser can offer HERE, best-first. AVIF leads when the
+    build supports it; WebP/JPEG/PNG always follow (JPEG/WebP need no extra libs)."""
+    fmts = []
+    if avif_available():
+        fmts.append(('AVIF ⭐ (smallest)', 'AVIF', '.avif', True))
+    fmts += [
+        ('WebP (modern, small)', 'WEBP', '.webp', True),
+        ('JPEG (universal)', 'JPEG', '.jpg', True),
+        ('PNG (lossless)', 'PNG', '.png', False),
+    ]
+    return fmts
+
+
+def _opt_encode(pil, fmt, quality, strip_meta):
+    """Encode a prepared RGB/RGBA PIL image to `fmt` bytes at `quality`.
+    Lossless PNG uses optimize=True and, for flat (few-colour) images, an adaptive
+    palette which is a huge win. strip_meta simply means we never pass exif/icc."""
+    import io
+    buf = io.BytesIO()
+    if fmt == 'JPEG':
+        pil.convert('RGB').save(buf, 'JPEG', quality=int(quality), optimize=True, progressive=True)
+    elif fmt == 'WEBP':
+        pil.save(buf, 'WEBP', quality=int(quality), method=6)
+    elif fmt == 'AVIF':
+        pil.save(buf, 'AVIF', quality=int(quality))
+    elif fmt == 'PNG':
+        candidate = pil
+        # Palette-quantise flat images (<=256 distinct colours) for a big saving;
+        # keep truecolour PNG otherwise so photos don't band.
+        try:
+            colors = pil.convert('RGB').getcolors(256)
+        except Exception:
+            colors = None
+        if colors is not None:
+            mode = 'RGBA' if pil.mode == 'RGBA' else 'RGB'
+            candidate = pil.convert(mode).convert('P', palette=Image.ADAPTIVE, colors=256)
+        candidate.save(buf, 'PNG', optimize=True)
+    else:
+        raise ValueError(f'unknown optimise format {fmt}')
+    return buf.getvalue()
+
+
+def optimize_bytes(pil_image, fmt, quality=None, target_kb=None, max_dim=None, strip_meta=True):
+    """Encode `pil_image` (a PIL Image) to `fmt` ('AVIF'/'WEBP'/'JPEG'/'PNG') as small
+    as sensible, returning the file bytes.
+
+    - max_dim: if set and the longest side is bigger, downscale (Lanczos) so the
+      longest side <= max_dim BEFORE encoding — usually the biggest file-size win.
+    - strip_meta: never carry EXIF/ICC/other metadata into the output.
+    - target_kb (lossy formats): binary-search quality 1..95 to land JUST under the
+      target size. When `quality` is given instead, encode at exactly that quality.
+      PNG ignores both (lossless) — downscaling/palette do the shrinking.
+    """
+    if not HAS_PIL:
+        raise RuntimeError('Pillow is required for optimize_bytes')
+    pil = pil_image
+    # Flatten alpha onto white for formats people won't want transparency from here;
+    # keep alpha for WebP/AVIF/PNG which support it.
+    if fmt == 'JPEG' and pil.mode in ('RGBA', 'LA', 'P'):
+        base = Image.new('RGB', pil.size, (255, 255, 255))
+        tmp = pil.convert('RGBA')
+        base.paste(tmp, mask=tmp.split()[-1])
+        pil = base
+    # Downscale to cap the longest side.
+    if max_dim:
+        w, h = pil.size
+        longest = max(w, h)
+        if longest > max_dim:
+            scale = max_dim / float(longest)
+            pil = pil.resize((max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS)
+    if strip_meta:
+        # Re-wrap the pixels in a fresh Image so no info/exif tags ride along.
+        clean = Image.new(pil.mode, pil.size)
+        clean.putdata(list(pil.getdata()))
+        pil = clean
+
+    lossy = fmt in ('AVIF', 'WEBP', 'JPEG')
+    if lossy and target_kb is not None:
+        target = int(target_kb) * 1024
+        best = None
+        lo, hi = 1, 95
+        # Binary-search the highest quality whose output still fits under target.
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            data = _opt_encode(pil, fmt, mid, strip_meta)
+            if len(data) <= target:
+                best = data; lo = mid + 1          # fits — try for better quality
+            else:
+                hi = mid - 1                        # too big — drop quality
+        if best is None:
+            best = _opt_encode(pil, fmt, 1, strip_meta)   # even q=1 overshoots: smallest we can do
+        return best
+
+    q = 80 if quality is None else int(quality)
+    return _opt_encode(pil, fmt, q, strip_meta)
 
 
 # ---- one-shot adjustments: pil(RGBA) -> pil(RGBA) ----
@@ -2535,6 +2658,173 @@ class ExportDialog(QDialog):
             QMessageBox.warning(self, APP, f"Couldn't export the image.\n{e}")
 
 
+class OptimiseDialog(QDialog):
+    """File ▸ Reduce File Size (optimise)… — shrink a photo's file size for web/email
+    using a modern codec (AVIF/WebP, much smaller than JPEG), a target-size OR quality
+    mode, an optional max-dimension cap, and metadata stripping. Shows a live
+    "Original → Optimised (−%)" readout and saves the flattened composite."""
+    def __init__(self, win):
+        super().__init__(win)
+        from PySide6.QtCore import QTimer
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Reduce File Size (optimise)'); self.setMinimumWidth(420)
+        self.img = self.canvas.composited()
+        self.pil = q2pil(self.img) if HAS_PIL else None
+        self.fmts = optimise_formats() if HAS_PIL else []
+
+        v = QVBoxLayout(self); form = QFormLayout(); v.addLayout(form)
+
+        self.fmt_cb = QComboBox()
+        for label, *_ in self.fmts: self.fmt_cb.addItem(label)
+        self.fmt_cb.currentIndexChanged.connect(self._on_change)
+        form.addRow('Format:', self.fmt_cb)
+
+        # mode switch
+        mrow = QHBoxLayout()
+        self.mode_cb = QComboBox(); self.mode_cb.addItems(['Target size', 'Quality'])
+        self.mode_cb.currentIndexChanged.connect(self._mode_changed)
+        mrow.addWidget(self.mode_cb, 1)
+        mh = QWidget(); mh.setLayout(mrow)
+        form.addRow('Mode:', mh)
+
+        # target size (KB)
+        trow = QHBoxLayout()
+        self.tgt_sp = QSpinBox(); self.tgt_sp.setRange(5, 20000); self.tgt_sp.setValue(100); self.tgt_sp.setSuffix(' KB')
+        self.tgt_sp.valueChanged.connect(lambda _=0: self._on_change())
+        trow.addWidget(self.tgt_sp, 1)
+        self.tgt_holder = QWidget(); self.tgt_holder.setLayout(trow)
+        form.addRow('Target size:', self.tgt_holder)
+
+        # quality
+        qrow = QHBoxLayout()
+        self.q_sl = QSlider(Qt.Horizontal); self.q_sl.setRange(1, 95); self.q_sl.setValue(75)
+        self.q_lbl = QLabel('75'); self.q_lbl.setMinimumWidth(28)
+        self.q_sl.valueChanged.connect(lambda x: (self.q_lbl.setText(str(x)), self._on_change()))
+        qrow.addWidget(self.q_sl, 1); qrow.addWidget(self.q_lbl)
+        self.q_holder = QWidget(); self.q_holder.setLayout(qrow)
+        form.addRow('Quality:', self.q_holder)
+
+        # max dimension
+        drow = QHBoxLayout()
+        self.dim_cb = QCheckBox('Limit longest side to')
+        self.dim_cb.toggled.connect(lambda _=0: self._on_change())
+        self.dim_sp = QSpinBox(); self.dim_sp.setRange(16, 20000)
+        self.dim_sp.setValue(min(1600, max(self.img.width(), self.img.height())))
+        self.dim_sp.setSuffix(' px')
+        self.dim_sp.valueChanged.connect(lambda _=0: self._on_change())
+        drow.addWidget(self.dim_cb); drow.addWidget(self.dim_sp, 1)
+        dh = QWidget(); dh.setLayout(drow)
+        form.addRow('Max dimension:', dh)
+        note = QLabel('Shrinking the dimensions is the single biggest way to cut file size.')
+        note.setWordWrap(True); note.setStyleSheet('color:#8a94a0;font-size:11px')
+        form.addRow('', note)
+
+        # strip metadata
+        self.meta_cb = QCheckBox('Strip metadata (EXIF / colour profile)')
+        self.meta_cb.setChecked(True)
+        self.meta_cb.toggled.connect(lambda _=0: self._on_change())
+        form.addRow('', self.meta_cb)
+
+        # live readout
+        self.read_lbl = QLabel('—'); self.read_lbl.setWordWrap(True)
+        self.read_lbl.setStyleSheet('color:#cdd3da')
+        form.addRow('Savings:', self.read_lbl)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        self.save_btn = bb.button(QDialogButtonBox.Save); self.save_btn.setText('Save…')
+        bb.accepted.connect(self._do_save); bb.rejected.connect(self.reject); v.addWidget(bb)
+
+        # baseline original size (encode once): PNG for lossless-ish images, else JPEG q92.
+        self._baseline = None
+        self._last_bytes = None
+        # debounce so dragging sliders doesn't re-encode on every tick
+        self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(220)
+        self._timer.timeout.connect(self._recompute)
+
+        if not HAS_PIL:
+            self.read_lbl.setText('Optimising needs Pillow (not installed).')
+            self.save_btn.setEnabled(False)
+            return
+        self._compute_baseline()
+        self._mode_changed()
+
+    def _fmt(self):
+        return self.fmts[self.fmt_cb.currentIndex()]
+
+    def _compute_baseline(self):
+        """Encode the current image once as a fair 'before' size: JPEG q92 for photos
+        (what the old shrink-a-JPEG plugin produced), which is a sensible reference."""
+        try:
+            self._baseline = len(optimize_bytes(self.pil, 'JPEG', quality=92, strip_meta=False))
+        except Exception:
+            self._baseline = None
+
+    def _mode_changed(self):
+        target = (self.mode_cb.currentIndex() == 0)
+        _, pf, ext, lossy = self._fmt()
+        # PNG is lossless → neither target nor quality applies; dimensions/palette do.
+        self.tgt_holder.setEnabled(target and lossy)
+        self.q_holder.setEnabled((not target) and lossy)
+        self.mode_cb.setEnabled(lossy)
+        self._on_change()
+
+    def _on_change(self):
+        self._timer.start()
+
+    def _max_dim(self):
+        return self.dim_sp.value() if self.dim_cb.isChecked() else None
+
+    def _encode(self):
+        _, pf, ext, lossy = self._fmt()
+        target = (self.mode_cb.currentIndex() == 0)
+        kw = dict(max_dim=self._max_dim(), strip_meta=self.meta_cb.isChecked())
+        if lossy and target:
+            kw['target_kb'] = self.tgt_sp.value()
+        elif lossy:
+            kw['quality'] = self.q_sl.value()
+        return optimize_bytes(self.pil, pf, **kw)
+
+    def _recompute(self):
+        if not HAS_PIL: return
+        try:
+            data = self._encode()
+            self._last_bytes = data
+            n = len(data)
+            out = f'{n/1024:.0f} KB' if n < 1024*1024 else f'{n/1024/1024:.1f} MB'
+            if self._baseline:
+                o = self._baseline
+                orig = f'{o/1024:.0f} KB' if o < 1024*1024 else f'{o/1024/1024:.1f} MB'
+                pct = (1 - n / o) * 100
+                self.read_lbl.setText(f'Original ≈ {orig} → Optimised ≈ {out}  (−{pct:.0f}%)')
+            else:
+                self.read_lbl.setText(f'Optimised ≈ {out}')
+        except Exception as e:
+            self._last_bytes = None
+            self.read_lbl.setText(f'—  ({e})')
+
+    def _do_save(self):
+        _, pf, ext, lossy = self._fmt()
+        try:
+            data = self._encode()
+        except Exception as e:
+            QMessageBox.warning(self, APP, f"Couldn't optimise the image.\n{e}"); return
+        start = self.win.path or os.path.join(_just_dir('pics'), 'image')
+        start = os.path.splitext(start)[0] + '-web' + ext
+        path, _sel = QFileDialog.getSaveFileName(self, 'Save optimised image', start,
+                                                 f'{self._fmt()[0]} (*{ext})')
+        if not path:
+            return
+        if not path.lower().endswith(ext): path += ext
+        try:
+            with open(path, 'wb') as fh: fh.write(data)
+            kb = len(data) / 1024
+            self.win.status.showMessage(f'Saved optimised {kb:.0f} KB to {path}', 4000)
+            _justapps_recent('paint', path)
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, APP, f"Couldn't save the image.\n{e}")
+
+
 class Main(QMainWindow):
     TOOLS = [('brush', 'Brush', '🖌'), ('eraser', 'Eraser', '◻'), ('line', 'Line', '╱'),
              ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'), ('fill', 'Fill', '🪣'),
@@ -2740,6 +3030,7 @@ class Main(QMainWindow):
         f.addAction(self.act('&Save', self.save, QKeySequence.Save))
         f.addAction(self.act('Save &As…', self.save_as, QKeySequence.SaveAs))
         f.addAction(self.act('&Export…', self.export, 'Ctrl+Shift+E'))
+        f.addAction(self.act('&Reduce File Size (optimise)…', self.reduce_filesize, 'Ctrl+Shift+R'))
         f.addSeparator(); f.addAction(self.act('&Quit', self.close, QKeySequence.Quit))
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
@@ -3354,6 +3645,11 @@ class Main(QMainWindow):
         """Export the flattened picture in a chosen format with quality/transparency
         options — PNG / JPEG / WEBP / GIF / BMP."""
         ExportDialog(self).exec()
+
+    def reduce_filesize(self):
+        """Shrink the picture's file size for web/email — modern codec (AVIF/WebP),
+        a target size or quality, optional downscale, metadata stripping."""
+        OptimiseDialog(self).exec()
 
     def open_manual(self):
         self._open_help(MANUAL)

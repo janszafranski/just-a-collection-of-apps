@@ -620,6 +620,36 @@ def capture(full=True):
         print("smart mask scribble seed failed:", e)
     drive(w2.smart_mask_apply)    # Smart Mask dialog
     drive(w2.export)              # Export dialog
+    drive(w2.reduce_filesize)     # Reduce File Size (optimise) dialog
+
+    # Savings table: encode a PHOTOGRAPHIC test image (smooth gradients + gentle,
+    # correlated grain — representative of a real photo, which is what the optimiser
+    # is for) so the manual quotes real JPEG vs WebP vs AVIF bytes. A flat vector
+    # scene would not show the codecs' photographic advantage honestly.
+    try:
+        from PIL import Image as _PI
+        import math as _m, random as _rnd
+        _W, _H = 640, 480
+        _photo = _PI.new("RGB", (_W, _H)); _px = _photo.load(); _rnd.seed(7)
+        for _y in range(_H):
+            for _x in range(_W):
+                _r = int(128 + 110 * _m.sin(_x / 110.0 + _y / 240.0))
+                _g = int(128 + 110 * _m.cos(_y / 90.0))
+                _b2 = int((_x + _y) / (_W + _H) * 255)
+                _n = _rnd.randint(-8, 8)
+                _px[_x, _y] = (max(0, min(255, _r + _n)), max(0, min(255, _g + _n)),
+                               max(0, min(255, _b2 + _n)))
+        _rows = []
+        _avail = PC.avif_available()
+        for _lab, _f in [("JPEG", "JPEG"), ("WebP", "WEBP")] + ([("AVIF", "AVIF")] if _avail else []):
+            _bytes = PC.optimize_bytes(_photo, _f, quality=50)
+            _rows.append((_lab, len(_bytes)))
+        _rows.append(("PNG (lossless)", len(PC.optimize_bytes(_photo, "PNG"))))
+        IM["_opt_savings"] = {"rows": _rows, "avif": _avail, "dims": (_W, _H), "quality": 50}
+    except Exception as e:
+        print("optimise savings calc failed:", e)
+        IM["_opt_savings"] = None
+
     drive(w2.add_overlay_dialog)  # Add Overlay picker
     drive(w2.place_texture_dialog)  # Place Texture picker
 
@@ -723,6 +753,35 @@ def caution(body):
 
 def K(x):
     return f"<kbd>{x}</kbd>"
+
+
+def savings_table(IM):
+    """A small table of real JPEG vs WebP vs AVIF (vs PNG) bytes for the demo scene,
+    captured live by the optimiser. Degrades to '' if the numbers weren't computed."""
+    data = IM.get("_opt_savings")
+    if not data or not data.get("rows"):
+        return ""
+    rows = data["rows"]
+    base = next((n for lab, n in rows if lab == "JPEG"), None) or rows[0][1]
+    cells = []
+    for lab, n in rows:
+        kb = f"{n/1024:.0f} KB"
+        if lab == "JPEG":
+            rel = "—"
+        elif n >= base:
+            rel = f"+{(n/base-1)*100:.0f}%"
+        else:
+            rel = f"−{(1-n/base)*100:.0f}%"
+        cells.append(f"<tr><td>{lab}</td><td>{kb}</td><td>{rel}</td></tr>")
+    w, h = data.get("dims", (0, 0))
+    q = data.get("quality", 50)
+    cap = (f"A {w}×{h} photographic test image encoded at quality&nbsp;{q}. "
+           "At the same visual quality the modern codecs (WebP, AVIF) make a markedly smaller "
+           "file than JPEG; PNG is lossless and much larger, for artwork rather than photos.")
+    return (f'<figure class="f"><table class="savings"><thead><tr>'
+            f'<th>Format</th><th>File size</th><th>vs JPEG</th></tr></thead>'
+            f'<tbody>{"".join(cells)}</tbody></table>'
+            f'<figcaption>{cap}</figcaption></figure>')
 
 
 # ----------------------------------------------------------------- the manual
@@ -860,7 +919,41 @@ roughly how big the file will be before you commit.</p>
   'Pick the <b>Format</b>. The quality slider and transparency box enable themselves to suit it.',
   'For JPEG or WEBP, drag the <b>Quality</b> slider — watch the estimated file size change — and for PNG decide whether to <b>Keep transparency</b>.',
   'Click <b>Export…</b>, choose a name and place, and confirm.')}
-{tip('Exporting never touches your working picture — it only writes a copy in the chosen format. Use <b>Save</b> for your ordinary PNG/JPEG working file and <b>Export</b> when you need WEBP for the web, a GIF, or a tuned-down JPEG for email.')}""")]))
+{tip('Exporting never touches your working picture — it only writes a copy in the chosen format. Use <b>Save</b> for your ordinary PNG/JPEG working file and <b>Export</b> when you need WEBP for the web, a GIF, or a tuned-down JPEG for email.')}"""),
+      ("Reducing file size (optimise / save for web)", f"""
+<p>When the goal is a <b>small file</b> — a photo for a web page, a picture light enough to email, an
+image under an upload limit — reach for <b>File ▸ Reduce File Size (optimise)…</b>
+({K('Ctrl')}+{K('Shift')}+{K('R')}). It is a dedicated <i>save-for-web</i> tool that goes further than
+plain Export: it offers today's much smaller formats, can aim at a <b>target size</b>, downscale the
+picture, and strip metadata — all with a live comparison against the original.</p>
+{fig(dlg('Reduce File Size (optimise)'), 'The Reduce File Size dialog: choose a modern format, aim at a target size or set a quality, optionally cap the dimensions, strip metadata, and watch the live Original → Optimised readout.')}
+<p>The controls, top to bottom:</p>
+<ul>
+<li><b>Format</b> — pick a codec, best-first. <b>AVIF&nbsp;⭐</b> is the smallest of all (offered only if
+your build can write it); <b>WebP</b> is modern and very small with broad browser support; <b>JPEG</b> is
+the universal fallback; <b>PNG</b> is lossless (and quietly palette-packs flat graphics for a big saving).</li>
+<li><b>Mode</b> — switch between <b>Target size</b>, where you type a number of kilobytes and the tool
+auto-tunes the quality to land just under it, and <b>Quality</b>, where you set the quality yourself with a
+slider.</li>
+<li><b>Max dimension</b> — tick it to cap the longest side to a number of pixels. Shrinking the pixel
+dimensions is the single biggest way to cut file size — a web photo rarely needs to be more than
+~1600&nbsp;px on its long edge.</li>
+<li><b>Strip metadata</b> — on by default; leaves out the camera EXIF and colour-profile tags, trimming a
+little more and removing information you may not want to publish.</li>
+<li><b>Savings</b> — a live readout reading <i>Original ≈ X KB → Optimised ≈ Y KB (−Z%)</i>, updating as
+you change anything so you can see the win before you save.</li>
+</ul>
+<p>Why the modern formats matter: at the same visual quality, <b>WebP and AVIF are far smaller than
+JPEG</b>. The table below is the running demo picture encoded three ways:</p>
+{savings_table(IM)}
+{proc('shrink a photo for the web',
+  'Choose <b>File ▸ Reduce File Size (optimise)…</b>.',
+  'Pick a modern <b>Format</b> — <b>WebP</b> for broad support, or <b>AVIF</b> if it is offered for the very smallest file.',
+  'Choose <b>Target size</b> and type the kilobytes you need, or choose <b>Quality</b> and set it by hand.',
+  'For a big extra saving, tick <b>Max dimension</b> and cap the longest side (e.g. 1600&nbsp;px).',
+  'Check the <b>Savings</b> readout, then click <b>Save…</b> and choose a name and place.')}
+{note('AVIF and WebP depend on the Pillow imaging library this copy of PAINTcanvas is built against. WebP is available almost everywhere; AVIF is newer, so if your build cannot write it the <b>AVIF</b> entry simply does not appear in the Format menu — everything else still works.')}
+{tip('Target-size mode does the thinking for you: give it “200 KB” and it searches for the highest quality that still fits. If even the lowest quality overshoots, downscale with <b>Max dimension</b> and the target becomes easy to hit.')}""")]))
 
     ch.append(("The Workspace",
       "<p class='lede'>Everything happens in one window: your picture in the middle, the tools down the "
@@ -1581,6 +1674,7 @@ tilted horizon.</p>
 <tr><td>File ▸ Open…</td><td>Open a PNG, JPEG, BMP, GIF or WebP</td></tr>
 <tr><td>File ▸ Save / Save As…</td><td>Save as PNG (keeps transparency) or JPEG</td></tr>
 <tr><td>File ▸ Export…</td><td>Export as PNG / JPEG / WEBP / GIF / BMP with a quality slider and transparency toggle</td></tr>
+<tr><td>File ▸ Reduce File Size (optimise)…</td><td>Save-for-web: AVIF / WebP / JPEG / PNG, target size or quality, optional downscale, strip metadata</td></tr>
 <tr><td>File ▸ Quit</td><td>Close the program</td></tr>
 <tr><td>Edit ▸ Undo / Redo</td><td>Step back and forward through recent changes</td></tr></table>"""),
       ("Image", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
@@ -1617,6 +1711,7 @@ tilted horizon.</p>
       ("Files and editing", f"""<table class="ref"><tr><th>Action</th><th>Shortcut</th></tr>
 <tr><td>New / Open / Save / Save As</td><td>{K('Ctrl')}+{K('N')} · {K('Ctrl')}+{K('O')} · {K('Ctrl')}+{K('S')} · {K('Ctrl')}+{K('Shift')}+{K('S')}</td></tr>
 <tr><td>Export…</td><td>{K('Ctrl')}+{K('Shift')}+{K('E')}</td></tr>
+<tr><td>Reduce File Size (optimise)…</td><td>{K('Ctrl')}+{K('Shift')}+{K('R')}</td></tr>
 <tr><td>Undo / Redo</td><td>{K('Ctrl')}+{K('Z')} · {K('Ctrl')}+{K('Shift')}+{K('Z')}</td></tr>
 <tr><td>Quit</td><td>{K('Ctrl')}+{K('Q')}</td></tr></table>"""),
       ("Selecting and the clone source", f"""<table class="ref"><tr><th>Action</th><th>Shortcut</th></tr>
@@ -1791,6 +1886,11 @@ ol.steps{margin:.3em 0;padding-left:1.3em} ol.steps li{margin:.3em 0}
 table.ref{border-collapse:collapse;width:100%;max-width:68ch;margin:1em 0;font-size:.95rem}
 table.ref th,table.ref td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
 table.ref th{background:var(--band)}
+/* savings comparison table (inside a figure) */
+figure.f table.savings{border-collapse:collapse;width:100%;font-size:.95rem;background:#fff}
+figure.f table.savings th,figure.f table.savings td{border:1px solid var(--line);padding:7px 12px;text-align:left}
+figure.f table.savings th{background:var(--band)}
+figure.f table.savings td:nth-child(2),figure.f table.savings td:nth-child(3){text-align:right;font-variant-numeric:tabular-nums}
 dl.gloss dt{font-weight:700;margin-top:.7em;color:#17323a} dl.gloss dd{margin:.1em 0 .1em 1.3em;color:#374249}
 /* catalogue grids */
 .cat-card figure.f{margin:0;max-width:none}
