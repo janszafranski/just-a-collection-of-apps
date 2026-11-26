@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.5-00"
+VERSION = "1.6-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -87,6 +87,83 @@ def pil2q(pil):
 def _merge_a(src, rgb):
     """Put an RGB result back together with the source's alpha channel."""
     return Image.merge('RGBA', rgb.convert('RGB').split() + (src.split()[3],))
+
+
+def apply_mask(img, mask):
+    """Return a NEW QImage: `img` with its alpha multiplied by `mask` (a greyscale
+    QImage; white=255 keeps the pixel, black=0 hides it). Sizes are reconciled. Uses
+    numpy when available for an accurate luma→alpha multiply, else a Qt fallback that
+    treats the mask as a straight alpha stencil."""
+    src = img.convertToFormat(QImage.Format_ARGB32)
+    m = mask
+    if m.size() != src.size():
+        m = m.scaled(src.width(), src.height())
+    if HAS_PIL:
+        rgba = _np.asarray(q2pil(src)).astype(_np.uint16)
+        ml = _np.asarray(q2pil(m).convert('L')).astype(_np.uint16)
+        rgba[..., 3] = (rgba[..., 3] * ml // 255).astype(_np.uint16)
+        return pil2q(Image.fromarray(rgba.astype('uint8'), 'RGBA'))
+    out = src.copy()
+    p = QPainter(out)
+    p.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    p.drawImage(0, 0, m)                 # mask's own alpha gates the result
+    p.end()
+    return out
+
+
+def new_mask(w, h, white=True):
+    """A fresh greyscale mask QImage, filled white (all opaque) or black (all hidden)."""
+    m = QImage(w, h, QImage.Format_Grayscale8)
+    m.fill(QColor('#ffffff') if white else QColor('#000000'))
+    return m
+
+
+EXPORT_FORMATS = [
+    # (label, pillow format, extension, supports_alpha, has_quality)
+    ('PNG', 'PNG', '.png', True, False),
+    ('JPEG', 'JPEG', '.jpg', False, True),
+    ('WEBP', 'WEBP', '.webp', True, True),
+    ('GIF', 'GIF', '.gif', True, False),
+    ('BMP', 'BMP', '.bmp', False, False),
+]
+
+
+def _flatten_white(img):
+    """Composite `img` (ARGB) over a white background (for formats with no alpha)."""
+    flat = QImage(img.size(), QImage.Format_RGB32); flat.fill(QColor('#ffffff'))
+    p = QPainter(flat); p.drawImage(0, 0, img); p.end()
+    return flat
+
+
+def export_bytes(img, fmt, quality=90, keep_alpha=True):
+    """Encode a QImage to `fmt` (a Pillow format name) and return the file bytes.
+    Prefers Pillow so WEBP/GIF/quality all work the same across platforms; falls back
+    to Qt's QImage.save via a buffer when Pillow is unavailable."""
+    alpha = keep_alpha and fmt in ('PNG', 'WEBP', 'GIF')
+    if not alpha:
+        img = _flatten_white(img)
+    if HAS_PIL:
+        import io
+        pil = q2pil(img)
+        if not alpha:
+            pil = pil.convert('RGB')
+        buf = io.BytesIO()
+        kw = {}
+        if fmt == 'JPEG':
+            kw = dict(quality=int(quality), optimize=True, progressive=True)
+        elif fmt == 'WEBP':
+            kw = dict(quality=int(quality))
+            if alpha: pil = pil.convert('RGBA')
+        elif fmt == 'GIF':
+            pil = pil.convert('RGBA') if alpha else pil.convert('RGB')
+        pil.save(buf, fmt, **kw)
+        return buf.getvalue()
+    # Qt fallback
+    from PySide6.QtCore import QBuffer, QByteArray
+    ba = QByteArray(); b = QBuffer(ba); b.open(QBuffer.WriteOnly)
+    qfmt = {'PNG': 'PNG', 'JPEG': 'JPG', 'WEBP': 'WEBP', 'GIF': 'GIF', 'BMP': 'BMP'}[fmt]
+    img.save(b, qfmt, int(quality) if fmt in ('JPEG', 'WEBP') else -1)
+    return bytes(ba)
 
 
 # ---- one-shot adjustments: pil(RGBA) -> pil(RGBA) ----
@@ -196,9 +273,20 @@ BLEND_NAMES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', '
 
 
 class Layer:
-    def __init__(self, img, name='Layer', visible=True, opacity=1.0, blend='normal'):
+    def __init__(self, img, name='Layer', visible=True, opacity=1.0, blend='normal', mask=None):
         self.img = img; self.name = name; self.visible = visible
         self.opacity = opacity; self.blend = blend
+        # mask: optional greyscale QImage (Format_Grayscale8, white=opaque, black=hidden)
+        # the same pixel size as img, or None for no mask.
+        self.mask = mask
+
+    def masked_img(self):
+        """The layer image with its mask baked into the alpha channel (white=opaque,
+        black=hidden), or the plain image if there is no mask. Non-destructive — the
+        stored img/mask are untouched; a fresh QImage is returned for compositing."""
+        if self.mask is None:
+            return self.img
+        return apply_mask(self.img, self.mask)
 
 
 class Canvas(QWidget):
@@ -211,6 +299,12 @@ class Canvas(QWidget):
         self.layers = [Layer(base, 'Background')]
         self.active = 0
         self.zoom = 1.0
+        self.edit_mask = False          # when True, brush/eraser paint the layer's mask
+        self.shape_fill = 'stroke'      # rect/ellipse mode: 'stroke' | 'fill' | 'both'
+        self.shape_fill_color = None    # None = use current colour for the fill
+        self.grad_start = QColor('#1f2a30')   # gradient tool start colour
+        self.grad_end = QColor('#ffffff')     # gradient tool end colour
+        self.grad_end_transparent = False      # True = fade end to transparent (legacy)
         self.tool = 'brush'
         self.color = QColor('#1f2a30')
         self.size = 6
@@ -253,12 +347,13 @@ class Canvas(QWidget):
             if not l.visible or l.opacity <= 0: continue
             p.setOpacity(l.opacity)
             p.setCompositionMode(BLENDS.get(l.blend, QPainter.CompositionMode_SourceOver))
-            p.drawImage(0, 0, l.img)
+            p.drawImage(0, 0, l.masked_img())
         p.end()
         return base
 
     def _copy_layers(self):
-        return [Layer(l.img.copy(), l.name, l.visible, l.opacity, l.blend) for l in self.layers]
+        return [Layer(l.img.copy(), l.name, l.visible, l.opacity, l.blend,
+                      l.mask.copy() if l.mask is not None else None) for l in self.layers]
 
     def _unique_name(self, stem):
         taken = {l.name for l in self.layers}; i = 1
@@ -267,7 +362,9 @@ class Canvas(QWidget):
 
     def set_active(self, i):
         if 0 <= i < len(self.layers) and i != self.active:
-            self.active = i; self.win.refresh_layers(); self.update()
+            self.active = i
+            if not self.has_mask(): self.edit_mask = False
+            self.win.refresh_layers(); self.update()
 
     def set_layer_prop(self, **kw):
         l = self.layers[self.active]
@@ -284,7 +381,8 @@ class Canvas(QWidget):
     def duplicate_layer(self):
         self.snapshot_full()
         s = self.layers[self.active]
-        self.layers.insert(self.active + 1, Layer(s.img.copy(), s.name + ' copy', s.visible, s.opacity, s.blend))
+        self.layers.insert(self.active + 1, Layer(s.img.copy(), s.name + ' copy', s.visible, s.opacity, s.blend,
+                                                  s.mask.copy() if s.mask is not None else None))
         self.active += 1; self.update(); self.win.refresh_layers()
 
     def delete_layer(self):
@@ -297,10 +395,65 @@ class Canvas(QWidget):
         self.snapshot_full()
         top = self.layers[self.active]; bot = self.layers[self.active - 1]
         if top.visible:
+            # bake the bottom layer's own mask in first, then the (masked) top over it
+            if bot.mask is not None:
+                bot.img = bot.masked_img(); bot.mask = None
             p = QPainter(bot.img); p.setOpacity(top.opacity)
             p.setCompositionMode(BLENDS.get(top.blend, QPainter.CompositionMode_SourceOver))
-            p.drawImage(0, 0, top.img); p.end()
+            p.drawImage(0, 0, top.masked_img()); p.end()
         del self.layers[self.active]; self.active -= 1; self.update(); self.win.refresh_layers()
+
+    # ---- layer masks ----
+    def paint_target(self):
+        """The QImage the painting tools write to: the active layer's mask when mask
+        editing is on (and a mask exists), otherwise the layer image itself."""
+        l = self.layers[self.active]
+        if self.edit_mask and l.mask is not None:
+            return l.mask
+        return l.img
+
+    def has_mask(self):
+        return self.layers[self.active].mask is not None
+
+    def add_mask(self, from_selection=False):
+        """Give the active layer a mask. from_selection seeds it from the current
+        selection (selected area visible, the rest hidden); otherwise it starts white
+        (fully visible). Turns on mask editing so the next brush strokes shape it."""
+        l = self.layers[self.active]
+        if l.mask is not None:
+            self.edit_mask = True; self.win.refresh_layers(); return
+        self.snapshot_full()
+        w, h = l.img.width(), l.img.height()
+        if from_selection and HAS_PIL and self.sel is not None:
+            sm = self.sel_mask()
+            if sm is not None:
+                m = QImage(w, h, QImage.Format_Grayscale8)
+                if sm.shape != (h, w):
+                    sm = _np.asarray(Image.fromarray(sm, 'L').resize((w, h), Image.NEAREST))
+                buf = _np.ascontiguousarray(sm.astype('uint8'))
+                m = QImage(buf.data, w, h, w, QImage.Format_Grayscale8).copy()
+                l.mask = m
+            else:
+                l.mask = new_mask(w, h, True)
+        else:
+            l.mask = new_mask(w, h, True)
+        self.edit_mask = True
+        self.update(); self.win.refresh_layers()
+
+    def delete_mask(self, apply_it=False):
+        """Remove the active layer's mask. apply_it bakes it into the image first
+        (so hidden areas become transparent); otherwise it is simply discarded."""
+        l = self.layers[self.active]
+        if l.mask is None: return
+        self.snapshot_full()
+        if apply_it:
+            l.img = l.masked_img()
+        l.mask = None; self.edit_mask = False
+        self.update(); self.win.refresh_layers()
+
+    def set_edit_mask(self, on):
+        if on and not self.has_mask(): return
+        self.edit_mask = bool(on); self.win.refresh_layers(); self.update()
 
     def move_layer(self, delta):
         j = self.active + delta
@@ -367,6 +520,10 @@ class Canvas(QWidget):
             p.save(); p.scale(self.zoom, self.zoom)
             pen = QPen(self.color, self.size); pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
             p.setPen(pen); p.setBrush(Qt.NoBrush)
+            if tool in ('rect', 'ellipse') and self.shape_fill in ('fill', 'both'):
+                fc = QColor(self.shape_fill_color or self.color); fc.setAlpha(140)
+                p.setBrush(QBrush(fc))
+                if self.shape_fill == 'fill': p.setPen(Qt.NoPen)
             if tool == 'line': p.drawLine(a, b)
             elif tool == 'rect': p.drawRect(QRectF(a, b).normalized())
             elif tool == 'ellipse': p.drawEllipse(QRectF(a, b).normalized())
@@ -453,7 +610,8 @@ class Canvas(QWidget):
         if self.tool == 'redeye':
             if HAS_PIL: self.snapshot(); self.red_eye(pos); self.update()
             return
-        self.snapshot()
+        # editing a mask changes layer.mask (not .img), so snapshot the whole stack
+        self.snapshot_full() if (self.edit_mask and self.has_mask()) else self.snapshot()
         if self.tool in ('brush', 'eraser', 'dodge', 'burn'):
             self.last = pos; self._stroke(pos, pos)
         elif self.tool == 'clone':
@@ -490,21 +648,43 @@ class Canvas(QWidget):
         if self.tool == 'gradient' and self.start is not None:
             self._draw_gradient(self.start, pos)
         elif self.tool in ('line', 'rect', 'ellipse') and self.start is not None:
-            p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing); p.setPen(self._pen()); p.setBrush(Qt.NoBrush)
-            if self.tool == 'line': p.drawLine(self.start, pos)
-            elif self.tool == 'rect': p.drawRect(QRect(self.start, pos).normalized())
-            else: p.drawEllipse(QRect(self.start, pos).normalized())
+            target = self.paint_target()
+            p = QPainter(target); p.setRenderHint(QPainter.Antialiasing)
+            if self.tool == 'line':
+                p.setPen(self._pen()); p.setBrush(Qt.NoBrush); p.drawLine(self.start, pos)
+            else:
+                # rect / ellipse honour the fill mode: 'stroke' | 'fill' | 'both'
+                mode = self.shape_fill
+                if mode in ('fill', 'both'):
+                    fc = self.shape_fill_color or self.color
+                    if target is not self.img:          # mask: use the colour's grey
+                        g = QColor(fc).lightness(); fc = QColor(g, g, g)
+                    p.setBrush(QBrush(QColor(fc)))
+                else:
+                    p.setBrush(Qt.NoBrush)
+                p.setPen(Qt.NoPen if mode == 'fill' else self._pen())
+                r = QRect(self.start, pos).normalized()
+                p.drawRect(r) if self.tool == 'rect' else p.drawEllipse(r)
             p.end()
         self.last = self.start = self.preview = None
         self.clone_base = None
         self.update()
 
-    def _draw_gradient(self, a, b):
+    def _grad_brush(self, a, b):
+        """A QLinearGradient for the gradient tool: start colour at the drag start,
+        end colour (or transparent) at the drag end."""
         g = QLinearGradient(QPointF(a), QPointF(b))
-        c0 = QColor(self.color); c1 = QColor(self.color); c1.setAlpha(0)
+        c0 = QColor(self.grad_start)
+        c1 = QColor(self.grad_start if self.grad_end_transparent else self.grad_end)
+        if self.grad_end_transparent: c1.setAlpha(0)
         g.setColorAt(0, c0); g.setColorAt(1, c1)
+        return g
+
+    def _draw_gradient(self, a, b):
+        g = self._grad_brush(a, b)
+        target = self.paint_target()
         mask = self.sel_mask() if (self.sel and self.sel.get('kind') == 'mask') else None
-        if mask is not None:                       # mask / feathered selection — blend in
+        if mask is not None and target is self.img:   # mask / feathered selection — blend in
             grad = QImage(self.img.size(), QImage.Format_ARGB32); grad.fill(Qt.transparent)
             gp = QPainter(grad); gp.fillRect(grad.rect(), QBrush(g)); gp.end()
             out = self.img.copy()
@@ -515,13 +695,14 @@ class Canvas(QWidget):
             dst[..., :3] = over[..., :3] * sa + dst[..., :3] * (1 - sa)
             dst[..., 3:4] = _np.clip(over[..., 3:4] * sa + dst[..., 3:4], 0, 255)
             self.img = pil2q(Image.fromarray(dst.astype('uint8'), 'RGBA')); return
-        p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
-        reg = self.sel_region()
-        if reg:
-            r, kind = reg; path = QPainterPath()
-            path.addEllipse(QRectF(r)) if kind == 'ellipse' else path.addRect(QRectF(r))
-            p.setClipPath(path)
-        p.fillRect(self.img.rect(), QBrush(g)); p.end()
+        p = QPainter(target); p.setRenderHint(QPainter.Antialiasing)
+        if target is self.img:
+            reg = self.sel_region()
+            if reg:
+                r, kind = reg; path = QPainterPath()
+                path.addEllipse(QRectF(r)) if kind == 'ellipse' else path.addRect(QRectF(r))
+                p.setClipPath(path)
+        p.fillRect(target.rect(), QBrush(g)); p.end()
 
     def red_eye(self, pos):
         r = max(8, self.size * 2)
@@ -549,6 +730,17 @@ class Canvas(QWidget):
     def _stroke(self, a, b):
         if self.tool == 'clone':
             self._clone_stroke(a, b); return
+        target = self.paint_target()
+        if target is not self.img:          # painting into a greyscale mask
+            p = QPainter(target); p.setRenderHint(QPainter.Antialiasing)
+            if self.tool == 'eraser':
+                col = QColor('#ffffff')          # eraser reveals (white) on a mask
+            elif self.tool in ('dodge', 'burn'):
+                col = QColor('#ffffff') if self.tool == 'dodge' else QColor('#000000')
+            else:
+                v = QColor(self.color); g = v.lightness(); col = QColor(g, g, g)  # brush = colour's grey
+            pen = QPen(col, self.size); pen.setCapStyle(Qt.RoundCap); pen.setJoinStyle(Qt.RoundJoin)
+            p.setPen(pen); p.drawLine(a, b); p.end(); return
         p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
         if self.tool == 'eraser':
             p.setCompositionMode(QPainter.CompositionMode_Clear)
@@ -835,13 +1027,13 @@ class Canvas(QWidget):
     def new_image(self, w, h, bg):
         self.snapshot_full()
         base = QImage(w, h, QImage.Format_ARGB32); base.fill(bg)
-        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None
+        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None; self.edit_mask = False
         self._fit(); self.win.refresh_layers()
 
     def load(self, img):
         self.snapshot_full()
         base = img.convertToFormat(QImage.Format_ARGB32)
-        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None
+        self.layers = [Layer(base, 'Background')]; self.active = 0; self.sel = None; self.edit_mask = False
         self._fit(); self.win.refresh_layers()
 
 
@@ -1010,6 +1202,83 @@ class CurvesDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class ExportDialog(QDialog):
+    """File ▸ Export… — pick a format (PNG/JPEG/WEBP/GIF/BMP), a quality for the lossy
+    ones with a live estimated file size, and (PNG) a transparency toggle. Writes via
+    Pillow/QImage. The flattened composite is the thing exported."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Export Image'); self.setMinimumWidth(380)
+        self.img = self.canvas.composited()
+        v = QVBoxLayout(self); form = QFormLayout(); v.addLayout(form)
+        self.fmt_cb = QComboBox()
+        for label, *_ in EXPORT_FORMATS: self.fmt_cb.addItem(label)
+        self.fmt_cb.setCurrentIndex(0)
+        self.fmt_cb.currentIndexChanged.connect(self._fmt_changed)
+        form.addRow('Format:', self.fmt_cb)
+        # quality
+        qrow = QHBoxLayout()
+        self.q_sl = QSlider(Qt.Horizontal); self.q_sl.setRange(1, 100); self.q_sl.setValue(90)
+        self.q_lbl = QLabel('90'); self.q_lbl.setMinimumWidth(32)
+        self.q_sl.valueChanged.connect(lambda x: (self.q_lbl.setText(str(x)), self._estimate()))
+        qrow.addWidget(self.q_sl, 1); qrow.addWidget(self.q_lbl)
+        self.q_holder = QWidget(); self.q_holder.setLayout(qrow)
+        form.addRow('Quality:', self.q_holder)
+        # transparency
+        self.alpha_cb = QCheckBox('Keep transparency')
+        self.alpha_cb.setChecked(True)
+        self.alpha_cb.toggled.connect(lambda _=0: self._estimate())
+        form.addRow('', self.alpha_cb)
+        # estimate
+        self.size_lbl = QLabel('—'); self.size_lbl.setStyleSheet('color:#8a94a0')
+        form.addRow('Estimated size:', self.size_lbl)
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText('Export…')
+        bb.accepted.connect(self._do_export); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._fmt_changed()
+
+    def _fmt(self):
+        return EXPORT_FORMATS[self.fmt_cb.currentIndex()]
+
+    def _fmt_changed(self):
+        _, pf, ext, supports_alpha, has_quality = self._fmt()
+        self.q_holder.setEnabled(has_quality)
+        self.alpha_cb.setEnabled(supports_alpha)
+        if not supports_alpha: self.alpha_cb.setChecked(False)
+        elif pf == 'PNG': self.alpha_cb.setChecked(True)
+        self._estimate()
+
+    def _encode(self):
+        _, pf, ext, supports_alpha, has_quality = self._fmt()
+        return export_bytes(self.img, pf, self.q_sl.value(),
+                            keep_alpha=self.alpha_cb.isChecked() and supports_alpha)
+
+    def _estimate(self):
+        try:
+            n = len(self._encode())
+            self.size_lbl.setText(f'{n/1024:.0f} KB' if n < 1024*1024 else f'{n/1024/1024:.1f} MB')
+        except Exception as e:
+            self.size_lbl.setText('—')
+
+    def _do_export(self):
+        _, pf, ext, supports_alpha, has_quality = self._fmt()
+        start = self.win.path or os.path.join(_just_dir('pics'), 'image')
+        start = os.path.splitext(start)[0] + ext
+        path, _sel = QFileDialog.getSaveFileName(self, 'Export image', start,
+                                                 f'{self._fmt()[0]} (*{ext})')
+        if not path:
+            return
+        if not path.lower().endswith(ext): path += ext
+        try:
+            data = self._encode()
+            with open(path, 'wb') as fh: fh.write(data)
+            self.win.status.showMessage(f'Exported to {path}', 4000); _justapps_recent('paint', path)
+            self.accept()
+        except Exception as e:
+            QMessageBox.warning(self, APP, f"Couldn't export the image.\n{e}")
+
+
 class Main(QMainWindow):
     TOOLS = [('brush', 'Brush', '🖌'), ('eraser', 'Eraser', '◻'), ('line', 'Line', '╱'),
              ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'), ('fill', 'Fill', '🪣'),
@@ -1063,6 +1332,30 @@ class Main(QMainWindow):
                                  ('🗑', 'Delete layer', lambda: self.canvas.delete_layer())):
             b = QPushButton(glyph); b.setToolTip(tip); b.setFixedWidth(34); b.clicked.connect(slot); btns.addWidget(b)
         v.addLayout(btns)
+        # ---- mask panel ----
+        mbox = QWidget(); mv = QVBoxLayout(mbox); mv.setContentsMargins(0, 2, 0, 0); mv.setSpacing(4)
+        line = QLabel('Layer mask'); line.setStyleSheet('font-weight:600;color:#9aa4ad')
+        mv.addWidget(line)
+        mrow = QHBoxLayout()
+        self.mask_thumb = QLabel(); self.mask_thumb.setFixedSize(48, 36)
+        self.mask_thumb.setStyleSheet('border:1px solid #556; background:#333')
+        self.mask_thumb.setAlignment(Qt.AlignCenter)
+        mrow.addWidget(self.mask_thumb)
+        self.edit_mask_cb = QCheckBox('Edit mask')
+        self.edit_mask_cb.setToolTip('Paint the mask (black hides, white reveals) instead of the layer')
+        self.edit_mask_cb.toggled.connect(lambda on: None if self._layer_sync else self.canvas.set_edit_mask(on))
+        mrow.addWidget(self.edit_mask_cb); mrow.addStretch(1); mv.addLayout(mrow)
+        mbtns = QHBoxLayout()
+        self.add_mask_btn = QPushButton('Add Mask'); self.add_mask_btn.setToolTip('Give this layer a white (reveal-all) mask')
+        self.add_mask_btn.clicked.connect(lambda: self.canvas.add_mask(False))
+        self.add_mask_sel_btn = QPushButton('From Selection'); self.add_mask_sel_btn.setToolTip('Mask the layer to the current selection')
+        self.add_mask_sel_btn.clicked.connect(lambda: self.canvas.add_mask(True))
+        self.del_mask_btn = QPushButton('Delete Mask'); self.del_mask_btn.setToolTip('Remove the mask (hidden areas are discarded)')
+        self.del_mask_btn.clicked.connect(lambda: self.canvas.delete_mask(False))
+        for b in (self.add_mask_btn, self.add_mask_sel_btn, self.del_mask_btn):
+            mbtns.addWidget(b)
+        mv.addLayout(mbtns)
+        v.addWidget(mbox)
         dock.setWidget(w); self.addDockWidget(Qt.RightDockWidgetArea, dock)
         self.layers_dock = dock
 
@@ -1071,7 +1364,7 @@ class Main(QMainWindow):
         self._layer_sync = True
         self.layer_list.clear()
         for l in reversed(self.canvas.layers):
-            it = QListWidgetItem(l.name)
+            it = QListWidgetItem(l.name + ('  ◧' if l.mask is not None else ''))
             it.setFlags(it.flags() | Qt.ItemIsUserCheckable)
             it.setCheckState(Qt.Checked if l.visible else Qt.Unchecked)
             self.layer_list.addItem(it)
@@ -1080,7 +1373,23 @@ class Main(QMainWindow):
         al = self.canvas.layers[self.canvas.active]
         self.opacity_sl.setValue(int(al.opacity * 100))
         self.blend_cb.setCurrentIndex(BLEND_NAMES.index(al.blend) if al.blend in BLEND_NAMES else 0)
+        self._refresh_mask_panel(al)
         self._layer_sync = False
+
+    def _refresh_mask_panel(self, al):
+        if not hasattr(self, 'mask_thumb'): return
+        has = al.mask is not None
+        self.add_mask_btn.setEnabled(not has)
+        self.add_mask_sel_btn.setEnabled(not has)
+        self.del_mask_btn.setEnabled(has)
+        self.edit_mask_cb.setEnabled(has)
+        self.edit_mask_cb.setChecked(has and self.canvas.edit_mask)
+        if has:
+            pm = QPixmap.fromImage(al.mask.convertToFormat(QImage.Format_ARGB32)) \
+                     .scaled(48, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            self.mask_thumb.setPixmap(pm)
+        else:
+            self.mask_thumb.clear(); self.mask_thumb.setText('—')
 
     def _layer_row_changed(self, row):
         if self._layer_sync or row < 0: return
@@ -1124,6 +1433,26 @@ class Main(QMainWindow):
         self.wand_cb.toggled.connect(lambda on: setattr(self.canvas, 'wand_contiguous', on))
         for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
             top.addWidget(wdg); wdg.setVisible(False)
+        # --- shape fill controls (rect / ellipse) ---
+        self.fill_lbl = QLabel(' Shape ')
+        self.fill_cb = QComboBox(); self.fill_cb.addItems(['Outline', 'Fill', 'Both'])
+        self.fill_cb.setToolTip('How rectangle and ellipse are drawn')
+        _FILLMODE = ['stroke', 'fill', 'both']
+        self.fill_cb.currentIndexChanged.connect(lambda i: setattr(self.canvas, 'shape_fill', _FILLMODE[i]))
+        self.fill_col_btn = QPushButton('Fill colour'); self.fill_col_btn.setToolTip('Fill colour (default: the current colour)')
+        self.fill_col_btn.clicked.connect(self._pick_fill_color)
+        for wdg in (self.fill_lbl, self.fill_cb, self.fill_col_btn):
+            top.addWidget(wdg); wdg.setVisible(False)
+        # --- gradient colour controls ---
+        self.grad_lbl = QLabel(' Gradient ')
+        self.grad_a_btn = QPushButton('Start'); self.grad_a_btn.clicked.connect(lambda: self._pick_grad('start'))
+        self.grad_b_btn = QPushButton('End'); self.grad_b_btn.clicked.connect(lambda: self._pick_grad('end'))
+        self.grad_trans_cb = QCheckBox('Fade to clear')
+        self.grad_trans_cb.setToolTip('Fade the end colour to transparent instead of a second colour')
+        self.grad_trans_cb.toggled.connect(self._grad_trans)
+        for wdg in (self.grad_lbl, self.grad_a_btn, self.grad_b_btn, self.grad_trans_cb):
+            top.addWidget(wdg); wdg.setVisible(False)
+        self._tint_grad_btns()
         top.addSeparator()
         for txt, slot in (('Zoom +', lambda: self.canvas.set_zoom(self.canvas.zoom * 1.25)),
                           ('Zoom −', lambda: self.canvas.set_zoom(self.canvas.zoom / 1.25)),
@@ -1137,6 +1466,7 @@ class Main(QMainWindow):
         f.addAction(self.act('&Open…', self.open, QKeySequence.Open))
         f.addAction(self.act('&Save', self.save, QKeySequence.Save))
         f.addAction(self.act('Save &As…', self.save_as, QKeySequence.SaveAs))
+        f.addAction(self.act('&Export…', self.export, 'Ctrl+Shift+E'))
         f.addSeparator(); f.addAction(self.act('&Quit', self.close, QKeySequence.Quit))
         e = m.addMenu('&Edit')
         e.addAction(self.act('&Undo', self.canvas.do_undo, QKeySequence.Undo))
@@ -1197,6 +1527,11 @@ class Main(QMainWindow):
         lay.addAction(self.act('&Duplicate Layer', lambda: self.canvas.duplicate_layer()))
         lay.addAction(self.act('&Merge Down', lambda: self.canvas.merge_down()))
         lay.addAction(self.act('De&lete Layer', lambda: self.canvas.delete_layer()))
+        lay.addSeparator()
+        lay.addAction(self.act('Add Layer &Mask', lambda: self.canvas.add_mask(False)))
+        lay.addAction(self.act('Add Mask From &Selection', lambda: self.canvas.add_mask(True)))
+        lay.addAction(self.act('&Apply Mask', lambda: self.canvas.delete_mask(True)))
+        lay.addAction(self.act('De&lete Mask', lambda: self.canvas.delete_mask(False)))
 
         fx = m.addMenu('Effe&cts')
         fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
@@ -1273,7 +1608,36 @@ class Main(QMainWindow):
         if hasattr(self, 'wand_spin'):
             for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
                 wdg.setVisible(t == 'wand')
+        if hasattr(self, 'fill_cb'):
+            for wdg in (self.fill_lbl, self.fill_cb, self.fill_col_btn):
+                wdg.setVisible(t in ('rect', 'ellipse'))
+            for wdg in (self.grad_lbl, self.grad_a_btn, self.grad_b_btn, self.grad_trans_cb):
+                wdg.setVisible(t == 'gradient')
     def set_pos(self, p): self.pos_lbl.setText(f'{p.x()}, {p.y()}   ')
+
+    def _pick_fill_color(self):
+        start = self.canvas.shape_fill_color or self.canvas.color
+        c = QColorDialog.getColor(start, self, 'Fill colour')
+        if c.isValid():
+            self.canvas.shape_fill_color = c
+            self.fill_col_btn.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"}')
+
+    def _pick_grad(self, which):
+        start = self.canvas.grad_start if which == 'start' else self.canvas.grad_end
+        c = QColorDialog.getColor(start, self, f'Gradient {which} colour')
+        if c.isValid():
+            setattr(self.canvas, 'grad_start' if which == 'start' else 'grad_end', c)
+            self._tint_grad_btns()
+
+    def _grad_trans(self, on):
+        self.canvas.grad_end_transparent = on
+        self.grad_b_btn.setEnabled(not on); self._tint_grad_btns()
+
+    def _tint_grad_btns(self):
+        if not hasattr(self, 'grad_a_btn'): return
+        for btn, col in ((self.grad_a_btn, self.canvas.grad_start), (self.grad_b_btn, self.canvas.grad_end)):
+            c = QColor(col)
+            btn.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"};padding:3px 8px')
 
     def set_color(self, c):
         self.canvas.color = QColor(c)
@@ -1478,6 +1842,11 @@ class Main(QMainWindow):
             self.status.showMessage(f'Saved to {path}', 4000); _justapps_recent('paint', path)
         else:
             QMessageBox.warning(self, APP, "Couldn't save the image.")
+
+    def export(self):
+        """Export the flattened picture in a chosen format with quality/transparency
+        options — PNG / JPEG / WEBP / GIF / BMP."""
+        ExportDialog(self).exec()
 
     def open_manual(self):
         self._open_help(MANUAL)

@@ -168,11 +168,34 @@ def _shapes_demo(w=560, h=300):
     p.setPen(Qt.NoPen)
     p.setBrush(QColor("#ffd34e")); p.drawRect(QRectF(30, 160, 110, 110))
     p.setBrush(QColor("#49c5b6")); p.drawEllipse(QRectF(170, 160, 110, 110))
-    # gradient swatch (what the Gradient tool draws: colour -> transparent)
-    g = QLinearGradient(310, 160, 430, 160)
-    c0 = QColor("#e8556b"); c1 = QColor("#e8556b"); c1.setAlpha(0)
-    g.setColorAt(0, c0); g.setColorAt(1, c1)
+    # gradient swatch (what the Gradient tool draws: a two-colour linear blend)
+    g = QLinearGradient(310, 160, 540, 160)
+    g.setColorAt(0, QColor("#e8556b")); g.setColorAt(1, QColor("#2a7df0"))
     p.fillRect(QRectF(310, 160, 230, 110), QBrush(g))
+    p.end()
+    return im
+
+
+def _fill_demo(w=560, h=190):
+    """Outline vs. fill vs. both for a rectangle and an ellipse, plus a two-colour
+    gradient — the new shape and gradient options."""
+    im = _blank(w, h, "#ffffff")
+    p = QPainter(im); p.setRenderHint(QPainter.Antialiasing)
+    # rectangle: outline / fill / both
+    stroke = QColor("#1f9d6b"); fillc = QColor("#9be3c8")
+    # outline
+    p.setBrush(Qt.NoBrush); pen = QPen(stroke, 5); p.setPen(pen)
+    p.drawRect(QRectF(24, 30, 92, 92))
+    # fill only
+    p.setPen(Qt.NoPen); p.setBrush(QColor("#9be3c8")); p.drawRect(QRectF(150, 30, 92, 92))
+    # both
+    p.setBrush(QColor("#9be3c8")); p.setPen(QPen(stroke, 5)); p.drawRect(QRectF(276, 30, 92, 92))
+    # a filled ellipse
+    p.setBrush(QColor("#c9b6ef")); p.setPen(QPen(QColor("#7b53c9"), 5)); p.drawEllipse(QRectF(410, 30, 120, 92))
+    # two-colour gradient band along the foot
+    g = QLinearGradient(24, 150, 536, 150)
+    g.setColorAt(0, QColor("#e8556b")); g.setColorAt(1, QColor("#2a7df0"))
+    p.fillRect(QRectF(24, 142, 512, 34), QBrush(g))
     p.end()
     return im
 
@@ -191,6 +214,34 @@ def capture(full=True):
     scene = _scene()
     IM["scene"] = _pil(scene).convert("RGB")
     IM["shapes"] = _pil(_shapes_demo()).convert("RGB")
+    IM["fills"] = _pil(_fill_demo()).convert("RGB")
+
+    # layer-mask demo: an orange circle layer over a scene, masked so a diagonal band
+    # is hidden — drives the real composited() path to prove the mask hides pixels.
+    try:
+        import types as _t
+        mw, mh = 420, 280
+        bottom = _scene(mw, mh)
+        top = _blank(mw, mh, None)
+        pp = QPainter(top); pp.setRenderHint(QPainter.Antialiasing); pp.setPen(Qt.NoPen)
+        pp.setBrush(QColor("#ff8a3d")); pp.drawEllipse(QRectF(90, 50, 240, 180)); pp.end()
+        cv = PC.Canvas.__new__(PC.Canvas)
+        cv.layers = [PC.Layer(bottom, "Background"),
+                     PC.Layer(top, "Orange")]
+        cv.active = 1; cv.sel = None; cv.edit_mask = False
+        cv.update = _t.MethodType(lambda self: None, cv)
+        cv.win = None
+        # build a mask: white everywhere, a black wedge cut out of the orange
+        m = PC.new_mask(mw, mh, True)
+        qp = QPainter(m); qp.setRenderHint(QPainter.Antialiasing); qp.setBrush(QColor("#000000")); qp.setPen(Qt.NoPen)
+        path = QPainterPath(); path.moveTo(0, 0); path.lineTo(mw, 0); path.lineTo(0, mh); path.closeSubpath()
+        qp.drawPath(path); qp.end()
+        cv.layers[1].mask = m
+        IM["mask_demo"] = _pil(cv.composited()).convert("RGB")
+        # the mask thumbnail itself (greyscale swatch)
+        IM["mask_swatch"] = _pil(m).convert("RGB")
+    except Exception as e:
+        print("mask demo failed:", e)
 
     # before/after adjustment strip: original vs. a warm, higher-contrast version
     if PC.HAS_PIL:
@@ -354,6 +405,7 @@ def capture(full=True):
     drive(w2._fx_dialog, "glow")
     drive(w2.new)                 # New Image dialog
     drive(w2.cutout_studio)       # Cutout Studio
+    drive(w2.export)              # Export dialog
 
     IM["_dialogs"] = dict(DGRABS)
     return IM
@@ -521,7 +573,27 @@ sharp edges or see-through areas.</li>
 <li><b>JPEG</b> — smaller files, but no transparency and a little quality lost to compression. Use it for
 photographs you want to share or email.</li>
 </ul>
-{caution('Saving a layered picture <b>flattens</b> all its layers into the one image in the file — PNG and JPEG cannot store separate layers. Keep a master PNG if you expect to re-edit, and remember that saving as JPEG fills any transparent areas with white.')}""")]))
+{caution('Saving a layered picture <b>flattens</b> all its layers into the one image in the file — PNG and JPEG cannot store separate layers. Keep a master PNG if you expect to re-edit, and remember that saving as JPEG fills any transparent areas with white.')}"""),
+      ("Exporting to other formats", f"""
+<p>For anything beyond the everyday PNG and JPEG, <b>File ▸ Export…</b> ({K('Ctrl')}+{K('Shift')}+{K('E')})
+opens a dialog that gives you the choice of format and the controls that go with it.</p>
+{fig(dlg('Export Image'), 'The Export dialog: a format menu, a quality slider with a live estimated file size, and a transparency toggle.')}
+<p>The <b>Format</b> menu offers five formats, and the other controls enable or grey out to suit the one you pick:</p>
+<ul>
+<li><b>PNG</b> — lossless, with transparency. The <b>Keep transparency</b> box lets you flatten onto white instead if you prefer a solid picture.</li>
+<li><b>JPEG</b> — small photographic files; the <b>Quality</b> slider trades file size against compression, and there is no transparency.</li>
+<li><b>WEBP</b> — a modern web format that is smaller than both and keeps transparency; it has a <b>Quality</b> slider too.</li>
+<li><b>GIF</b> — a simple, widely-supported format (limited colours), with transparency.</li>
+<li><b>BMP</b> — an uncompressed bitmap for programs that need one.</li>
+</ul>
+<p>As you change the format, quality or transparency, an <b>Estimated size</b> line updates so you can see
+roughly how big the file will be before you commit.</p>
+{proc('export a picture',
+  'Choose <b>File ▸ Export…</b>.',
+  'Pick the <b>Format</b>. The quality slider and transparency box enable themselves to suit it.',
+  'For JPEG or WEBP, drag the <b>Quality</b> slider — watch the estimated file size change — and for PNG decide whether to <b>Keep transparency</b>.',
+  'Click <b>Export…</b>, choose a name and place, and confirm.')}
+{tip('Exporting never touches your working picture — it only writes a copy in the chosen format. Use <b>Save</b> for your ordinary PNG/JPEG working file and <b>Export</b> when you need WEBP for the web, a GIF, or a tuned-down JPEG for email.')}""")]))
 
     ch.append(("The Workspace",
       "<p class='lede'>Everything happens in one window: your picture in the middle, the tools down the "
@@ -607,13 +679,29 @@ see-through; on the solid Background it reveals whatever is beneath.</p>
   'Press and drag on the canvas; release to end the stroke.',
   'Each stroke is one undo step, so a mistake is one ' + K('Ctrl') + '+' + K('Z') + ' away.')}"""),
       ("Lines, rectangles and ellipses", f"""
-<p>Three tools draw crisp outlines in the current colour and size. Each previews as you drag, so you see
+<p>Three tools draw crisp shapes in the current colour and size. Each previews as you drag, so you see
 the result before you let go.</p>
 {proc('draw a line or shape',
   'Choose the <b>Line</b>, <b>Rectangle</b> or <b>Ellipse</b> tool.',
   'Press where it should start and drag to where it should end.',
-  'Release to paint it. The width follows the <b>Size</b> setting.')}
-{note('These tools paint an <i>outline</i> in the brush colour. To fill a shape with colour, draw it, then use the Fill bucket inside it — or draw the shape and flood-fill around it.')}"""),
+  'Release to paint it. The outline width follows the <b>Size</b> setting.')}"""),
+      ("Filled shapes", f"""
+<p>When the <b>Rectangle</b> or <b>Ellipse</b> tool is chosen, a <b>Shape</b> menu and a <b>Fill colour</b>
+button appear on the paint toolbar. The menu offers three ways to draw the shape:</p>
+<ul>
+<li><b>Outline</b> — an unfilled outline in the current colour and size (the classic behaviour);</li>
+<li><b>Fill</b> — a solid shape with no outline;</li>
+<li><b>Both</b> — a filled shape <i>and</i> an outline around it.</li>
+</ul>
+<p>By default the fill uses the current colour; click <b>Fill colour</b> to pick a different colour just for
+the fill, so you can outline in one colour and fill with another.</p>
+{fig(IM.get('fills'), 'A rectangle drawn as outline, fill, and both; a filled ellipse; and a two-colour gradient band.')}
+{proc('draw a solid shape',
+  'Choose the <b>Rectangle</b> or <b>Ellipse</b> tool.',
+  'Set the <b>Shape</b> menu to <b>Fill</b> (solid) or <b>Both</b> (solid with an outline).',
+  'Leave the fill as the current colour, or click <b>Fill colour</b> to choose a separate one.',
+  'Drag out the shape and release. It is painted solid.')}
+{tip('The Line tool is always a stroke — only rectangles and ellipses have an interior to fill.')}"""),
       ("The Fill (bucket) tool", f"""
 <p>The <b>Fill</b> tool floods a connected area of one colour with the current colour — the classic paint
 bucket. Click inside a region and every touching pixel of the same colour changes at once.</p>
@@ -622,11 +710,17 @@ bucket. Click inside a region and every touching pixel of the same colour change
   'Click inside the area to flood.',
   'Only the connected same-coloured pixels change, so a shape’s outline keeps the fill contained.')}
 {tip('Fill works on exact colour matches. If a photo’s “flat” area is really many slightly different pixels, the fill may stop early — flatten the colour first with <b>Posterize</b> or <b>Threshold</b>, or paint by hand.')}"""),
-      ("The Gradient tool", """
-<p>The <b>Gradient</b> tool paints a smooth fade from the current colour to transparent. Drag across the
-canvas: the start of the drag is full colour, the end fades to nothing. It is ideal for a soft vignette, a
-sky wash, or fading an overlay out at one edge. If you have a selection active, the gradient is confined to
-it.</p>"""),
+      ("The Gradient tool", f"""
+<p>The <b>Gradient</b> tool paints a smooth two-colour blend across the canvas. When it is chosen, a
+<b>Gradient</b> label with <b>Start</b> and <b>End</b> colour buttons and a <b>Fade to clear</b> tick box
+appear on the paint toolbar. Pick a start colour and an end colour, then drag: the start of the drag is the
+start colour and the end of the drag is the end colour, blended evenly between. It is ideal for a sky wash, a
+two-tone background, or a coloured fade behind a subject.</p>
+{proc('paint a two-colour gradient',
+  'Choose the <b>Gradient</b> tool.',
+  'Click <b>Start</b> and pick the first colour; click <b>End</b> and pick the second.',
+  'Drag across the canvas in the direction you want the blend to run; release to paint it.')}
+{tip('Tick <b>Fade to clear</b> to fade the start colour out to transparent instead of to a second colour — the way to make a soft vignette or feather an overlay out at one edge. If a selection is active, the gradient is confined to it.')}"""),
       ("Adding text", f"""
 <p>The <b>Text</b> tool stamps a line of text into the picture as pixels.</p>
 {proc('add a line of text',
@@ -871,7 +965,32 @@ give further effects.</li>
       ("Merging and flattening", f"""
 <p><b>Layer ▸ Merge Down</b> (or the <b>⌄</b> button) fuses the active layer into the one below, baking in its
 opacity and blend. Merge when you are happy with a combination and want to simplify the stack.</p>
-{note('Saving a picture flattens every layer into the single image the file holds. Keep a layered master as a PNG only if you will re-edit — remembering that even a PNG stores just the flattened result, not the separate layers. Merge deliberately while the layers are still live.')}""")]))
+{note('Saving a picture flattens every layer into the single image the file holds. Keep a layered master as a PNG only if you will re-edit — remembering that even a PNG stores just the flattened result, not the separate layers. Merge deliberately while the layers are still live.')}"""),
+      ("Layer masks", f"""
+<p>A <b>layer mask</b> hides parts of a layer <i>without erasing them</i>. Instead of rubbing pixels out with
+the eraser — which is permanent — a mask is a separate greyscale picture attached to the layer: where the
+mask is <b>white</b> the layer shows in full; where it is <b>black</b> the layer is hidden; greys in between
+make it partly see-through. Paint the mask and the layer fades in and out; paint it white again and the
+pixels come straight back. It is the non-destructive way to blend two layers, feather an edge, or try a
+composite you can always undo.</p>
+<div class="imgrow">
+{fig(IM.get('mask_swatch'), 'A mask: white reveals, black hides.')}
+{fig(IM.get('mask_demo'), 'The orange layer with that mask applied — the black wedge of the mask hides that corner, letting the scene below show through.')}
+</div>
+<p>The mask controls live at the foot of the <b>Layers</b> panel: an <b>Add Mask</b> / <b>From Selection</b> /
+<b>Delete Mask</b> row, a small mask thumbnail, and an <b>Edit mask</b> tick box. The same commands are on the
+<b>Layer</b> menu.</p>
+{proc('mask part of a layer away',
+  'Select the layer in the <b>Layers</b> panel.',
+  'Click <b>Add Mask</b> (or <b>Layer ▸ Add Layer Mask</b>). A white, reveal-everything mask is attached and <b>Edit mask</b> switches on.',
+  'With <b>Edit mask</b> ticked, paint on the picture: the <b>Brush</b> paints the mask in the current colour’s shade (paint with <b>black</b> to hide, grey to half-hide), and the <b>Eraser</b> paints it white to reveal again.',
+  'Untick <b>Edit mask</b> to go back to painting the layer’s pixels as normal.')}
+{proc('mask a layer to a selection',
+  'Make a selection — a marquee, or the Magic Wand around the part you want to keep.',
+  'Click <b>From Selection</b> (or <b>Layer ▸ Add Mask From Selection</b>).',
+  'The layer is masked to the selection: the selected area stays visible, everything else is hidden — the quick way to drop a cut-out subject onto the layers below.')}
+{note('<b>Layer ▸ Apply Mask</b> bakes the mask into the layer for good (hidden areas become transparent), then removes it. <b>Delete Mask</b> (or the panel button) simply throws the mask away and brings the whole layer back. Saving or merging also bakes masks in — the file holds the flattened, masked result.')}
+{tip('A soft mask is the classic way to blend two photos: put one above the other, add a mask, and paint a soft black-to-white gradient across the join so one fades smoothly into the other.')}""")]))
 
     ch.append(("Cutting Out a Background",
       "<p class='lede'>Removing a background to transparency — so a subject can sit on another picture, a "
@@ -1031,6 +1150,7 @@ tilted horizon.</p>
 <tr><td>File ▸ New…</td><td>Start a new picture — size preset, background colour or transparent</td></tr>
 <tr><td>File ▸ Open…</td><td>Open a PNG, JPEG, BMP, GIF or WebP</td></tr>
 <tr><td>File ▸ Save / Save As…</td><td>Save as PNG (keeps transparency) or JPEG</td></tr>
+<tr><td>File ▸ Export…</td><td>Export as PNG / JPEG / WEBP / GIF / BMP with a quality slider and transparency toggle</td></tr>
 <tr><td>File ▸ Quit</td><td>Close the program</td></tr>
 <tr><td>Edit ▸ Undo / Redo</td><td>Step back and forward through recent changes</td></tr></table>"""),
       ("Image", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
@@ -1059,11 +1179,13 @@ tilted horizon.</p>
 <tr><td>Filter ▸ Emboss · Find Edges · Contour</td><td>Artistic / line-art effects</td></tr>
 <tr><td>Select ▸ Select All · Deselect</td><td>Select the whole picture; clear the selection</td></tr>
 <tr><td>Layer ▸ New · Duplicate · Merge Down · Delete</td><td>Manage the layer stack</td></tr>
+<tr><td>Layer ▸ Add Layer Mask · From Selection · Apply · Delete Mask</td><td>Attach, apply or remove a non-destructive layer mask</td></tr>
 <tr><td>Effects ▸ Drop Shadow… · Outer Glow…</td><td>A soft shadow or halo behind the artwork</td></tr></table>""")]))
 
     ch.append(("Appendix B — Keyboard Shortcuts", "<p class='lede'>The shortcuts worth learning.</p>", [
       ("Files and editing", f"""<table class="ref"><tr><th>Action</th><th>Shortcut</th></tr>
 <tr><td>New / Open / Save / Save As</td><td>{K('Ctrl')}+{K('N')} · {K('Ctrl')}+{K('O')} · {K('Ctrl')}+{K('S')} · {K('Ctrl')}+{K('Shift')}+{K('S')}</td></tr>
+<tr><td>Export…</td><td>{K('Ctrl')}+{K('Shift')}+{K('E')}</td></tr>
 <tr><td>Undo / Redo</td><td>{K('Ctrl')}+{K('Z')} · {K('Ctrl')}+{K('Shift')}+{K('Z')}</td></tr>
 <tr><td>Quit</td><td>{K('Ctrl')}+{K('Q')}</td></tr></table>"""),
       ("Selecting and the clone source", f"""<table class="ref"><tr><th>Action</th><th>Shortcut</th></tr>
@@ -1098,8 +1220,9 @@ tilted horizon.</p>
 <dt>Cutout</dt><dd>Removing a background to transparency, isolating a subject.</dd>
 <dt>Flatten</dt><dd>Merging all layers into one image — what happens when you save.</dd>
 <dt>Gamma</dt><dd>The mid-tone brightness control in Levels.</dd>
-<dt>Gradient</dt><dd>A smooth fade from one colour (or to transparent) across an area.</dd>
+<dt>Gradient</dt><dd>A smooth fade between two colours (or from a colour to transparent) across an area.</dd>
 <dt>Layer</dt><dd>One sheet of a stacked picture, editable on its own.</dd>
+<dt>Layer mask</dt><dd>A greyscale picture attached to a layer that hides it (black) or reveals it (white) without erasing any pixels.</dd>
 <dt>Marquee</dt><dd>A selection outline — the “marching ants”.</dd>
 <dt>Opacity</dt><dd>How solid a layer or stroke is, from 100% to 0%.</dd>
 <dt>Pixel</dt><dd>One coloured dot; the atom of a raster picture.</dd>
