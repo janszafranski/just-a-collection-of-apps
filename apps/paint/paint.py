@@ -21,7 +21,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.4-07"
+VERSION = "1.5-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -113,6 +113,42 @@ def adj_hue(shift):
         return _merge_a(p, Image.fromarray(hsv.astype('uint8'), 'HSV').convert('RGB'))
     return f
 
+def adj_curves(lut, channel='rgb'):
+    """Apply a 256-entry LUT (a list/array of 0..255) via Pillow point(). channel is
+    'rgb' (all channels / luma-style) or 'r'/'g'/'b' for a single channel."""
+    lut = [int(max(0, min(255, v))) for v in lut]
+
+    def f(p):
+        rgb = p.convert('RGB')
+        if channel == 'rgb':
+            rgb = rgb.point(lut * 3)
+        else:
+            ch = {'r': 0, 'g': 1, 'b': 2}[channel]
+            bands = list(rgb.split())
+            bands[ch] = bands[ch].point(lut)
+            rgb = Image.merge('RGB', bands)
+        return _merge_a(p, rgb)
+    return f
+
+
+def curve_lut(points):
+    """Build a 256-entry LUT by linear interpolation through sorted (x,y) control points
+    (each 0..255). Always anchored by clamping to the point range at the ends."""
+    pts = sorted(points)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    if HAS_PIL:
+        return _np.interp(_np.arange(256), xs, ys).round().astype('int').tolist()
+    lut = []
+    for x in range(256):
+        if x <= xs[0]: lut.append(ys[0]); continue
+        if x >= xs[-1]: lut.append(ys[-1]); continue
+        for i in range(1, len(xs)):
+            if x <= xs[i]:
+                t = (x - xs[i - 1]) / (xs[i] - xs[i - 1])
+                lut.append(round(ys[i - 1] + t * (ys[i] - ys[i - 1]))); break
+    return lut
+
+
 def adj_levels(black, white, gamma):
     def f(p):
         a = _np.asarray(p.convert('RGB')).astype(_np.float32)
@@ -179,10 +215,15 @@ class Canvas(QWidget):
         self.color = QColor('#1f2a30')
         self.size = 6
         self.cutout_tol = 45
+        self.wand_tol = 32             # magic-wand colour tolerance (0..255-ish)
+        self.wand_contiguous = True    # wand selects a connected region vs. the whole image
         self.last = None
         self.start = None
         self.preview = None            # (tool, QPoint start, QPoint cur) while dragging a shape
-        self.sel = None                # {'rect': QRect, 'kind': 'rect'|'ellipse'} marquee selection
+        # Selection. Either None, a marquee {'rect':QRect,'kind':'rect'|'ellipse'}, or a
+        # free-form mask {'kind':'mask','mask':uint8 HxW ndarray (0..255; >0 = selected,
+        # intermediate values = feathered edge)}. sel_mask() turns any of them into a mask.
+        self.sel = None
         self.sel_drag = None           # (start, cur) while dragging a marquee
         self.clone_src = None          # clone-tool source anchor (Ctrl-click)
         self.clone_off = None          # clone offset once a stroke begins
@@ -332,7 +373,11 @@ class Canvas(QWidget):
             elif tool == 'gradient':
                 gp = QPen(QColor('#000'), 1, Qt.DashLine); gp.setCosmetic(True); p.setPen(gp); p.drawLine(a, b)
             p.restore()
-        if self.sel or self.sel_drag:
+        if self.sel and self.sel.get('kind') == 'mask' and not self.sel_drag:
+            ov = self._mask_overlay()
+            if ov is not None:
+                p.drawImage(r, ov, QRectF(0, 0, ov.width(), ov.height()))
+        elif self.sel or self.sel_drag:
             p.save(); p.scale(self.zoom, self.zoom)
             if self.sel_drag:
                 a, b = self.sel_drag; r = QRectF(a, b).normalized()
@@ -345,6 +390,28 @@ class Canvas(QWidget):
                 p.drawEllipse(r) if kind == 'ellipse' else p.drawRect(r)
             p.restore()
         p.end()
+
+    def _mask_overlay(self):
+        """A cached RGBA overlay (blue tint inside the mask + a white outline) for a
+        mask selection, so marching-ants-ish feedback shows where it is."""
+        if not HAS_PIL or not self.sel or self.sel.get('kind') != 'mask': return None
+        m = self.sel['mask']
+        cached = self.sel.get('_ov')
+        if cached is not None and self.sel.get('_ov_shape') == m.shape:
+            return cached
+        h, w = m.shape
+        ov = _np.zeros((h, w, 4), _np.uint8)
+        inside = m > 0
+        ov[..., 2] = 255                                   # blue tint
+        ov[..., 3] = (m.astype(_np.uint16) * 60 // 255).astype(_np.uint8)  # faint fill
+        # 1-px outline = edge of the selected region
+        edge = _np.zeros((h, w), bool)
+        edge[:-1, :] |= inside[:-1, :] != inside[1:, :]
+        edge[:, :-1] |= inside[:, :-1] != inside[:, 1:]
+        ov[edge] = (255, 255, 255, 230)
+        img = pil2q(Image.fromarray(ov, 'RGBA'))
+        self.sel['_ov'] = img; self.sel['_ov_shape'] = m.shape
+        return img
 
     def img_pos(self, e):
         return QPoint(int(e.position().x() / self.zoom), int(e.position().y() / self.zoom))
@@ -364,6 +431,12 @@ class Canvas(QWidget):
             self.snapshot(); self.flood_fill(pos, self.color); self.update(); return
         if self.tool == 'cutout':
             self.cutout_at(pos, self.cutout_tol); return
+        if self.tool == 'wand':
+            if HAS_PIL:
+                self.wand_select(pos, self.wand_tol, self.wand_contiguous)
+            else:
+                self.win.status.showMessage('Magic wand needs Pillow and NumPy.', 3000)
+            return
         if self.tool == 'text':
             res = self.win.ask_text()
             if res:
@@ -430,6 +503,18 @@ class Canvas(QWidget):
         g = QLinearGradient(QPointF(a), QPointF(b))
         c0 = QColor(self.color); c1 = QColor(self.color); c1.setAlpha(0)
         g.setColorAt(0, c0); g.setColorAt(1, c1)
+        mask = self.sel_mask() if (self.sel and self.sel.get('kind') == 'mask') else None
+        if mask is not None:                       # mask / feathered selection — blend in
+            grad = QImage(self.img.size(), QImage.Format_ARGB32); grad.fill(Qt.transparent)
+            gp = QPainter(grad); gp.fillRect(grad.rect(), QBrush(g)); gp.end()
+            out = self.img.copy()
+            over = _np.asarray(q2pil(grad)).astype(_np.float32)
+            dst = _np.asarray(q2pil(out)).astype(_np.float32)
+            # source-over of `over` onto `dst`, weighted by the selection mask
+            sa = over[..., 3:4] / 255.0 * (mask.astype(_np.float32) / 255.0)[..., None]
+            dst[..., :3] = over[..., :3] * sa + dst[..., :3] * (1 - sa)
+            dst[..., 3:4] = _np.clip(over[..., 3:4] * sa + dst[..., 3:4], 0, 255)
+            self.img = pil2q(Image.fromarray(dst.astype('uint8'), 'RGBA')); return
         p = QPainter(self.img); p.setRenderHint(QPainter.Antialiasing)
         reg = self.sel_region()
         if reg:
@@ -493,25 +578,78 @@ class Canvas(QWidget):
 
     # ---- selection & the PhotoPlus image engine ----
     def sel_region(self):
-        if not self.sel: return None
+        """The bounding region of a rectangle/ellipse marquee (QRect, kind), or None.
+        A mask selection has no simple rectangular region, so this returns None for it —
+        callers that must honour a mask go through sel_mask()/_apply_to instead."""
+        if not self.sel or self.sel.get('kind') == 'mask': return None
         r = self.sel['rect'].normalized().intersected(self.img.rect())
         if r.width() < 2 or r.height() < 2: return None
         return (r, self.sel['kind'])
 
+    def sel_mask(self):
+        """A uint8 HxW ndarray (0..255; >0 selected) for the CURRENT selection in the
+        current image's geometry, or None if nothing is selected. rect/ellipse marquees
+        are rasterised on demand; a 'mask' selection is returned (resized if the image
+        geometry no longer matches). Needs numpy (HAS_PIL)."""
+        if not self.sel or not HAS_PIL: return None
+        w, h = self.img.width(), self.img.height()
+        k = self.sel.get('kind')
+        if k == 'mask':
+            m = self.sel['mask']
+            if m.shape != (h, w):
+                mi = Image.fromarray(m, 'L').resize((w, h), Image.NEAREST)
+                m = _np.asarray(mi)
+            return m
+        r = self.sel['rect'].normalized().intersected(self.img.rect())
+        if r.width() < 2 or r.height() < 2: return None
+        m = _np.zeros((h, w), _np.uint8)
+        if k == 'ellipse':
+            yy, xx = _np.ogrid[0:h, 0:w]
+            cx = r.x() + r.width() / 2.0; cy = r.y() + r.height() / 2.0
+            rx = max(1.0, r.width() / 2.0); ry = max(1.0, r.height() / 2.0)
+            inside = ((xx - cx) / rx) ** 2 + ((yy - cy) / ry) ** 2 <= 1.0
+            m[inside] = 255
+        else:
+            m[r.y():r.y() + r.height(), r.x():r.x() + r.width()] = 255
+        return m
+
+    def set_mask_sel(self, mask):
+        """Adopt a uint8 HxW mask as the selection (or clear it if empty)."""
+        if mask is None or not mask.any():
+            self.sel = None
+        else:
+            self.sel = {'kind': 'mask', 'mask': mask.astype(_np.uint8)}
+        self.update()
+
     def _apply_to(self, src, func):
         """Return a NEW QImage: `src` with `func` (a pil->pil op) applied to the
-        selection, or to the whole image if there is none. No undo push."""
-        reg = self.sel_region()
-        if reg is None:
-            return pil2q(func(q2pil(src)))
-        r, kind = reg
-        out = src.copy()
-        res = pil2q(func(q2pil(src.copy(r))))
-        p = QPainter(out)
-        if kind == 'ellipse':
-            path = QPainterPath(); path.addEllipse(QRectF(r)); p.setClipPath(path)
-        p.drawImage(r.topLeft(), res); p.end()
-        return out
+        selection, or to the whole image if there is none. No undo push.
+        A mask selection (incl. a feathered one) blends the result in by the mask
+        weight so edits fade across soft edges."""
+        mask = self.sel_mask()
+        if mask is None:
+            # no selection, or no numpy: fall back to a plain rect/ellipse clip
+            reg = self.sel_region()
+            if reg is None:
+                return pil2q(func(q2pil(src)))
+            r, kind = reg
+            out = src.copy()
+            res = pil2q(func(q2pil(src.copy(r))))
+            p = QPainter(out)
+            if kind == 'ellipse':
+                path = QPainterPath(); path.addEllipse(QRectF(r)); p.setClipPath(path)
+            p.drawImage(r.topLeft(), res); p.end()
+            return out
+        # mask (or rasterised marquee): run func on the whole image, blend by mask weight
+        base = q2pil(src)
+        res = func(base)
+        if res.size != base.size:                 # a geometry-changing op can't be masked
+            return pil2q(res)
+        a = _np.asarray(base.convert('RGBA')).astype(_np.float32)
+        b = _np.asarray(res.convert('RGBA')).astype(_np.float32)
+        wgt = (mask.astype(_np.float32) / 255.0)[..., None]
+        blended = a * (1.0 - wgt) + b * wgt
+        return pil2q(Image.fromarray(blended.astype('uint8'), 'RGBA'))
 
     def apply_region(self, func):
         self.snapshot(); self.img = self._apply_to(self.img, func); self._fit()
@@ -522,6 +660,70 @@ class Canvas(QWidget):
     def select_none(self):
         self.sel = None; self.update()
 
+    # ---- magic wand & selection editing (feather / invert / grow / shrink) ----
+    def wand_select(self, pos, tol, contiguous=True):
+        """Build a mask selection of pixels whose colour is within `tol` of the clicked
+        pixel — either the connected region (contiguous) or every matching pixel."""
+        if not HAS_PIL or not self.img.rect().contains(pos): return
+        a = _np.asarray(q2pil(self.img))[..., :3].astype(_np.int16)
+        h, w = a.shape[:2]
+        tr, tg, tb = (int(c) for c in a[pos.y(), pos.x()])
+        thr = int(tol) * 3
+        close = (_np.abs(a[..., 0] - tr) + _np.abs(a[..., 1] - tg)
+                 + _np.abs(a[..., 2] - tb)) <= thr
+        if contiguous:
+            mask = self._flood_mask(close, pos.x(), pos.y())
+        else:
+            mask = _np.where(close, 255, 0).astype(_np.uint8)
+        self.set_mask_sel(mask)
+
+    @staticmethod
+    def _flood_mask(close, sx, sy):
+        """4-connected flood over a boolean 'close' map from (sx,sy); returns uint8 mask."""
+        h, w = close.shape
+        mask = _np.zeros((h, w), _np.uint8)
+        if not close[sy, sx]: return mask
+        seen = _np.zeros((h, w), bool)
+        stack = [(sx, sy)]; seen[sy, sx] = True
+        while stack:
+            x, y = stack.pop()
+            mask[y, x] = 255
+            for nx, ny in ((x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)):
+                if 0 <= nx < w and 0 <= ny < h and not seen[ny, nx] and close[ny, nx]:
+                    seen[ny, nx] = True; stack.append((nx, ny))
+        return mask
+
+    def _ensure_mask_sel(self):
+        """Promote any selection (rect/ellipse/none→all) to a mask so it can be edited."""
+        if self.sel is None:
+            self.select_all()
+        m = self.sel_mask()
+        if m is not None:
+            self.sel = {'kind': 'mask', 'mask': m.astype(_np.uint8)}
+        return m
+
+    def invert_sel(self):
+        if not HAS_PIL: return
+        m = self._ensure_mask_sel()
+        if m is None: return
+        self.set_mask_sel(255 - m)
+
+    def feather_sel(self, radius):
+        if not HAS_PIL or radius <= 0: return
+        if self._ensure_mask_sel() is None: return
+        m = self.sel['mask']
+        soft = Image.fromarray(m, 'L').filter(ImageFilter.GaussianBlur(float(radius)))
+        self.set_mask_sel(_np.asarray(soft))
+
+    def grow_sel(self, px):
+        """Grow (px>0) or shrink (px<0) the selection by a pixel radius (MaxFilter/MinFilter)."""
+        if not HAS_PIL or px == 0: return
+        if self._ensure_mask_sel() is None: return
+        m = Image.fromarray(self.sel['mask'], 'L')
+        n = abs(int(px)); size = 2 * n + 1
+        m = m.filter(ImageFilter.MaxFilter(size) if px > 0 else ImageFilter.MinFilter(size))
+        self.set_mask_sel(_np.asarray(m))
+
     def _map_layers(self, fn):
         """Apply fn(QImage)->QImage to every layer (a whole-document change)."""
         self.snapshot_full()
@@ -531,8 +733,15 @@ class Canvas(QWidget):
 
     def crop_to_sel(self):
         reg = self.sel_region()
-        if reg is None: return
-        r, _ = reg; self._map_layers(lambda im: im.copy(r))
+        if reg is not None:
+            r, _ = reg; self._map_layers(lambda im: im.copy(r)); return
+        if self.sel and self.sel.get('kind') == 'mask':      # crop to the mask's bbox
+            m = self.sel_mask()
+            if m is None or not m.any(): return
+            ys, xs = _np.where(m > 0)
+            r = QRect(int(xs.min()), int(ys.min()),
+                      int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
+            self._map_layers(lambda im: im.copy(r))
 
     def resize_image(self, w, h):
         self._map_layers(lambda im: im.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32))
@@ -678,6 +887,129 @@ class AdjustDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class CurveWidget(QWidget):
+    """A small editable tone curve: draggable control points over a 0–255 diagonal.
+    Points are stored in curve space (x,y both 0..255, origin bottom-left). Emits via
+    the `changed` callback whenever the curve moves."""
+    def __init__(self, changed):
+        super().__init__()
+        self.changed = changed
+        self.points = [(0, 0), (255, 255)]       # identity to start
+        self.drag = None
+        self.setMinimumSize(236, 236)
+        self.setMouseTracking(True)
+
+    def reset(self):
+        self.points = [(0, 0), (255, 255)]; self.drag = None; self.update(); self.changed()
+
+    def lut(self):
+        return curve_lut(self.points)
+
+    # curve-space <-> widget-space
+    def _to_w(self, x, y):
+        m = 10; w = self.width() - 2 * m; h = self.height() - 2 * m
+        return QPointF(m + x / 255.0 * w, m + (1 - y / 255.0) * h)
+
+    def _to_c(self, pt):
+        m = 10; w = self.width() - 2 * m; h = self.height() - 2 * m
+        x = (pt.x() - m) / max(1, w) * 255.0; y = (1 - (pt.y() - m) / max(1, h)) * 255.0
+        return (int(max(0, min(255, round(x)))), int(max(0, min(255, round(y)))))
+
+    def paintEvent(self, e):
+        p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
+        p.fillRect(self.rect(), QColor('#1f242b'))
+        m = 10; w = self.width() - 2 * m; h = self.height() - 2 * m
+        p.setPen(QPen(QColor('#3a424c'), 1))
+        for i in range(1, 4):
+            p.drawLine(QPointF(m + i / 4 * w, m), QPointF(m + i / 4 * w, m + h))
+            p.drawLine(QPointF(m, m + i / 4 * h), QPointF(m + w, m + i / 4 * h))
+        p.setPen(QPen(QColor('#55606c'), 1, Qt.DashLine))
+        p.drawLine(self._to_w(0, 0), self._to_w(255, 255))
+        lut = self.lut()                          # the live curve
+        path = QPainterPath(); path.moveTo(self._to_w(0, lut[0]))
+        for x in range(1, 256): path.lineTo(self._to_w(x, lut[x]))
+        p.setPen(QPen(QColor('#f0c040'), 2)); p.drawPath(path)
+        p.setBrush(QColor('#ffffff')); p.setPen(QPen(QColor('#f0c040'), 1.5))
+        for (x, y) in self.points:
+            c = self._to_w(x, y); p.drawEllipse(c, 4, 4)
+        p.end()
+
+    def _nearest(self, pt):
+        best = None; bd = 1e9
+        for i, (x, y) in enumerate(self.points):
+            w = self._to_w(x, y); d = (w.x() - pt.x()) ** 2 + (w.y() - pt.y()) ** 2
+            if d < bd: bd = d; best = i
+        return best if bd <= 14 ** 2 else None
+
+    def mousePressEvent(self, e):
+        pt = e.position(); i = self._nearest(pt)
+        if e.button() == Qt.RightButton:          # remove a point (not the ends)
+            if i is not None and 0 < i < len(self.points) - 1:
+                del self.points[i]; self.update(); self.changed()
+            return
+        if i is None:                             # add a new point
+            x, y = self._to_c(pt)
+            self.points.append((x, y)); self.points.sort()
+            i = self.points.index((x, y))
+        self.drag = i; self.update()
+
+    def mouseMoveEvent(self, e):
+        if self.drag is None: return
+        x, y = self._to_c(e.position())
+        i = self.drag
+        if i == 0: x = 0
+        elif i == len(self.points) - 1: x = 255
+        else:                                     # keep strictly between neighbours
+            x = max(self.points[i - 1][0] + 1, min(self.points[i + 1][0] - 1, x))
+        self.points[i] = (x, y); self.update(); self.changed()
+
+    def mouseReleaseEvent(self, e):
+        self.drag = None
+
+
+class CurvesDialog(QDialog):
+    """Adjust ▸ Curves — a draggable tone curve driving a 256-entry LUT, live-previewed
+    and selection-aware, in the same spirit as AdjustDialog."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Curves'); self.setMinimumWidth(300)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()
+        v = QVBoxLayout(self)
+        row = QHBoxLayout(); row.addWidget(QLabel('Channel:'))
+        self.chan = QComboBox(); self.chan.addItems(['RGB (all)', 'Red', 'Green', 'Blue'])
+        self.chan.currentIndexChanged.connect(self._apply); row.addWidget(self.chan, 1)
+        v.addLayout(row)
+        self.curve = CurveWidget(self._apply); v.addWidget(self.curve)
+        v.addWidget(QLabel('Click to add a point, drag to shape the curve, right-click to remove.'))
+        rb = QHBoxLayout(); reset = QPushButton('Reset'); reset.clicked.connect(self.curve.reset)
+        rb.addWidget(reset); rb.addStretch(1); v.addLayout(rb)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._apply()
+
+    def _chan(self):
+        return ['rgb', 'r', 'g', 'b'][self.chan.currentIndex()]
+
+    def _func(self):
+        return adj_curves(self.curve.lut(), self._chan())
+
+    def _apply(self):
+        try:
+            self.canvas.img = self.canvas._apply_to(self.base, self._func())
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+
+    def accept(self):
+        self.canvas.push_undo_layer(self.active_idx, self.base)
+        super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
 class Main(QMainWindow):
     TOOLS = [('brush', 'Brush', '🖌'), ('eraser', 'Eraser', '◻'), ('line', 'Line', '╱'),
              ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'), ('fill', 'Fill', '🪣'),
@@ -686,6 +1018,7 @@ class Main(QMainWindow):
              ('redeye', 'Red-eye removal', '◉'), ('dodge', 'Dodge — lighten', '☀'),
              ('burn', 'Burn — darken', '◐'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
+             ('wand', 'Magic wand — click to select by colour', '✦'),
              ('cutout', 'Cutout — click a background to erase it to transparency', '✂')]
 
     def __init__(self):
@@ -782,6 +1115,16 @@ class Main(QMainWindow):
         self.size_spin = QSpinBox(); self.size_spin.setRange(1, 200); self.size_spin.setValue(self.canvas.size)
         self.size_spin.setSuffix(' px'); self.size_spin.valueChanged.connect(lambda v: setattr(self.canvas, 'size', v)); top.addWidget(self.size_spin)
         top.addSeparator()
+        self.wand_lbl = QLabel(' Wand tol ')
+        self.wand_spin = QSpinBox(); self.wand_spin.setRange(0, 255); self.wand_spin.setValue(int(self.canvas.wand_tol))
+        self.wand_spin.setToolTip('Magic-wand colour tolerance')
+        self.wand_spin.valueChanged.connect(lambda v: setattr(self.canvas, 'wand_tol', v))
+        self.wand_cb = QCheckBox('Contiguous'); self.wand_cb.setChecked(self.canvas.wand_contiguous)
+        self.wand_cb.setToolTip('Select only the connected region, not every matching pixel')
+        self.wand_cb.toggled.connect(lambda on: setattr(self.canvas, 'wand_contiguous', on))
+        for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
+            top.addWidget(wdg); wdg.setVisible(False)
+        top.addSeparator()
         for txt, slot in (('Zoom +', lambda: self.canvas.set_zoom(self.canvas.zoom * 1.25)),
                           ('Zoom −', lambda: self.canvas.set_zoom(self.canvas.zoom / 1.25)),
                           ('100%', lambda: self.canvas.set_zoom(1.0))):
@@ -815,6 +1158,7 @@ class Main(QMainWindow):
         adj = m.addMenu('&Adjust')
         adj.addAction(self.act('&Brightness / Contrast…', self.dlg_brightness))
         adj.addAction(self.act('&Levels…', self.dlg_levels))
+        adj.addAction(self.act('Cur&ves…', self.dlg_curves))
         adj.addAction(self.act('&Hue / Saturation…', self.dlg_huesat))
         adj.addAction(self.act('Colour &Temperature…', self.dlg_temperature))
         adj.addAction(self.act('Colour &Balance…', self.dlg_colorbalance))
@@ -842,6 +1186,11 @@ class Main(QMainWindow):
         sel = m.addMenu('&Select')
         sel.addAction(self.act('Select &All', lambda: self.canvas.select_all(), QKeySequence.SelectAll))
         sel.addAction(self.act('&Deselect', lambda: self.canvas.select_none(), QKeySequence.Deselect))
+        sel.addSeparator()
+        sel.addAction(self.act('&Invert', self.sel_invert, 'Ctrl+Shift+I'))
+        sel.addAction(self.act('&Feather…', self.dlg_feather))
+        sel.addAction(self.act('&Grow…', lambda: self.dlg_grow(1)))
+        sel.addAction(self.act('S&hrink…', lambda: self.dlg_grow(-1)))
 
         lay = m.addMenu('&Layer')
         lay.addAction(self.act('&New Layer', lambda: self.canvas.add_layer()))
@@ -919,7 +1268,11 @@ class Main(QMainWindow):
         dlg.exec()
 
     # ---- state ----
-    def set_tool(self, t): self.canvas.tool = t
+    def set_tool(self, t):
+        self.canvas.tool = t
+        if hasattr(self, 'wand_spin'):
+            for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
+                wdg.setVisible(t == 'wand')
     def set_pos(self, p): self.pos_lbl.setText(f'{p.x()}, {p.y()}   ')
 
     def set_color(self, c):
@@ -981,6 +1334,31 @@ class Main(QMainWindow):
                          [('bl', 'Black point:', 0, 254, 0, 1.0), ('wh', 'White point:', 1, 255, 255, 1.0),
                           ('g', 'Gamma:', 10, 300, 100, 100.0)],
                          lambda v: adj_levels(v['bl'], v['wh'], v['g'])).exec()
+
+    def dlg_curves(self):
+        if self._need_pil():
+            CurvesDialog(self).exec()
+
+    def sel_invert(self):
+        if self._need_pil():
+            if self.canvas.sel is None:
+                QMessageBox.information(self, APP, 'Make a selection first, then invert it.'); return
+            self.canvas.invert_sel()
+
+    def dlg_feather(self):
+        if not self._need_pil(): return
+        if self.canvas.sel is None:
+            QMessageBox.information(self, APP, 'Make a selection first, then feather its edges.'); return
+        r, ok = QInputDialog.getInt(self, 'Feather Selection', 'Soften edges by (px):', 8, 1, 300)
+        if ok: self.canvas.feather_sel(r)
+
+    def dlg_grow(self, sign):
+        if not self._need_pil(): return
+        if self.canvas.sel is None:
+            QMessageBox.information(self, APP, 'Make a selection first.'); return
+        label = 'Grow' if sign > 0 else 'Shrink'
+        r, ok = QInputDialog.getInt(self, f'{label} Selection', f'{label} by (px):', 4, 1, 300)
+        if ok: self.canvas.grow_sel(sign * r)
 
     def dlg_huesat(self):
         if self._need_pil():

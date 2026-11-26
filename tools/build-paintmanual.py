@@ -209,8 +209,33 @@ def capture(full=True):
             IM["filter_edges"] = _pil(edges).convert("RGB")
             emb = _apply_pil(scene, PC.flt_emboss)
             IM["filter_emboss"] = _pil(emb).convert("RGB")
+            # Curves: a classic S-curve (lift mids, deepen shadows) via the LUT engine
+            scurve = PC.curve_lut([(0, 0), (64, 40), (128, 140), (192, 220), (255, 255)])
+            IM["curves_after"] = _pil(_apply_pil(scene, PC.adj_curves(scurve, "rgb"))).convert("RGB")
         except Exception as e:
             print("adjust/filter demo failed:", e)
+
+    # magic-wand selection demo: flood a colour region into a mask, then show the
+    # original beside a version with only that region recoloured (adjustment clipped
+    # to the wand's mask) — proof the selection drives the edit.
+    try:
+        ww, wh = 420, 300
+        base = _blank(ww, wh, "#eaf2f6")
+        p = QPainter(base); p.setRenderHint(QPainter.Antialiasing); p.setPen(Qt.NoPen)
+        p.fillRect(QRectF(0, wh * 0.6, ww, wh * 0.4), QColor("#7bb662"))   # green ground
+        p.setBrush(QColor("#e8556b")); p.drawEllipse(QRectF(150, 90, 120, 120))  # red ball
+        p.end()
+        IM["wand_before"] = _pil(base).convert("RGB")
+        import types as _t
+        cv = PC.Canvas.__new__(PC.Canvas)
+        cv.layers = [PC.Layer(base.convertToFormat(QImage.Format_ARGB32), "bg")]
+        cv.active = 0; cv.sel = None
+        cv.update = _t.MethodType(lambda self: None, cv)   # throwaway Canvas has no QWidget
+        cv.wand_select(QPoint(210, 150), 40, True)         # click the red ball
+        img2 = cv._apply_to(cv.img, PC.adj_hue(120))       # recolour just the ball
+        IM["wand_after"] = _pil(img2).convert("RGB")
+    except Exception as e:
+        print("wand demo failed:", e)
 
     # cutout demo: paint a subject on a flat background, then flood the bg to
     # transparency the same way the Cutout tool does — show the result on checker.
@@ -316,6 +341,7 @@ def capture(full=True):
 
     drive(w2.dlg_brightness)
     drive(w2.dlg_levels)
+    drive(w2.dlg_curves)
     drive(w2.dlg_huesat)
     drive(w2.dlg_temperature)
     drive(w2.dlg_colorbalance)
@@ -519,8 +545,9 @@ select it; its name appears as a tooltip and in the status bar.</p>
 {fig(IM.get('toolpalette'), 'The tool palette — from Brush at the top to the Cutout tool at the foot.', 'tall')}
 <p>From the top: <b>Brush</b>, <b>Eraser</b>, <b>Line</b>, <b>Rectangle</b>, <b>Ellipse</b>,
 <b>Fill</b> (the bucket), <b>Gradient</b>, <b>Pick colour</b> (the eyedropper), <b>Text</b>,
-<b>Clone</b>, <b>Red-eye</b>, <b>Dodge</b>, <b>Burn</b>, the two selection tools (<b>rectangle</b> and
-<b>ellipse</b> marquee), and the <b>Cutout</b> tool. Each is covered in the chapters that follow.</p>"""),
+<b>Clone</b>, <b>Red-eye</b>, <b>Dodge</b>, <b>Burn</b>, the two marquee selection tools (<b>rectangle</b> and
+<b>ellipse</b>), the <b>Magic Wand</b> (select by colour), and the <b>Cutout</b> tool. Each is covered in the
+chapters that follow.</p>"""),
       ("The paint toolbar", f"""
 <p>The horizontal toolbar below the menus carries the settings shared by most tools.</p>
 {fig(IM.get('topbar'), 'The paint toolbar: the colour swatch, the brush size, and the zoom buttons.')}
@@ -636,16 +663,45 @@ shadow or deepening a highlight a little at a time.</p>
   'Brush gently over the area. The effect builds up as you go over it, so start light and repeat.')}
 {note('Dodge and burn are subtle on purpose — each pass changes the pixels only a little, so you keep control. For a big, even change, reach for <b>Adjust ▸ Brightness / Contrast</b> instead.')}""")]))
 
-    ch.append(("Selections",
+    ch.append(("Selecting (Magic Wand, Feather, Invert)",
       "<p class='lede'>A selection fences off part of the picture so the next thing you do affects only "
-      "that area. PAINTcanvas has a rectangle and an ellipse marquee; every adjustment and filter respects "
-      "the selection if one is active.</p>", [
-      ("Making a selection", f"""
+      "that area. PAINTcanvas offers three ways to select — a rectangle marquee, an ellipse marquee and the "
+      "<b>Magic Wand</b> (select by colour) — and a set of Select-menu commands to invert, feather, grow and "
+      "shrink whatever you have selected. Every adjustment, filter, the Gradient tool and Crop respect the "
+      "selection if one is active.</p>", [
+      ("The marquee tools", f"""
 {proc('select a rectangular or oval area',
   'Choose the <b>Select — rectangle</b> or <b>Select — ellipse</b> tool from the tool palette.',
   'Drag across the picture to mark the area. A dashed outline shows the selection.',
   'Apply an adjustment or filter — it now affects only inside the marquee.')}
 {note('The dashed “marching ants” outline is a marker, not part of the picture; it never prints or saves.')}"""),
+      ("The Magic Wand — select by colour", f"""
+<p>The <b>Magic Wand</b> ({K('✦')} in the tool palette) selects an area by its <b>colour</b> rather than by
+dragging a box. Click a pixel and it grows a selection outward to cover every neighbouring pixel of a similar
+colour — perfect for grabbing a sky, a flat background, or one coloured object.</p>
+{proc('select an area by colour',
+  'Choose the <b>Magic Wand</b> tool. A <b>Wand tol</b> (tolerance) box and a <b>Contiguous</b> checkbox appear in the top toolbar.',
+  'Click a pixel in the colour you want. The matching region becomes the selection, shown as a soft blue tint with a bright outline.',
+  'Raise <b>Wand tol</b> to catch more shades (a wider colour range); lower it to be stricter.',
+  'Leave <b>Contiguous</b> ticked to select only the connected patch you clicked; untick it to select <i>every</i> matching pixel in the picture at once.')}
+<div class="imgrow">
+{fig(IM.get('wand_before'), 'Before: a red ball on a plain background.')}
+{fig(IM.get('wand_after'), 'After clicking the ball with the Magic Wand and applying a hue shift — only the selected colour changed.')}
+</div>
+{tip('The wand makes a free-form selection (a “mask”), not a box — so it follows the exact edge of whatever you clicked. Every adjustment, filter and the Gradient tool then apply only inside it.')}"""),
+      ("Invert, Feather, Grow and Shrink", f"""
+<p>Once you have a selection, the <b>Select</b> menu reshapes it:</p>
+<ul>
+<li><b>Invert</b> ({K('Ctrl')}+{K('Shift')}+{K('I')}) swaps selected for unselected — select a subject with the wand, invert, and you now have its background (ideal for blurring or darkening <i>everything but</i> the subject);</li>
+<li><b>Feather…</b> softens the selection edge by a radius you type, so the next adjustment fades smoothly in and out instead of stopping at a hard line;</li>
+<li><b>Grow…</b> expands the selection outward by a few pixels;</li>
+<li><b>Shrink…</b> pulls it inward.</li>
+</ul>
+{proc('blend an adjustment at the edges with Feather',
+  'Make a selection (wand or marquee).',
+  'Choose <b>Select ▸ Feather…</b> and enter a radius in pixels — larger means a softer, wider fade.',
+  'Apply an adjustment or filter. Instead of a crisp border, the effect now blends gradually across the feathered edge.')}
+{note('Feather, Invert, Grow and Shrink all work on a free-form mask internally — applying any of them to a rectangle or ellipse marquee automatically converts it to a mask first, which is why the outline changes from a clean box to a traced edge.')}"""),
       ("Select All and Deselect", f"""
 <p>Two menu commands round out selecting:</p>
 <ul>
@@ -655,8 +711,9 @@ shadow or deepening a highlight a little at a time.</p>
 {caution('If an adjustment or filter seems to touch only part of the picture, you probably have a selection active. <b>Deselect</b> and try again.')}"""),
       ("What a selection affects", """
 <p>A selection confines the <b>Adjust</b> and <b>Filter</b> commands and the <b>Gradient</b> tool to its
-area, and <b>Image ▸ Crop to Selection</b> trims the whole picture down to it. The painting tools (brush,
-eraser, shapes) are not fenced in by a selection — they paint wherever you drag.</p>""")]))
+area, and <b>Image ▸ Crop to Selection</b> trims the whole picture down to it (for a wand/mask selection,
+down to its bounding box). The painting tools (brush, eraser, shapes) are not fenced in by a selection —
+they paint wherever you drag.</p>""")]))
 
     parts.append(("Part II", "Painting, Retouching and Selecting", ch))
 
@@ -685,6 +742,20 @@ the mid-tone gamma.</p>
   'Lower the <b>White point</b> so the brightest become true white.',
   'Nudge <b>Gamma</b> to lighten or darken the mid-tones without moving the ends.')}
 {tip('Levels is the most precise way to fix a dull, low-contrast photo: pull the black and white points inward to the edges of the picture’s real tonal range.')}"""),
+      ("Curves", f"""
+<p><b>Curves</b> is the most powerful tone and colour control of all. Instead of a few sliders it gives you a
+graph: the horizontal axis is the <b>input</b> brightness (shadows on the left, highlights on the right) and
+the vertical axis is the <b>output</b>. A straight diagonal changes nothing; bend it and you remap every tone
+at once.</p>
+{fig(dlg('Curves'), 'The Curves dialog: drag points on the graph to reshape the tonal range. Pick RGB (all channels) or an individual Red, Green or Blue channel.')}
+{proc('shape tone and colour with Curves',
+  'Choose <b>Adjust ▸ Curves…</b>.',
+  'Click anywhere on the line to add a control point, then drag it. Pull the middle up to lighten, down to darken.',
+  'For the classic “S-curve” that adds contrast, raise the upper part and lower the lower part — brightening highlights and deepening shadows.',
+  'Switch the <b>Channel</b> box to <b>Red</b>, <b>Green</b> or <b>Blue</b> to shift a single colour channel (for example, lowering Blue in the shadows warms them).',
+  'Right-click a point to remove it, or press <b>Reset</b> to return to the straight line. Click <b>OK</b> to apply.')}
+{fig(IM.get('curves_after'), 'The sample scene after a contrast-boosting S-curve.')}
+{tip('Curves does everything Brightness, Contrast and Levels do, and more, in one place — but a gentle bend goes a long way. Like every adjustment it respects an active selection, so you can reshape the tones of just one area.')}"""),
       ("Hue and Saturation", f"""
 <p>Shift every colour around the wheel, and make colours more or less vivid.</p>
 {fig(dlg('Hue / Saturation'), 'Hue / Saturation: a hue shift and a saturation control.')}
