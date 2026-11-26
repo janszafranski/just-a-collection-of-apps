@@ -28,7 +28,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 _REAL_ARGS = sys.argv[1:]
 sys.argv = ["build-drawmanual"]
 
-from PySide6.QtWidgets import QApplication, QDialog, QMessageBox   # noqa: E402
+from PySide6.QtWidgets import QApplication, QDialog, QMessageBox, QInputDialog   # noqa: E402
 from PySide6.QtGui import QImage, QPainter, QColor                 # noqa: E402
 from PySide6.QtCore import Qt, QRectF                              # noqa: E402
 
@@ -37,6 +37,14 @@ app = QApplication.instance() or QApplication([])
 # Silence modal message boxes so a driver call never blocks.
 for _n in ("information", "warning", "critical", "question", "about"):
     setattr(QMessageBox, _n, staticmethod(lambda *a, **k: 0))
+
+# QInputDialog's static getInt/getText/getDouble/getItem spin their own modal loop
+# that does NOT go through the patched QDialog.exec — so offscreen they would block
+# forever. Stub them to return a cancelled result immediately.
+QInputDialog.getInt = staticmethod(lambda *a, **k: (0, False))
+QInputDialog.getText = staticmethod(lambda *a, **k: ("", False))
+QInputDialog.getDouble = staticmethod(lambda *a, **k: (0.0, False))
+QInputDialog.getItem = staticmethod(lambda *a, **k: ("", False))
 
 # Capture every dialog the app opens: when a command calls dlg.exec(), show the
 # dialog offscreen, grab it, then return "rejected" so nothing is actually applied.
@@ -240,6 +248,42 @@ def _zset(order):
 LAYERS_DEMO = _zset("ABC")    # drawn in order: star, then ellipse, then rect on top
 LAYERS_FRONT = _zset("BCA")   # the star brought to the front
 
+# --- new in 1.5: transform (rotate), group/align/distribute, grid & guides ----
+# Rotation: the same arrow at a run of angles, like a fan.
+TRANSFORM_DEMO = [
+    quick("arrow", 40 + i * 120, 80, 100, 70, fill=c, stroke="#1f2a30", sw=2, rot=a)
+    for i, (a, c) in enumerate([(0, "#9fc3d6"), (20, "#f4c96b"), (45, "#e8556b"),
+                                (90, "#49c5b6"), (135, "#9b6bd8")])
+]
+# Resize-vs-rotate: one rectangle plain, one scaled, one rotated.
+RESIZE_DEMO = [
+    rect(40, 70, 150, 110, fill="#5b8def", stroke="#2b3a42", sw=2),
+    rect(230, 50, 230, 150, fill="#5b8def", stroke="#2b3a42", sw=2),
+    rect(520, 70, 150, 110, fill="#5b8def", stroke="#2b3a42", sw=2, rot=30),
+]
+
+# Grouping: three parts of a little "robot", treated as one.
+GROUP_DEMO = [
+    rect(90, 40, 120, 100, fill="#9fc3d6", stroke="#2b3a42", sw=2, gid=1),
+    ellipse(110, 60, 30, 30, fill="#2b3a42", stroke=None, sw=0, gid=1),
+    ellipse(160, 60, 30, 30, fill="#2b3a42", stroke=None, sw=0, gid=1),
+    rect(70, 150, 160, 70, fill="#5b8def", stroke="#2b3a42", sw=2, gid=1),
+]
+
+# Align: scattered boxes (left), then flush-left and evenly distributed (right).
+ALIGN_BEFORE = [
+    rect(60, 30, 80, 50, fill="#e8556b", stroke="#b2374b", sw=2),
+    rect(140, 110, 80, 50, fill="#f4c96b", stroke="#8a6d1f", sw=2),
+    rect(30, 190, 80, 50, fill="#49c5b6", stroke="#2a8577", sw=2),
+    rect(190, 260, 80, 50, fill="#5b8def", stroke="#2b3a42", sw=2),
+]
+ALIGN_AFTER = [
+    rect(40, 30, 80, 50, fill="#e8556b", stroke="#b2374b", sw=2),
+    rect(40, 123, 80, 50, fill="#f4c96b", stroke="#8a6d1f", sw=2),
+    rect(40, 216, 80, 50, fill="#49c5b6", stroke="#2a8577", sw=2),
+    rect(40, 309, 80, 50, fill="#5b8def", stroke="#2b3a42", sw=2),
+]
+
 # A finished worked example: a simple logo / badge.
 LOGO_DEMO = [
     quick("octagon", 70, 40, 260, 260, fill="#2a7d6b", stroke="#143f36", sw=6,
@@ -278,6 +322,11 @@ def capture(full=True):
     IM["gradient_demo"] = render_drawing(GRADIENT_DEMO, 830, 220, px=880)
     IM["layers_demo"] = render_drawing(LAYERS_DEMO, 360, 260, px=600)
     IM["layers_front"] = render_drawing(LAYERS_FRONT, 360, 260, px=600)
+    IM["transform_demo"] = render_drawing(TRANSFORM_DEMO, 700, 240, px=860)
+    IM["resize_demo"] = render_drawing(RESIZE_DEMO, 720, 240, px=860)
+    IM["group_demo"] = render_drawing(GROUP_DEMO, 300, 240, px=560)
+    IM["align_before"] = render_drawing(ALIGN_BEFORE, 300, 330, px=440)
+    IM["align_after"] = render_drawing(ALIGN_AFTER, 300, 380, px=440)
 
     # --- QuickShape catalogue: every shape in a labelled grid ------------
     # Rendered shapes only (no text drawn via Qt — offscreen text can abort).
@@ -338,6 +387,29 @@ def capture(full=True):
         IM["layerpanel"] = _grab(w.layers_dock.widget())
     except Exception as e:
         print("layers panel grab failed:", e)
+
+    # --- a live canvas with grid, a guide, a selected object and its handles
+    try:
+        w3 = _win()
+        cv = w3.canvas
+        cv.set_grid(on=True, spacing=40)
+        cv.add_guide("v", 360)
+        cv.add_guide("h", 220)
+        shp = quick("star5", 150, 90, 240, 240, fill="#f4c96b", stroke="#c8851b", sw=3, layer=cv.active_layer)
+        shp["rot"] = 18
+        cv.objs.append(shp)
+        cv.set_selection([shp])
+        cv.setMinimumSize(620, 460)
+        cv.resize(620, 460)
+        for _ in range(8):
+            app.processEvents()
+        cv.repaint()
+        for _ in range(4):
+            app.processEvents()
+        # grab just the drawn area (canvas region), not the whole scrolled widget
+        IM["canvas_handles"] = _grab(cv)
+    except Exception as e:
+        print("canvas handles grab failed:", e)
 
     # --- dialogs: drive the real commands; _cap_exec stores them ---------
     def drive(fn, *a):
@@ -676,6 +748,36 @@ pointer's position as you go, so you can line something up against a coordinate.
   'Press ' + K('Delete') + ' (or ' + K('Backspace') + '). The object is removed.',
   'Changed your mind? <b>Edit ▸ Undo</b> (' + K('Ctrl') + '+' + K('Z') + ') brings it straight back.')}""")]))
 
+    ch.append(("Transforming Objects",
+      "<p class='lede'>Selecting an object does more than let you move it. With the <b>Select</b> tool a "
+      "selected object shows a frame of <b>handles</b> — eight around the edge to resize it, and one above "
+      "to spin it round. Resizing and rotating are the two <i>transforms</i> every object can take.</p>", [
+      ("The selection handles", f"""
+<p>Click an object with the <b>Select</b> tool and a blue frame appears, studded with handles: a small
+square at each <b>corner</b> and at the middle of each <b>edge</b>, and a round <b>rotate</b> handle on a
+short stalk above the top edge.</p>
+{fig(IM.get('canvas_handles'), 'A selected object shows eight square resize handles around its frame and a round rotate handle above — here on a drawing with the grid and two guides switched on.')}
+<p>The frame (and every handle) turns with the object, so once something is rotated its handles still line
+up with its own edges — resizing stays intuitive however far it has been spun.</p>"""),
+      ("Resizing an object", f"""
+{proc('resize an object',
+  'Select it with the <b>Select</b> tool.',
+  'Drag a <b>corner</b> handle to resize both ways at once, or an <b>edge</b> handle to stretch along one axis only.',
+  'Hold ' + K('Shift') + ' while dragging a corner to resize <b>proportionally</b>, keeping the original shape’s aspect ratio.',
+  'Release when it is the size you want.')}
+{fig(IM.get('resize_demo'), 'The same rectangle: left at its drawn size, centre stretched larger, right rotated.')}
+{note('Resizing text scales its <b>point size</b> rather than squashing the letters, so type stays properly proportioned. A line or path scales by stretching the gaps between its points.')}"""),
+      ("Rotating an object", f"""
+{proc('rotate an object',
+  'Select it, then drag the round <b>rotate</b> handle on the stalk above the top edge.',
+  'The object turns about its centre as you drag; the status bar and frame follow it round.',
+  'Hold ' + K('Shift') + ' to snap the angle to convenient 15° steps.')}
+{fig(IM.get('transform_demo'), 'One arrow QuickShape rotated to a run of angles — 0°, 20°, 45°, 90° and 135° — each spun about its own centre.')}
+<p>Rotation is stored with the object as an angle, so it survives a save and re-open, and it is written into
+the exported SVG as a real transform — a shape rotates with a transform matrix, a piece of text with an
+explicit <b>rotate()</b> — so it renders identically on screen, in a PNG and in any web browser.</p>
+{tip('Rotation and resize combine freely: stretch a shape to the proportions you want first, then spin it to the angle you need. Undo (' + K('Ctrl') + '+' + K('Z') + ') steps back through each transform.')}""")]))
+
     ch.append(("Fill, Line and Width",
       "<p class='lede'>Every shape in DRAWmaster has two coats of colour — a <b>fill</b> inside and an "
       "<b>outline</b> around — plus an outline <b>width</b>. Those three controls, all on the Style "
@@ -777,6 +879,80 @@ front-most at the top; the row's tick shows or hides that layer.</p>
   'New objects are drawn onto the <b>currently selected</b> layer. To move an existing object, select it, then pick a layer from the <b>Selection →</b> list.')}
 {note('Layers are saved inside the SVG along with the drawing, so a reopened file keeps its exact layer stack, names and visibility. Older DRAWmaster files that pre-date layers still open perfectly — every object simply lands on a single default layer.')}
 {tip('A common scheme: a <i>Background</i> layer for a filled rectangle or gradient, a middle layer for the main shapes, and a <i>Text &amp; labels</i> layer on top — hide the text layer while you arrange the artwork, then show it again.')}""")]))
+
+    ch.append(("Grouping, Aligning and Distributing",
+      "<p class='lede'>Once a drawing has more than a handful of objects you will want to handle several at "
+      "once — pick out a set, lock them together as a <b>group</b>, and line them up tidily with the "
+      "<b>Align</b> and <b>Distribute</b> commands.</p>", [
+      ("Selecting more than one object", f"""
+<p>Every align, distribute and group command works on the <b>current selection</b> — so the first step is
+always to select the objects you mean.</p>
+{proc('select several objects',
+  'Choose the <b>Select</b> tool.',
+  'Click the first object, then <b>' + K('Shift') + '-click</b> each of the others to add it to the selection (Shift-click a selected one again to drop it).',
+  'Or drag a <b>rubber-band box</b> across empty canvas — every object it touches is selected together.')}
+{note('Dragging any object in a multiple selection moves the whole set at once, keeping their relative positions. Pressing ' + K('Delete') + ' removes them all.')}"""),
+      ("Grouping objects", f"""
+<p>A <b>group</b> binds a set of objects into one. Click any member and the whole group selects; move,
+rotate or delete it and every member follows. It is the right tool for something built from several parts —
+a logo, a signpost, a little character — that you want to treat as a single thing from then on.</p>
+{proc('group and ungroup',
+  'Select two or more objects.',
+  'Choose <b>Arrange ▸ Group</b> (' + K('Ctrl') + '+' + K('G') + '). They become one group.',
+  'To break it apart again, select the group and choose <b>Arrange ▸ Ungroup</b> (' + K('Ctrl') + '+' + K('Shift') + '+' + K('G') + ').')}
+{fig(IM.get('group_demo'), 'Four shapes — a head, two eyes and a body — grouped so they move and rotate as one little robot.')}
+{note('Groups are saved inside the SVG with the drawing, so a reopened file keeps every group intact.')}"""),
+      ("Aligning objects", f"""
+<p>The <b>Align</b> commands line selected objects up against a common edge or centre, worked out from the
+selection itself — so <b>Align Left</b> moves them all to the leftmost edge in the set, <b>Align Middle</b>
+centres them on a shared horizontal line, and so on.</p>
+{proc('align a selection',
+  'Select two or more objects.',
+  'Open <b>Arrange ▸ Align</b> and choose <b>Left</b>, <b>Centre</b> or <b>Right</b> to line them up sideways,',
+  'or <b>Top</b>, <b>Middle</b> or <b>Bottom</b> to line them up vertically.')}
+<div class="catgrid">
+<div class="cat-card">{fig(IM.get('align_before'), 'Four boxes scattered across the canvas.')}</div>
+<div class="cat-card">{fig(IM.get('align_after'), 'The same four after Align Left and Distribute Vertically — flush to a common edge and evenly spaced.')}</div>
+</div>"""),
+      ("Distributing objects", f"""
+<p>Where Align lines objects up, <b>Distribute</b> spaces them out evenly. Give it three or more objects
+and it keeps the two outermost where they are, then slides the ones between so the gaps are equal.</p>
+{proc('distribute a selection',
+  'Select <b>three or more</b> objects.',
+  'Choose <b>Arrange ▸ Distribute ▸ Horizontally</b> to even out their left-to-right spacing,',
+  'or <b>Distribute ▸ Vertically</b> to even out their top-to-bottom spacing.')}
+{tip('Align then distribute is the quickest way to tidy a row of buttons, a column of labels or a grid of icons: align them to a shared edge first, then distribute to space them evenly.')}""")]))
+
+    ch.append(("Grid, Guides and Snapping",
+      "<p class='lede'>Precision work is far easier with something to line things up against. DRAWmaster "
+      "offers a <b>grid</b>, draggable <b>guides</b>, and <b>snapping</b> that pulls objects neatly into "
+      "place against the grid, the guides and each other. None of it prints — it is drawing scaffolding "
+      "only.</p>", [
+      ("Showing the grid", f"""
+<p>The <b>grid</b> is a faint mesh of lines across the canvas, a ruler you can see.</p>
+{proc('show the grid and set its spacing',
+  'Choose <b>View ▸ Show Grid</b> (' + K('Ctrl') + '+' + K("'") + ') to switch it on or off.',
+  'Choose <b>View ▸ Grid Spacing…</b> and type the gap between lines in pixels.')}
+{fig(IM.get('canvas_handles'), 'The canvas with the grid switched on — a faint mesh you can line objects up against. It never appears in an exported PNG or SVG.')}
+{note('The grid is purely a guide for your eye and for snapping. It never appears in an exported PNG or SVG — the output shows only your artwork.')}"""),
+      ("Adding guides", f"""
+<p><b>Guides</b> are individual lines — one across, one down — that you place exactly where you want a
+shared edge or centre-line to be, then line objects up against.</p>
+{proc('add and clear guides',
+  'Choose <b>View ▸ Add Horizontal Guide…</b> or <b>Add Vertical Guide…</b>.',
+  'Type the position in pixels and click <b>OK</b>; a dashed guide line appears.',
+  'Choose <b>View ▸ Clear Guides</b> to remove them all.')}
+{fig(IM.get('canvas_handles'), 'A canvas with the grid on and two guides placed — a dashed vertical and a dashed horizontal — ready to snap objects against.')}"""),
+      ("Snapping", f"""
+<p>With <b>snapping</b> on, an object you move or resize jumps the last few pixels to line up with the
+nearest grid line, guide, or the edge or centre of another object — so things sit flush without you having
+to be pixel-perfect by hand.</p>
+{proc('use snapping',
+  'Make sure <b>View ▸ Snap to Grid &amp; Guides</b> is ticked (it is on by default).',
+  'Switch on the grid, or add a guide or two, to give snapping something to catch on.',
+  'Drag an object near a grid line, a guide or another object’s edge — it snaps into alignment as you release.')}
+{tip('Snapping reads an object’s edges <i>and</i> its centre, and the same for its neighbours — so you can snap two shapes centre-to-centre, or butt one flush against another, as easily as snapping to the grid.')}
+{caution('If a shape refuses to sit exactly where you drop it, that is snapping doing its job. Turn it off from <b>View ▸ Snap to Grid &amp; Guides</b> for free-hand placement, then turn it back on.')}""")]))
 
     ch.append(("Undo, Redo and Working Safely",
       "<p class='lede'>Drawing is a process of trying things. DRAWmaster keeps a deep history of your "
@@ -903,7 +1079,18 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Send to Back (Ctrl+Shift+[)</td><td>Move it to the very bottom</td></tr>
 <tr><td>Bring Forward (Ctrl+])</td><td>Move it up one step</td></tr>
 <tr><td>Send Backward (Ctrl+[)</td><td>Move it down one step</td></tr>
+<tr><td>Group (Ctrl+G)</td><td>Bind the selected objects into one group</td></tr>
+<tr><td>Ungroup (Ctrl+Shift+G)</td><td>Break the selected group back into its objects</td></tr>
+<tr><td>Align ▸ Left / Centre / Right</td><td>Line the selection up horizontally</td></tr>
+<tr><td>Align ▸ Top / Middle / Bottom</td><td>Line the selection up vertically</td></tr>
+<tr><td>Distribute ▸ Horizontally / Vertically</td><td>Space three or more objects evenly</td></tr>
 <tr><td>Show Layers Panel</td><td>Reveal the Layers dock if it was closed</td></tr></table>"""),
+      ("View", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
+<tr><td>Show Grid (Ctrl+')</td><td>Show or hide the non-printing grid</td></tr>
+<tr><td>Grid Spacing…</td><td>Set the gap between grid lines, in pixels</td></tr>
+<tr><td>Snap to Grid &amp; Guides</td><td>Toggle snapping of moves and resizes to the grid, guides and other objects</td></tr>
+<tr><td>Add Horizontal / Vertical Guide…</td><td>Place a guide line at an exact pixel position</td></tr>
+<tr><td>Clear Guides</td><td>Remove every guide</td></tr></table>"""),
       ("Help", """<table class="ref"><tr><th>Command</th><th>What it does</th></tr>
 <tr><td>User Guide</td><td>This book</td></tr>
 <tr><td>Quick Start Guide</td><td>The short, get-going guide</td></tr>
@@ -926,7 +1113,11 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <tr><td>Undo / Redo</td><td>{K('Ctrl')}+{K('Z')} · {K('Ctrl')}+{K('Shift')}+{K('Z')}</td></tr>
 <tr><td>Bring to Front / Send to Back</td><td>{K('Ctrl')}+{K('Shift')}+{K(']')} · {K('Ctrl')}+{K('Shift')}+{K('[')}</td></tr>
 <tr><td>Bring Forward / Send Backward</td><td>{K('Ctrl')}+{K(']')} · {K('Ctrl')}+{K('[')}</td></tr>
-<tr><td>Delete the selected object</td><td>{K('Delete')} · {K('Backspace')}</td></tr>
+<tr><td>Group / Ungroup</td><td>{K('Ctrl')}+{K('G')} · {K('Ctrl')}+{K('Shift')}+{K('G')}</td></tr>
+<tr><td>Show / hide the grid</td><td>{K('Ctrl')}+{K("'")}</td></tr>
+<tr><td>Resize proportionally · snap rotation to 15°</td><td>hold {K('Shift')} while dragging a handle</td></tr>
+<tr><td>Add to / remove from a multiple selection</td><td>{K('Shift')}+click</td></tr>
+<tr><td>Delete the selected object(s)</td><td>{K('Delete')} · {K('Backspace')}</td></tr>
 <tr><td>Finish a pen shape (closed, filled)</td><td>double-click</td></tr>
 <tr><td>Finish a pen shape (open line)</td><td>{K('Enter')}</td></tr>
 <tr><td>Quit</td><td>{K('Ctrl')}+{K('Q')}</td></tr></table>""")]))
@@ -949,8 +1140,14 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <dt>Alpha</dt><dd>The opacity of a colour — a low alpha makes a fill partly see-through.</dd>
 <dt>Bitmap (raster)</dt><dd>A picture made of a grid of coloured dots, such as a PNG or a photo; it blurs when enlarged.</dd>
 <dt>Drop shadow</dt><dd>A soft, offset copy behind an object that makes it look raised off the page.</dd>
+<dt>Align</dt><dd>Line selected objects up against a shared edge or centre.</dd>
+<dt>Distribute</dt><dd>Space three or more selected objects evenly between the outermost two.</dd>
 <dt>Fill</dt><dd>The colour inside a shape.</dd>
 <dt>Freehand</dt><dd>A path drawn by hand, following the pointer like a pencil.</dd>
+<dt>Grid</dt><dd>A faint, non-printing mesh of lines across the canvas, for lining things up and for snapping.</dd>
+<dt>Group</dt><dd>Several objects bound into one, so they select, move, rotate and delete together.</dd>
+<dt>Guide</dt><dd>A single non-printing line, across or down, placed to line objects up against.</dd>
+<dt>Handle</dt><dd>A small marker on a selected object’s frame — eight square resize handles and one round rotate handle.</dd>
 <dt>Gradient</dt><dd>A fill that blends smoothly between two colours — linear (across the shape) or radial (out from the centre).</dd>
 <dt>Layer</dt><dd>A named, show/hideable group of objects; higher layers sit above lower ones in the drawing.</dd>
 <dt>Object</dt><dd>Anything you draw — a shape, a line, a path or text; each is selected and styled on its own.</dd>
@@ -960,6 +1157,9 @@ a website, a chat or an email, where SVG might not be accepted.</p>
 <dt>Pen / polyline</dt><dd>A shape built point by point; closed and filled, or left as an open line.</dd>
 <dt>PNG</dt><dd>A common bitmap image format; DRAWmaster exports to it for fixed-size pictures.</dd>
 <dt>QuickShape</dt><dd>A ready-made shape outline (star, arrow, heart, speech bubble…).</dd>
+<dt>Rotate</dt><dd>Turn an object about its centre; the angle is stored and exported as an SVG transform.</dd>
+<dt>Snapping</dt><dd>Pulling a moved or resized object into line with the grid, a guide or another object.</dd>
+<dt>Transform</dt><dd>A change to an object’s size or angle — resizing or rotating.</dd>
 <dt>SVG</dt><dd>Scalable Vector Graphics — DRAWmaster’s editable save format, and a web standard.</dd>
 <dt>Text (artistic text)</dt><dd>Words as a drawing object — fillable, outlinable, gradient-fillable, and exported as real SVG text.</dd>
 <dt>Vector</dt><dd>Artwork defined by maths, not pixels — sharp at any size.</dd>
@@ -1035,6 +1235,15 @@ to leave it as an open line.</p>"""))
 <p>Switch to the <b>Select</b> tool. Click an object to highlight it, drag to move it, and press
 {K('Delete')} to remove it. <b>Edit ▸ Undo</b> ({K('Ctrl')}+{K('Z')}) reverses any mistake.</p>
 {f('select_demo', 'Clicking an object with the Select tool frames it.')}"""))
+    S.append(("Resize, rotate and arrange", f"""
+<p>A selected object shows <b>handles</b>: drag a corner or edge to <b>resize</b> (hold {K('Shift')} on a
+corner to keep its proportions), and the round handle above it to <b>rotate</b>. {K('Shift')}-click to
+select several at once, then <b>Arrange ▸ Group</b> ({K('Ctrl')}+{K('G')}) to bind them, or
+<b>Arrange ▸ Align</b> and <b>Distribute</b> to tidy them up.</p>
+{fig(IM.get('transform_demo'), 'One arrow rotated to a run of angles.')}
+<p>For precise work, turn on <b>View ▸ Show Grid</b> and add <b>guides</b> — with <b>Snap to Grid &amp;
+Guides</b> on, objects line up neatly as you drag. None of it prints.</p>
+{fig(IM.get('align_after'), 'Boxes aligned to a common edge and evenly distributed.')}"""))
     S.append(("Add a shadow or glow", f"""
 <p>With an object selected, click <b>Effects…</b>. Tick <b>drop shadow</b> for depth or <b>outer glow</b>
 for a halo — or both — and set each one's spread, strength and colour.</p>
@@ -1216,7 +1425,8 @@ def build_index(numbered):
              "fill", "outline", "line colour", "width", "drop shadow", "outer glow", "effects",
              "select", "move", "delete", "undo", "redo", "SVG", "PNG", "export", "canvas",
              "zoom", "star", "arrow", "heart", "speech bubble", "icon", "logo", "diagram",
-             "PAINTcanvas", "vector", "bitmap", "alpha", "path"]
+             "PAINTcanvas", "vector", "bitmap", "alpha", "path", "rotate", "resize", "transform",
+             "handle", "group", "ungroup", "align", "distribute", "grid", "guide", "snapping"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
             if _re.search(r"\b" + _re.escape(t) + r"\b", plain, _re.I):

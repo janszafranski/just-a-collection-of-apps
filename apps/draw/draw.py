@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.4-00"
+VERSION = "1.5-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -197,6 +197,48 @@ def obj_rect(o):
     return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
 
 
+def obj_center(o):
+    """The centre of an object's (unrotated) bounding box — the pivot for rotation."""
+    r = obj_rect(o)
+    return r.x() + r.width() / 2, r.y() + r.height() / 2
+
+
+def obj_rot(o):
+    """Rotation in degrees (clockwise), 0 if the object is unrotated."""
+    try: return float(o.get('rot', 0) or 0)
+    except (TypeError, ValueError): return 0.0
+
+
+def obj_bounds(o):
+    """The axis-aligned bounding box of an object *after* its rotation — the box that
+    actually contains it on the canvas. For an unrotated object this equals obj_rect."""
+    r = obj_rect(o); a = obj_rot(o)
+    if not a:
+        return r
+    cx, cy = r.x() + r.width() / 2, r.y() + r.height() / 2
+    rad = math.radians(a); cosa, sina = math.cos(rad), math.sin(rad)
+    xs, ys = [], []
+    for px, py in ((r.left(), r.top()), (r.right(), r.top()),
+                   (r.right(), r.bottom()), (r.left(), r.bottom())):
+        dx, dy = px - cx, py - cy
+        xs.append(cx + dx * cosa - dy * sina); ys.append(cy + dx * sina + dy * cosa)
+    return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
+
+
+def obj_hit(o, pt):
+    """True if canvas point pt (x, y) is inside the object, honouring its rotation.
+    The point is rotated back into the object's local (unrotated) frame, then tested
+    against the padded bounding rect."""
+    a = obj_rot(o); r = obj_rect(o).adjusted(-3, -3, 3, 3)
+    px, py = pt
+    if a:
+        cx, cy = o and obj_center(o)
+        rad = math.radians(-a); cosa, sina = math.cos(rad), math.sin(rad)
+        dx, dy = px - cx, py - cy
+        px, py = cx + dx * cosa - dy * sina, cy + dx * sina + dy * cosa
+    return r.contains(QPointF(px, py))
+
+
 def fill_brush(o):
     """The fill brush for an object — a gradient (grad dict) or a flat colour.
     Gradients are mapped across the object's bounding box, so they render the same
@@ -247,12 +289,29 @@ def svg_text_el(o, idx=0):
         fill = o.get('fill') or 'none'
     stroke = f' stroke="{o["stroke"]}" stroke-width="{o.get("sw", 2)}"' if o.get('stroke') else ''
     body = _H.escape(o.get('text', ''))
+    rot = obj_rot(o); tr = ''
+    if rot:
+        cx, cy = obj_center(o); tr = f' transform="rotate({rot:.3f} {cx:.2f} {cy:.2f})"'
     el = (f'<text x="{x:.2f}" y="{y:.2f}" font-family="{fam}" font-size="{sz}" '
-          f'fill="{fill}"{stroke} xml:space="preserve">{body}</text>')
+          f'fill="{fill}"{stroke} xml:space="preserve"{tr}>{body}</text>')
     return defs, el
 
 
 def paint_object(p, o, selected=False, skip_text=False):
+    a = obj_rot(o)
+    rotated = bool(a)
+    if rotated:
+        # Rotate about the object's centre. QPainter transforms are captured by
+        # QSvgGenerator as a <g transform="..."> too, so rotation survives SVG export
+        # for shapes (text is spliced separately with its own rotate()).
+        cx, cy = obj_center(o)
+        p.save(); p.translate(cx, cy); p.rotate(a); p.translate(-cx, -cy)
+    _paint_object_body(p, o, selected, skip_text)
+    if rotated:
+        p.restore()
+
+
+def _paint_object_body(p, o, selected=False, skip_text=False):
     if skip_text and o.get('type') == 'text':
         draw_object_fx(p, o); return   # keep shadow/glow; the SVG <text> draws the glyphs
     draw_object_fx(p, o)
@@ -303,10 +362,23 @@ class Canvas(QWidget):
         self._next_layer = 2
         self.active_layer = 1
         self.sel = None
+        self.sels = []          # multi-selection (always includes self.sel when non-empty)
+        self._next_gid = 1      # next group id to hand out
         self.tool = 'select'
         self.fill = QColor('#cfe3ef'); self.stroke = QColor('#1f2a30'); self.sw = 2
         self.quick_shape = 'star5'
         self.start = None; self.cur = None; self.drag_off = None; self.poly_pts = None
+        # transform/rubber-band drag state
+        self.handle = None       # which transform handle is being dragged
+        self.drag_start = None   # canvas pt where a handle/rubber drag began
+        self.drag_orig = None    # deep snapshot of selected objects at drag start
+        self.rubber = None       # (a, b) rubber-band rect while selecting
+        # grid, guides & snapping (non-printing: screen only, never in PNG/SVG)
+        self.show_grid = False
+        self.grid = 20
+        self.snap = True
+        self.guides_h = []       # horizontal guide y-positions
+        self.guides_v = []       # vertical guide x-positions
         self.undo, self.redo = [], []
         self.setMouseTracking(True); self.setCursor(Qt.CrossCursor); self._fit()
 
@@ -319,10 +391,10 @@ class Canvas(QWidget):
         self.redo.clear()
 
     def do_undo(self):
-        if self.undo: self.redo.append(copy.deepcopy(self.objs)); self.objs = self.undo.pop(); self.sel = None; self.update()
+        if self.undo: self.redo.append(copy.deepcopy(self.objs)); self.objs = self.undo.pop(); self.sel = None; self.sels = []; self.update()
 
     def do_redo(self):
-        if self.redo: self.undo.append(copy.deepcopy(self.objs)); self.objs = self.redo.pop(); self.sel = None; self.update()
+        if self.redo: self.undo.append(copy.deepcopy(self.objs)); self.objs = self.redo.pop(); self.sel = None; self.sels = []; self.update()
 
     def set_zoom(self, z): self.zoom = max(0.1, min(16, z)); self._fit()
 
@@ -372,6 +444,7 @@ class Canvas(QWidget):
         self.layers = [ly for ly in self.layers if ly['id'] != lid]
         if self.active_layer == lid: self.active_layer = self.layers[0]['id']
         if self.sel is not None and self.sel not in self.objs: self.sel = None
+        self.sels = [o for o in self.sels if o in self.objs]
         self.update()
 
     def rename_layer(self, lid, name):
@@ -407,13 +480,149 @@ class Canvas(QWidget):
         elif where == 'backward': self.objs.insert(max(0, i - 1), o)
         self.update()
 
+    # ---------------------------------------------------------------- selection
+    def _selection(self):
+        """The current selection as a list (sel first), de-duplicated."""
+        out = []
+        for o in ([self.sel] if self.sel is not None else []) + self.sels:
+            if o is not None and o in self.objs and o not in out:
+                out.append(o)
+        return out
+
+    def _group_members(self, o):
+        """All objects sharing o's group id (just o itself if ungrouped)."""
+        gid = o.get('gid') if o else None
+        if gid is None: return [o] if o is not None else []
+        return [x for x in self.objs if x.get('gid') == gid]
+
+    def set_selection(self, objs):
+        """Expand a click/rubber selection to whole groups, and set sel/sels."""
+        exp = []
+        for o in objs:
+            for m in self._group_members(o):
+                if m not in exp: exp.append(m)
+        self.sel = exp[0] if exp else None
+        self.sels = exp
+        self.win.sync_props()
+
+    # ---------------------------------------------------------------- grouping
+    def group_selection(self):
+        sel = self._selection()
+        if len(sel) < 2: return
+        self.snapshot()
+        gid = self._next_gid; self._next_gid += 1
+        for o in sel: o['gid'] = gid
+        self.set_selection(sel); self.update()
+
+    def ungroup_selection(self):
+        sel = self._selection()
+        if not sel: return
+        gids = {o.get('gid') for o in sel if o.get('gid') is not None}
+        if not gids: return
+        self.snapshot()
+        for o in self.objs:
+            if o.get('gid') in gids: o.pop('gid', None)
+        self.set_selection(sel); self.update()
+
+    # ---------------------------------------------------------------- align / distribute
+    def align_selection(self, how):
+        sel = self._selection()
+        if len(sel) < 2: return
+        self.snapshot()
+        rects = {id(o): obj_bounds(o) for o in sel}
+        xs0 = min(r.left() for r in rects.values()); xs1 = max(r.right() for r in rects.values())
+        ys0 = min(r.top() for r in rects.values()); ys1 = max(r.bottom() for r in rects.values())
+        for o in sel:
+            r = rects[id(o)]; dx = dy = 0.0
+            if how == 'left':    dx = xs0 - r.left()
+            elif how == 'right': dx = xs1 - r.right()
+            elif how == 'hcenter': dx = (xs0 + xs1) / 2 - (r.left() + r.right()) / 2
+            elif how == 'top':   dy = ys0 - r.top()
+            elif how == 'bottom': dy = ys1 - r.bottom()
+            elif how == 'vcenter': dy = (ys0 + ys1) / 2 - (r.top() + r.bottom()) / 2
+            if dx or dy: self._shift_obj(o, dx, dy)
+        self.update()
+
+    def distribute_selection(self, axis):
+        sel = self._selection()
+        if len(sel) < 3: return
+        self.snapshot()
+        key = (lambda o: obj_bounds(o).center().x()) if axis == 'h' else (lambda o: obj_bounds(o).center().y())
+        ordered = sorted(sel, key=key)
+        centres = [key(o) for o in ordered]
+        lo, hi = centres[0], centres[-1]
+        n = len(ordered)
+        for i, o in enumerate(ordered):
+            target = lo + (hi - lo) * i / (n - 1)
+            d = target - key(o)
+            if axis == 'h': self._shift_obj(o, d, 0)
+            else: self._shift_obj(o, 0, d)
+        self.update()
+
+    def _shift_obj(self, o, dx, dy):
+        """Translate a single object by (dx, dy) in canvas coords."""
+        if o['type'] in ('rect', 'ellipse', 'quick', 'text'):
+            o['x'] += dx; o['y'] += dy
+        else:
+            o['pts'] = [(x + dx, y + dy) for x, y in o['pts']]
+
+    # ---------------------------------------------------------------- grid & guides
+    def set_grid(self, on=None, spacing=None):
+        if on is not None: self.show_grid = bool(on)
+        if spacing is not None: self.grid = max(2, int(spacing))
+        self.update()
+
+    def add_guide(self, orient, pos):
+        (self.guides_h if orient == 'h' else self.guides_v).append(float(pos)); self.update()
+
+    def clear_guides(self):
+        self.guides_h = []; self.guides_v = []; self.update()
+
+    def _snap_targets(self, exclude):
+        """Candidate x and y snap lines: grid lines are handled numerically; here we
+        gather guides and the edges/centres of every *other* object."""
+        xs = list(self.guides_v); ys = list(self.guides_h)
+        ex = set(id(o) for o in exclude)
+        for o in self.objs:
+            if id(o) in ex: continue
+            r = obj_bounds(o)
+            xs += [r.left(), r.center().x(), r.right()]
+            ys += [r.top(), r.center().y(), r.bottom()]
+        return xs, ys
+
+    def _snap_delta(self, rect, exclude, tol=7):
+        """Given a moving object's bounding rect, return (dx, dy) that snaps its
+        edges/centre to the grid, guides or other objects' edges/centres."""
+        if not self.snap: return 0.0, 0.0
+        tol = tol / max(self.zoom, 0.01)
+        cand_x, cand_y = self._snap_targets(exclude)
+        mx = [rect.left(), rect.center().x(), rect.right()]
+        my = [rect.top(), rect.center().y(), rect.bottom()]
+        bx = by = None; bdx = bdy = tol
+        for m in mx:
+            if self.show_grid:
+                g = round(m / self.grid) * self.grid
+                if abs(g - m) < bdx: bdx = abs(g - m); bx = g - m
+            for c in cand_x:
+                if abs(c - m) < bdx: bdx = abs(c - m); bx = c - m
+        for m in my:
+            if self.show_grid:
+                g = round(m / self.grid) * self.grid
+                if abs(g - m) < bdy: bdy = abs(g - m); by = g - m
+            for c in cand_y:
+                if abs(c - m) < bdy: bdy = abs(c - m); by = c - m
+        return (bx or 0.0), (by or 0.0)
+
     def paintEvent(self, e):
         p = QPainter(self); p.setRenderHint(QPainter.Antialiasing)
         p.fillRect(self.rect(), QColor('#e9ebee'))
         p.fillRect(QRectF(0, 0, self.W * self.zoom, self.H * self.zoom), QColor('#ffffff'))
         p.scale(self.zoom, self.zoom)
+        if self.show_grid:
+            self._draw_grid(p)
+        sel_set = set(id(o) for o in self._selection())
         for o in self.ordered_objs():
-            paint_object(p, o, o is self.sel)
+            paint_object(p, o, id(o) in sel_set)
         if self.start and self.cur and self.tool in ('rect', 'ellipse', 'line', 'quick'):
             tmp = self._shape_from(self.start, self.cur)
             if tmp: paint_object(p, tmp)
@@ -421,7 +630,88 @@ class Canvas(QWidget):
             prev = {'type': 'poly', 'pts': self.poly_pts + ([self.cur] if self.cur else []),
                     'stroke': self.stroke.name(), 'sw': self.sw, 'fill': None, 'closed': False}
             paint_object(p, prev)
+        self._draw_guides(p)
+        if self.rubber:
+            self._draw_rubber(p)
+        if self.tool == 'select':
+            self._draw_handles(p)
         p.end()
+
+    def _draw_grid(self, p):
+        pen = QPen(QColor('#d6dde2'), 1); pen.setCosmetic(True); p.setPen(pen)
+        g = self.grid; x = 0
+        while x <= self.W:
+            p.drawLine(QPointF(x, 0), QPointF(x, self.H)); x += g
+        y = 0
+        while y <= self.H:
+            p.drawLine(QPointF(0, y), QPointF(self.W, y)); y += g
+
+    def _draw_guides(self, p):
+        pen = QPen(QColor('#2ab0e0'), 1, Qt.DashLine); pen.setCosmetic(True); p.setPen(pen)
+        for x in self.guides_v: p.drawLine(QPointF(x, 0), QPointF(x, self.H))
+        for y in self.guides_h: p.drawLine(QPointF(0, y), QPointF(self.W, y))
+
+    def _draw_rubber(self, p):
+        a, b = self.rubber
+        r = QRectF(QPointF(*a), QPointF(*b)).normalized()
+        pen = QPen(QColor('#2a7df0'), 1, Qt.DashLine); pen.setCosmetic(True)
+        p.setPen(pen); p.setBrush(QColor(42, 125, 240, 30)); p.drawRect(r)
+
+    # ---------------------------------------------------------------- transform handles
+    HANDLE_PX = 7
+
+    def _handle_points(self):
+        """Screen-space (unscaled) centre points of the 8 resize handles + rotate handle,
+        for the single selected object. Returns {name: QPointF} in canvas coords (the
+        rotated frame), or {} when zero/one object isn't singly selected."""
+        sel = self._selection()
+        if len(sel) != 1: return {}
+        o = sel[0]; r = obj_rect(o)
+        cx, cy = r.center().x(), r.center().y()
+        pts = {'nw': (r.left(), r.top()), 'n': (cx, r.top()), 'ne': (r.right(), r.top()),
+               'e': (r.right(), cy), 'se': (r.right(), r.bottom()), 's': (cx, r.bottom()),
+               'sw': (r.left(), r.bottom()), 'w': (r.left(), cy),
+               'rot': (cx, r.top() - 26 / max(self.zoom, 0.01))}
+        a = obj_rot(o)
+        if a:
+            rad = math.radians(a); cosa, sina = math.cos(rad), math.sin(rad)
+            out = {}
+            for k, (px, py) in pts.items():
+                dx, dy = px - cx, py - cy
+                out[k] = QPointF(cx + dx * cosa - dy * sina, cy + dx * sina + dy * cosa)
+            return out
+        return {k: QPointF(x, y) for k, (x, y) in pts.items()}
+
+    def _draw_handles(self, p):
+        hp = self._handle_points()
+        if not hp: return
+        o = self._selection()[0]; r = obj_rect(o)
+        p.save()
+        a = obj_rot(o)
+        if a:
+            cx, cy = r.center().x(), r.center().y()
+            p.translate(cx, cy); p.rotate(a); p.translate(-cx, -cy)
+        box = QPen(QColor('#2a7df0'), 1, Qt.SolidLine); box.setCosmetic(True)
+        p.setPen(box); p.setBrush(Qt.NoBrush); p.drawRect(r)
+        p.restore()
+        hs = self.HANDLE_PX / max(self.zoom, 0.01)
+        pen = QPen(QColor('#1f6fd0'), 1); pen.setCosmetic(True)
+        for k, c in hp.items():
+            p.setPen(pen)
+            if k == 'rot':
+                p.setBrush(QColor('#2ab0e0'))
+                p.drawEllipse(c, hs * .8, hs * .8)
+            else:
+                p.setBrush(QColor('#ffffff'))
+                p.drawRect(QRectF(c.x() - hs / 2, c.y() - hs / 2, hs, hs))
+
+    def _hit_handle(self, pt):
+        hp = self._handle_points()
+        tol = (self.HANDLE_PX + 4) / max(self.zoom, 0.01)
+        for k, c in hp.items():
+            if abs(c.x() - pt[0]) <= tol and abs(c.y() - pt[1]) <= tol:
+                return k
+        return None
 
     def pos(self, e):
         return (e.position().x() / self.zoom, e.position().y() / self.zoom)
@@ -441,11 +731,29 @@ class Canvas(QWidget):
         if e.button() != Qt.LeftButton: return
         pt = self.pos(e)
         if self.tool == 'select':
-            hit = next((o for o in reversed(self.ordered_objs()) if obj_rect(o).adjusted(-3, -3, 3, 3).contains(QPointF(*pt))), None)
-            self.sel = hit
-            if hit:
-                r = obj_rect(hit); self.drag_off = (pt[0] - r.x(), pt[1] - r.y())
-            self.update(); self.win.sync_props(); return
+            # a transform handle on the single selected object takes priority
+            h = self._hit_handle(pt)
+            if h is not None:
+                self.handle = h; self.drag_start = pt
+                self.drag_orig = copy.deepcopy(self._selection())
+                self.snapshot(); return
+            hit = next((o for o in reversed(self.ordered_objs()) if obj_hit(o, pt)), None)
+            shift = bool(e.modifiers() & Qt.ShiftModifier)
+            if hit is None:
+                if not shift: self.set_selection([])
+                self.rubber = (pt, pt); self.drag_start = pt; self.update(); return
+            cur = self._selection()
+            if shift:
+                members = self._group_members(hit)
+                if hit in cur:
+                    cur = [o for o in cur if o not in members]
+                else:
+                    cur = cur + [m for m in members if m not in cur]
+                self.set_selection(cur)
+            elif hit not in cur:
+                self.set_selection([hit])
+            self.drag_off = (pt[0], pt[1]); self.drag_orig = None
+            self.update(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick'):
             self.start = pt; self.cur = pt; return
         if self.tool == 'text':
@@ -461,9 +769,11 @@ class Canvas(QWidget):
 
     def mouseMoveEvent(self, e):
         pt = self.pos(e); self.win.set_pos(pt)
+        if self.tool == 'select' and self.handle is not None and (e.buttons() & Qt.LeftButton):
+            self._drag_handle(pt, bool(e.modifiers() & Qt.ShiftModifier)); self.update(); return
+        if self.tool == 'select' and self.rubber is not None and (e.buttons() & Qt.LeftButton):
+            self.rubber = (self.drag_start, pt); self.update(); return
         if self.tool == 'select' and self.sel is not None and (e.buttons() & Qt.LeftButton) and self.drag_off:
-            if not self.undo or self.undo[-1] is not self.objs:
-                pass
             self._move_sel(pt); self.update(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick') and self.start and (e.buttons() & Qt.LeftButton):
             self.cur = pt; self.update()
@@ -475,20 +785,92 @@ class Canvas(QWidget):
     def mousePressSnapMove(self): pass
 
     def _move_sel(self, pt):
-        o = self.sel; r = obj_rect(o); nx = pt[0] - self.drag_off[0]; ny = pt[1] - self.drag_off[1]
-        dx, dy = nx - r.x(), ny - r.y()
-        if o['type'] in ('rect', 'ellipse', 'quick', 'text'):
-            o['x'] += dx; o['y'] += dy
+        sel = self._selection()
+        if not sel: return
+        # record the gesture start once, so a drag is a single undo step
+        if self.drag_orig is None:
+            self.snapshot(); self.drag_orig = True
+        dx = pt[0] - self.drag_off[0]; dy = pt[1] - self.drag_off[1]
+        self.drag_off = (pt[0], pt[1])
+        for o in sel: self._shift_obj(o, dx, dy)
+        # snap the whole selection as one, by its combined bounding box
+        rects = [obj_bounds(o) for o in sel]
+        combo = rects[0]
+        for r in rects[1:]: combo = combo.united(r)
+        sdx, sdy = self._snap_delta(combo, sel)
+        if sdx or sdy:
+            for o in sel: self._shift_obj(o, sdx, sdy)
+
+    def _drag_handle(self, pt, shift):
+        """Resize (corner/edge) or rotate the single selected object from its handle."""
+        sel = self._selection()
+        if len(sel) != 1 or not self.drag_orig: return
+        o = sel[0]; orig = self.drag_orig[0]
+        if self.handle == 'rot':
+            cx, cy = obj_center(orig)
+            ang = math.degrees(math.atan2(pt[1] - cy, pt[0] - cx)) + 90
+            if shift: ang = round(ang / 15) * 15
+            o['rot'] = round(ang, 2)
+            return
+        # resize: work in the object's *local* (unrotated) frame
+        r0 = obj_rect(orig); a = obj_rot(orig)
+        cx, cy = r0.center().x(), r0.center().y()
+        lx, ly = pt
+        if a:
+            rad = math.radians(-a); cosa, sina = math.cos(rad), math.sin(rad)
+            dx, dy = lx - cx, ly - cy
+            lx, ly = cx + dx * cosa - dy * sina, cy + dx * sina + dy * cosa
+        L, T, R, B = r0.left(), r0.top(), r0.right(), r0.bottom()
+        hk = self.handle
+        if 'w' in hk: L = lx
+        if 'e' in hk: R = lx
+        if 'n' in hk: T = ly
+        if 's' in hk: B = ly
+        nw = max(1.0, abs(R - L)); nh = max(1.0, abs(T - B))
+        if shift and hk in ('nw', 'ne', 'se', 'sw'):   # proportional from the fixed corner
+            sx = nw / (r0.width() or 1); sy = nh / (r0.height() or 1); s = max(sx, sy)
+            nw = (r0.width() or 1) * s; nh = (r0.height() or 1) * s
+            if 'w' in hk: L = R - nw
+            else: R = L + nw
+            if 'n' in hk: T = B - nh
+            else: B = T + nh
+        nx, ny = min(L, R), min(T, B)
+        self._apply_resize(o, orig, nx, ny, nw, nh)
+
+    def _apply_resize(self, o, orig, nx, ny, nw, nh):
+        """Scale/reposition an object to the new local box (nx, ny, nw, nh)."""
+        t = o['type']
+        if t in ('rect', 'ellipse', 'quick'):
+            o['x'], o['y'], o['w'], o['h'] = nx, ny, nw, nh
+        elif t == 'text':
+            # scale the pixel size by the height change; keep the top-left anchor
+            r0 = obj_rect(orig); factor = nh / (r0.height() or 1)
+            o['x'], o['y'] = nx, ny
+            o['size'] = max(1, int(round(orig.get('size', 48) * factor)))
         else:
-            o['pts'] = [(x + dx, y + dy) for x, y in o['pts']]
+            r0 = obj_rect(orig)
+            ox, oy = r0.x(), r0.y(); ow, oh = r0.width() or 1, r0.height() or 1
+            sx, sy = nw / ow, nh / oh
+            o['pts'] = [(nx + (x - ox) * sx, ny + (y - oy) * sy) for x, y in orig['pts']]
 
     def mouseReleaseEvent(self, e):
         if self.tool in ('rect', 'ellipse', 'line', 'quick') and self.start:
             if self.cur and (abs(self.cur[0] - self.start[0]) > 2 or abs(self.cur[1] - self.start[1]) > 2):
-                self.snapshot(); self.objs.append(self._shape_from(self.start, self.cur)); self.sel = self.objs[-1]
+                self.snapshot(); self.objs.append(self._shape_from(self.start, self.cur))
+                self.set_selection([self.objs[-1]])
             self.start = self.cur = None; self.update(); self.win.sync_props()
+        elif self.tool == 'select' and self.handle is not None:
+            self.handle = None; self.drag_start = self.drag_orig = None; self.update(); self.win.sync_props()
+        elif self.tool == 'select' and self.rubber is not None:
+            a, b = self.rubber; box = QRectF(QPointF(*a), QPointF(*b)).normalized()
+            self.rubber = None
+            if box.width() > 3 or box.height() > 3:
+                picked = [o for o in self.ordered_objs() if box.contains(obj_bounds(o))
+                          or box.intersects(obj_bounds(o))]
+                self.set_selection(picked)
+            self.drag_start = None; self.update()
         elif self.tool == 'select' and self.sel is not None and self.drag_off:
-            self.drag_off = None
+            self.drag_off = None; self.drag_orig = None
 
     def mouseDoubleClickEvent(self, e):
         if self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
@@ -497,19 +879,24 @@ class Canvas(QWidget):
             self.sel = self.objs[-1]; self.poly_pts = None; self.cur = None; self.update()
 
     def keyPressEvent(self, e):
-        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self.sel is not None:
-            self.snapshot(); self.objs.remove(self.sel); self.sel = None; self.update()
+        if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selection():
+            self.snapshot()
+            for o in self._selection():
+                if o in self.objs: self.objs.remove(o)
+            self.sel = None; self.sels = []; self.update(); self.win.sync_props()
         elif e.key() in (Qt.Key_Return, Qt.Key_Enter) and self.tool == 'pen' and self.poly_pts and len(self.poly_pts) >= 2:
             self.objs.append(dict(type='poly', pts=self.poly_pts[:], stroke=self.stroke.name(), sw=self.sw,
                                   fill=None, closed=False, layer=self.active_layer))
             self.poly_pts = None; self.cur = None; self.update()
 
     def apply_to_sel(self, fill=None, stroke=None, sw=None):
-        if self.sel is None: return
+        sel = self._selection()
+        if not sel: return
         self.snapshot()
-        if fill is not None: self.sel['fill'] = fill; self.sel.pop('grad', None)  # a solid fill replaces any gradient
-        if stroke is not None: self.sel['stroke'] = stroke
-        if sw is not None: self.sel['sw'] = sw
+        for o in sel:
+            if fill is not None: o['fill'] = fill; o.pop('grad', None)  # a solid fill replaces any gradient
+            if stroke is not None: o['stroke'] = stroke
+            if sw is not None: o['sw'] = sw
         self.update()
 
     def render_to(self, painter, skip_text=False):
@@ -556,9 +943,11 @@ class Canvas(QWidget):
             return None
         try:
             data = json.loads(base64.b64decode(tag[len('justadraw1:'):]).decode())
-            self.snapshot(); self.objs = data.get('objs', []); self.sel = None
+            self.snapshot(); self.objs = data.get('objs', []); self.sel = None; self.sels = []
             self.W = int(data.get('W', self.W)); self.H = int(data.get('H', self.H))
             self.restore_layers(data.get('layers')); self._fit()
+            gids = [o['gid'] for o in self.objs if isinstance(o.get('gid'), int)]
+            self._next_gid = (max(gids) + 1) if gids else 1
             return True
         except Exception:
             return False
@@ -860,7 +1249,27 @@ class Main(QMainWindow):
         a.addAction(self.act('Bring For&ward', lambda: self.canvas.z_order('forward'), QKeySequence('Ctrl+]')))
         a.addAction(self.act('Send Back&ward', lambda: self.canvas.z_order('backward'), QKeySequence('Ctrl+[')))
         a.addSeparator()
+        a.addAction(self.act('&Group', self.canvas.group_selection, QKeySequence('Ctrl+G')))
+        a.addAction(self.act('&Ungroup', self.canvas.ungroup_selection, QKeySequence('Ctrl+Shift+G')))
+        al = a.addMenu('A&lign')
+        for lbl, how in (('Align Left', 'left'), ('Align Centre', 'hcenter'), ('Align Right', 'right'),
+                         ('Align Top', 'top'), ('Align Middle', 'vcenter'), ('Align Bottom', 'bottom')):
+            al.addAction(self.act(lbl, lambda _=0, h=how: self.canvas.align_selection(h)))
+        ds = a.addMenu('&Distribute')
+        ds.addAction(self.act('Distribute Horizontally', lambda: self.canvas.distribute_selection('h')))
+        ds.addAction(self.act('Distribute Vertically', lambda: self.canvas.distribute_selection('v')))
+        a.addSeparator()
         a.addAction(self.act('Show &Layers Panel', lambda: self.layers_dock.setVisible(True)))
+        v = m.addMenu('&View')
+        self.grid_act = self.act('Show &Grid', self.toggle_grid, QKeySequence('Ctrl+\''))
+        self.grid_act.setCheckable(True); v.addAction(self.grid_act)
+        v.addAction(self.act('Grid &Spacing…', self.grid_spacing_dialog))
+        self.snap_act = self.act('&Snap to Grid && Guides', self.toggle_snap)
+        self.snap_act.setCheckable(True); self.snap_act.setChecked(self.canvas.snap); v.addAction(self.snap_act)
+        v.addSeparator()
+        v.addAction(self.act('Add &Horizontal Guide…', lambda: self.add_guide_dialog('h')))
+        v.addAction(self.act('Add &Vertical Guide…', lambda: self.add_guide_dialog('v')))
+        v.addAction(self.act('&Clear Guides', self.canvas.clear_guides))
         h = m.addMenu('&Help')
         h.addAction(self.act('&User Guide', self.open_manual)); h.addAction(self.act('&Quick Start Guide', self.open_quickstart))
         h.addSeparator(); h.addAction(self.act('&About', self.about))
@@ -890,6 +1299,26 @@ class Main(QMainWindow):
 
     def set_pos(self, p): self.pos_lbl.setText(f'{int(p[0])}, {int(p[1])}   ')
     def set_sw(self, v): self.canvas.sw = v; self.canvas.apply_to_sel(sw=v)
+
+    # ---------------------------------------------------------------- view: grid/snap/guides
+    def toggle_grid(self):
+        self.canvas.set_grid(on=self.grid_act.isChecked())
+
+    def toggle_snap(self):
+        self.canvas.snap = self.snap_act.isChecked()
+
+    def grid_spacing_dialog(self):
+        n, ok = QInputDialog.getInt(self, 'Grid spacing', 'Grid spacing (pixels):',
+                                    self.canvas.grid, 2, 500, 1)
+        if ok:
+            self.canvas.set_grid(spacing=n)
+            self.grid_act.setChecked(True); self.canvas.set_grid(on=True)
+
+    def add_guide_dialog(self, orient):
+        W = self.canvas.W if orient == 'v' else self.canvas.H
+        label = 'X position (pixels):' if orient == 'v' else 'Y position (pixels):'
+        n, ok = QInputDialog.getInt(self, 'Add guide', label, W // 2, 0, max(W, 10000), 1)
+        if ok: self.canvas.add_guide(orient, n)
 
     def _paint_btns(self):
         for btn, col in ((self.fill_btn, self.canvas.fill), (self.stroke_btn, self.canvas.stroke)):
@@ -923,7 +1352,8 @@ class Main(QMainWindow):
         ok_b.clicked.connect(dlg.accept); cancel.clicked.connect(dlg.reject); row.addWidget(cancel); row.addWidget(ok_b); v.addLayout(row)
         if dlg.exec():
             _, w, h = PRE[cb.currentIndex()]
-            self.canvas.snapshot(); self.canvas.objs = []; self.canvas.sel = None; self.canvas.W, self.canvas.H = w, h
+            self.canvas.snapshot(); self.canvas.objs = []; self.canvas.sel = None; self.canvas.sels = []
+            self.canvas.W, self.canvas.H = w, h
             self.canvas.reset_layers(); self.canvas._fit(); self.refresh_layers(); self.path = None
 
     def save_svg(self):
