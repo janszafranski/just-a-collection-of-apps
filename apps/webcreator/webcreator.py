@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.23-00"
+VERSION = "1.24-00"
 
 
 # ===================================================================== font grouping
@@ -8302,7 +8302,6 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _=False, fk=fk: self._set_asset_filter(fk))
             self.asset_cat_group.addButton(b, i); crow.addWidget(b)
         crow.addStretch(); al.addLayout(crow)
-        from PySide6.QtWidgets import QComboBox
         self.lib_combo = QComboBox(); self.lib_combo.setVisible(False)
         self.lib_combo.currentIndexChanged.connect(lambda _=0: self.refresh_assets())
         al.addWidget(self.lib_combo)
