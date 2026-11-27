@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.16-00"
+VERSION = "1.17-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -2345,7 +2345,9 @@ class Canvas(QWidget):
             return
         # editing a mask changes layer.mask (not .img), so snapshot the whole stack
         self.snapshot_full() if (self.edit_mask and self.has_mask()) else self.snapshot()
-        if self.tool in ('brush', 'eraser', 'dodge', 'burn'):
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'oil', 'smudge'):
+            if self.tool in ('oil', 'smudge'):
+                self._wet_begin(pos)
             self.last = pos; self._stroke(pos, pos)
         elif self.tool == 'clone':
             if self.clone_src is None:
@@ -2368,7 +2370,7 @@ class Canvas(QWidget):
                 self.last = pos
             return
         if not (e.buttons() & Qt.LeftButton): return
-        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone') and self.last is not None:
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone', 'oil', 'smudge') and self.last is not None:
             self._stroke(self.last, pos); self.last = pos; self.update()
         elif self.tool in ('line', 'rect', 'ellipse', 'gradient') and self.start is not None:
             self.preview = (self.tool, self.start, pos); self.update()
@@ -2470,6 +2472,8 @@ class Canvas(QWidget):
     def _stroke(self, a, b):
         if self.tool == 'clone':
             self._clone_stroke(a, b); return
+        if self.tool in ('oil', 'smudge'):
+            self._wet_stroke(a, b, self.tool); return
         target = self.paint_target()
         if target is not self.img:          # painting into a greyscale mask
             p = QPainter(target); p.setRenderHint(QPainter.Antialiasing)
@@ -2494,6 +2498,70 @@ class Canvas(QWidget):
         else:
             p.setPen(self._pen())
         p.drawLine(a, b); p.end()
+
+    # ---- natural-media wet brushes (Oil / Smudge), in the spirit of ArtRage ----
+    # The brush carries colour and blends with the paint already on the canvas:
+    # the Oil brush mixes your colour with what it picks up (wet-on-wet), and the
+    # Smudge/palette-knife just drags existing colour. Done in NumPy on the layer.
+    def _wet_begin(self, pos):
+        self._wet = {'buf': self._img_to_rgba_f(self.img), 'carry': None}
+
+    def _img_to_rgba_f(self, img):
+        import numpy as np
+        im = img.convertToFormat(QImage.Format_RGBA8888)
+        w, h = im.width(), im.height()
+        return np.frombuffer(im.constBits().tobytes(), np.uint8).reshape(h, w, 4).astype(np.float32)
+
+    def _blit_rgba_f(self, buf):
+        import numpy as np
+        h, w = buf.shape[:2]
+        data = np.clip(buf, 0, 255).astype(np.uint8).tobytes()
+        qb = QImage(data, w, h, QImage.Format_RGBA8888).convertToFormat(QImage.Format_ARGB32)
+        p = QPainter(self.img); p.setCompositionMode(QPainter.CompositionMode_Source)
+        p.drawImage(0, 0, qb); p.end()
+
+    def _wet_stroke(self, a, b, mode):
+        import numpy as np, math
+        w = getattr(self, '_wet', None)
+        if not w:
+            self._wet_begin(a); w = self._wet
+        buf = w['buf']; H, W = buf.shape[:2]
+        r = max(1.0, self.size / 2.0)
+        c = QColor(self.color); bcol = np.array([c.red(), c.green(), c.blue()], np.float32)
+        dist = math.hypot(b.x() - a.x(), b.y() - a.y())
+        steps = max(1, int(dist / max(1.0, r * 0.25)))
+        for i in range(steps + 1):
+            t = i / steps if steps else 0.0
+            cx = a.x() + (b.x() - a.x()) * t
+            cy = a.y() + (b.y() - a.y()) * t
+            x0, y0, x1, y1 = int(cx - r), int(cy - r), int(cx + r) + 1, int(cy + r) + 1
+            gx0, gy0, gx1, gy1 = max(0, x0), max(0, y0), min(W, x1), min(H, y1)
+            if gx1 <= gx0 or gy1 <= gy0:
+                continue
+            patch = buf[gy0:gy1, gx0:gx1]
+            yy, xx = np.ogrid[gy0:gy1, gx0:gx1]
+            d = np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+            m = np.clip(1.0 - d / r, 0.0, 1.0) ** 1.4
+            mm = m[..., None]
+            rgb = patch[..., :3]; alpha = patch[..., 3:4]
+            if w['carry'] is None:
+                aw = alpha[..., 0] * m; tot = float(aw.sum())
+                w['carry'] = ((rgb * aw[..., None]).sum(axis=(0, 1)) / tot) if tot > 1 else bcol.copy()
+            carry = w['carry']
+            if mode == 'smudge':
+                s = 0.55
+                patch[..., :3] = rgb * (1 - mm * s) + carry * (mm * s)
+                patch[..., 3:4] = np.maximum(alpha, mm * 255.0)
+                local = (patch[..., :3] * mm).sum(axis=(0, 1)) / (float(mm.sum()) + 1e-6)
+                w['carry'] = carry * 0.7 + local * 0.3
+            else:  # oil — wet paint: your colour mixed with what the brush picks up
+                load, s = 0.6, 0.5
+                paint = bcol * load + carry * (1 - load)
+                patch[..., :3] = rgb * (1 - mm * s) + paint * (mm * s)
+                patch[..., 3:4] = np.maximum(alpha, mm * 255.0)
+                local = (patch[..., :3] * mm).sum(axis=(0, 1)) / (float(mm.sum()) + 1e-6)
+                w['carry'] = carry * 0.6 + local * 0.4
+        self._blit_rgba_f(buf)
 
     def _clone_stroke(self, a, b):
         if self.clone_off is None or self.clone_base is None: return
@@ -4450,6 +4518,8 @@ class Main(QMainWindow):
              ('text', 'Text', 'A'), ('clone', 'Clone — Ctrl-click to set source', '❏'),
              ('redeye', 'Red-eye removal', '◉'), ('dodge', 'Dodge — lighten', '☀'),
              ('burn', 'Burn — darken', '◐'),
+             ('oil', 'Oil brush — wet paint that blends (natural media)', '🎨'),
+             ('smudge', 'Smudge / palette knife — drag and mix paint', '👆'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
              ('wand', 'Magic wand — click to select by colour', '✦'),
              ('cutout', 'Cutout — click a background to erase it to transparency', '✂'),
