@@ -47,6 +47,8 @@ APPS = [
          desc='Edit and paint images — brush, shapes, fill and text — then save a PNG or JPG.'),
     dict(key='draw', dir='apps/draw', name='just a... DRAWmaster',
          desc='Draw with vectors — shapes, lines and paths — and save a scalable SVG.'),
+    dict(key='movie', dir='apps/movie', name='just a... MOVIEeditor',
+         desc='Edit home video on a timeline — trim, transitions, titles — and export an MP4.'),
     # add more apps here
 ]
 
@@ -59,12 +61,13 @@ RECENTS_FILE = os.path.join(HOME, '.local/share/justapps/recents.json')
 
 # which file extensions belong to which app, and the reverse
 APP_EXTS = {'webcreator': ['.webc'], 'pagecreator': ['.pagc'],
-            'draw': ['.svg'], 'paint': ['.png', '.jpg', '.jpeg']}
+            'draw': ['.svg'], 'paint': ['.png', '.jpg', '.jpeg'],
+            'movie': ['.movp', '.mp4']}
 EXT_APP = {e: k for k, exts in APP_EXTS.items() for e in exts}
 APP_LABELS = {a['key']: a['name'] for a in APPS}
 # badge glyph + colour for non-image files (image files show a real thumbnail)
 APP_BADGE = {'webcreator': ('W', '#1f6f63'), 'pagecreator': ('P', '#9e2f2f'),
-             'draw': ('D', '#3a6ea5'), 'paint': ('A', '#b5651d')}
+             'draw': ('D', '#3a6ea5'), 'paint': ('A', '#b5651d'), 'movie': ('M', '#e67e22')}
 IMG_EXTS = ('.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp')
 
 

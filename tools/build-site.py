@@ -48,12 +48,15 @@ DESC = {
         "adjustments and filters, in the spirit of PhotoPlus. Saves PNG and JPEG.",
     "drawmaster.html": "A vector drawing editor for Linux — shapes, freehand, a QuickShapes gallery "
         "and effects — saved as editable, scalable SVG.",
+    "movieeditor.html": "A home-video editor for Linux — a multi-track timeline with trimming, "
+        "transitions, titles, slow-motion, picture-in-picture and chroma key, in the spirit of "
+        "MoviePlus. Renders an MP4 with ffmpeg.",
 }
 # schema.org applicationCategory per slug.
 CATEGORY = {
     "creatorsuite.html": "UtilitiesApplication", "webcreator.html": "DesignApplication",
     "pagedesigner.html": "DesignApplication", "paintcanvas.html": "DesignApplication",
-    "drawmaster.html": "DesignApplication",
+    "drawmaster.html": "DesignApplication", "movieeditor.html": "MultimediaApplication",
 }
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -341,6 +344,23 @@ APPS_META = [
                   ("shot-quickshapes.png", "The QuickShapes gallery: twenty ready-made shapes to drag "
                    "straight onto the page.")],
          deps="sudo pacman -S --needed pyside6"),
+    dict(key="movie", slug="movieeditor.html", title="MOVIEeditor",
+         banner="banner-movie.png", tag="Home-video editor", ext=".movp",
+         shot="shot-movie.png",
+         blurb="Edit home video on a multi-track timeline — trim and split clips, cross-fade between "
+               "shots, add titles, slow-motion, picture-in-picture and chroma key — then render an MP4.",
+         feats=["Multi-track timeline: video, overlay and audio tracks; drag to move, trim and split",
+                "Transitions: dissolve, fades, wipes, slides, clock wipe and more",
+                "Titles & captions, and solid colour clips for intros and backgrounds",
+                "Pan & zoom (Ken Burns) on photos; rotate, slow-motion and fast-forward",
+                "Effects & colour: black & white, sepia, vignette, blur, brightness/contrast/saturation",
+                "Picture-in-picture, chroma key (green screen), per-clip volume, pan and fades",
+                "Exports MP4 at 1080p/720p/480p — rendered with ffmpeg"],
+         based="MoviePlus",
+         gallery=[("shot-movie.png", "The timeline: video, overlay and audio tracks with clips, "
+                   "transition and Ken-Burns markers, fades and timeline markers, a live preview above "
+                   "and the Media bin on the left.")],
+         deps="sudo pacman -S --needed pyside6 ffmpeg"),
 ]
 
 HUB_META = dict(key="collectionofapps", slug="creatorsuite.html", title="CREATORsuite",
@@ -413,7 +433,8 @@ apps/collectionofapps/install.sh   # the launcher / hub
 apps/webcreator/install.sh
 apps/pagecreator/install.sh
 apps/paint/install.sh
-apps/draw/install.sh</code></pre>
+apps/draw/install.sh
+apps/movie/install.sh</code></pre>
 <p class="mute small">Each app checks the repository for a newer version of itself (and the
 launcher shows an Update button), and each has an <code>uninstall.sh</code> beside its installer.</p>
 """
@@ -720,7 +741,7 @@ def main(argv=None):
     if favicon_src.exists():
         shutil.copy2(favicon_src, DOCS / "assets" / "icon.png")
     # each app's banner becomes its card header / page hero
-    for key in ("collectionofapps", "webcreator", "pagecreator", "paint", "draw"):
+    for key in ("collectionofapps", "webcreator", "pagecreator", "paint", "draw", "movie"):
         src = ROOT / "apps" / key / "banner.png"
         if src.exists():
             shutil.copy2(src, DOCS / "assets" / f"banner-{key}.png")

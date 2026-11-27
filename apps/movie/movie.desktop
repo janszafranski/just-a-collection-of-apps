@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=just a... MOVIEeditor
+Comment=A home-video editor — timeline, transitions, titles, chroma key, MP4 export
+Exec=movie %f
+Icon=movie
+Terminal=false
+Categories=AudioVideo;Video;AudioVideoEditing;
+MimeType=application/x-movieeditor-project;

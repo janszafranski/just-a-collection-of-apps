@@ -24,6 +24,7 @@ APPS = {
     "paint":      ("PAINTcanvas", "#2a7d6b"),
     "draw":       ("DRAWmaster", "#2a7d6b"),
     "pagecreator": ("PAGEdesigner", "#2a7d6b"),
+    "movie":      ("MOVIEeditor", "#2a7d6b"),
 }
 
 COVER_CSS = """
