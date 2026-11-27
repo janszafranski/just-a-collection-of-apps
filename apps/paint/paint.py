@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.13-00"
+VERSION = "1.14-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -528,6 +528,448 @@ def smart_enlarge(rgb, new_w, new_h, sharpen=0.5, denoise=0.0, force_fallback=Fa
         out = upf + amount * (upf - blur)
         up = _np.clip(out, 0, 255).astype(_np.uint8)
     return up
+
+
+# ---------------------------------------------------------------- Photo FX
+# A clean-room reimagining of the "Twisting Pixels" photo-plugin idea — one-click
+# photographic FILM LOOKS (in the spirit of VirtualPhotographer) and photo-to-art
+# ART STYLES (in the spirit of PhotoArtMaster / ArtStudio) — written from scratch
+# with modern techniques. The film looks are pure NumPy/PIL (tone curves, channel
+# mixing, split-toning, grain, vignette). The art styles prefer OpenCV's
+# non-photorealistic-rendering filters where present (cv2.stylization /
+# pencilSketch / detailEnhance / edgePreservingFilter, and an oil effect) and fall
+# back to equivalent NumPy/PIL recipes everywhere, following the same HAS_CV2 guard
+# used by Smart Mask / Smooth Skin / Smart Enlarge. Both entry points are pure
+# functions (no Qt): they take and return HxWx3 uint8 RGB arrays so they can be
+# unit-tested headless.
+
+def _apply_lut_rgb(rgb, lut):
+    """Map an HxWx3 uint8 array through a 256-entry LUT (list/array, same LUT on
+    all channels). Vectorised, returns uint8."""
+    lut = _np.clip(_np.asarray(lut), 0, 255).astype(_np.uint8)
+    return lut[rgb]
+
+
+def _tone_curve_lut(points):
+    """256-entry uint8 LUT interpolated through (x, y) control points (each 0..255)."""
+    pts = sorted(points)
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    return _np.clip(_np.interp(_np.arange(256), xs, ys), 0, 255).astype(_np.uint8)
+
+
+def _luma(rgb):
+    """ITU-R BT.601 luma of an HxWx3 float array, returned HxW float."""
+    r, g, b = rgb[..., 0], rgb[..., 1], rgb[..., 2]
+    return 0.299 * r + 0.587 * g + 0.114 * b
+
+
+def _channel_mix_bw(rgb, wr, wg, wb):
+    """Weighted B&W channel mix (the digital equivalent of a colour filter on
+    panchromatic film). Weights are normalised; returns an HxWx3 grey float array."""
+    s = wr + wg + wb
+    if abs(s) < 1e-6:
+        wr, wg, wb, s = 0.299, 0.587, 0.114, 1.0
+    y = (rgb[..., 0] * wr + rgb[..., 1] * wg + rgb[..., 2] * wb) / s
+    y = _np.clip(y, 0, 255)
+    return _np.dstack([y, y, y])
+
+
+def _split_tone(rgb, shadow_rgb, hi_rgb, balance=0.5, strength=0.5):
+    """Split-tone: tint the shadows towards `shadow_rgb` and the highlights towards
+    `hi_rgb` (each an (r,g,b) 0..255 triple) by `strength`. `balance` (0..1) sets the
+    luma pivot between the two tints. Operates on a float HxWx3 array, returns float."""
+    y = _luma(rgb) / 255.0
+    # a smooth highlight weight pivoting at `balance`
+    hi_w = _np.clip((y - (balance - 0.5)) , 0.0, 1.0)
+    hi_w = hi_w * hi_w * (3 - 2 * hi_w)          # smoothstep
+    sh_w = 1.0 - hi_w
+    sh = _np.asarray(shadow_rgb, _np.float32)
+    hi = _np.asarray(hi_rgb, _np.float32)
+    tint = sh_w[..., None] * sh + hi_w[..., None] * hi
+    # blend towards the tint in a soft-light-ish way, scaled by strength
+    out = rgb * (1.0 - strength) + (rgb * 0.5 + tint * 0.5) * strength
+    return out
+
+
+def _saturate(rgb, factor):
+    """Scale saturation of a float HxWx3 array about its luma by `factor`."""
+    y = _luma(rgb)[..., None]
+    return y + (rgb - y) * factor
+
+
+def _vignette(rgb, amount, feather=0.55):
+    """Darken the corners of a float HxWx3 array radially. `amount` 0..1 = how dark
+    the extreme corner gets; `feather` sets how far in the darkening reaches."""
+    if amount <= 0:
+        return rgb
+    h, w = rgb.shape[:2]
+    yy, xx = _np.ogrid[0:h, 0:w]
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    d = _np.sqrt(((xx - cx) / max(1.0, cx)) ** 2 + ((yy - cy) / max(1.0, cy)) ** 2)
+    d = d / _np.sqrt(2.0)                         # 0 centre .. 1 corner
+    inner = max(0.0, min(0.99, 1.0 - feather))
+    mask = _np.clip((d - inner) / max(1e-3, 1.0 - inner), 0.0, 1.0)
+    mask = mask * mask * (3 - 2 * mask)           # smoothstep falloff
+    factor = 1.0 - amount * mask
+    return rgb * factor[..., None]
+
+
+def _add_grain(rgb, strength, seed=12345):
+    """Add monochromatic film grain (correlated across channels) to a float HxWx3
+    array. `strength` 0..1 scales the noise sigma (~0..26 levels)."""
+    if strength <= 0:
+        return rgb
+    rng = _np.random.default_rng(seed)
+    h, w = rgb.shape[:2]
+    sigma = strength * 26.0
+    noise = rng.normal(0.0, sigma, (h, w, 1)).astype(_np.float32)
+    return rgb + noise
+
+
+# Film-look presets, defined as DATA so they're easy to read and extend. Each is a
+# combination of: an optional B&W channel mix (`bw`: (wr,wg,wb)), a per-channel tone
+# curve set (`curves`: dict of 'rgb'/'r'/'g'/'b' -> control points), a saturation
+# multiplier (`sat`), a split-tone (`split`: (shadow_rgb, hi_rgb, balance, strength)),
+# and default grain / vignette amounts (0..1) that the slider scales.
+FILM_LOOKS = {
+    'bw_classic': {
+        'label': 'B&W Classic',
+        'desc': 'Neutral black & white with a gentle contrast S-curve — the everyday monochrome conversion.',
+        'bw': (0.299, 0.587, 0.114),
+        'curves': {'rgb': [(0, 0), (64, 52), (128, 132), (192, 206), (255, 255)]},
+        'grain': 0.18, 'vignette': 0.12,
+    },
+    'bw_red': {
+        'label': 'B&W Red Filter',
+        'desc': 'Monochrome through a red filter — dark dramatic skies and bright skin, the classic landscape look.',
+        'bw': (0.80, 0.20, 0.02),
+        'curves': {'rgb': [(0, 0), (60, 44), (128, 134), (200, 216), (255, 255)]},
+        'grain': 0.20, 'vignette': 0.18,
+    },
+    'vintage': {
+        'label': 'Vintage / Faded',
+        'desc': 'Lifted, faded shadows with a warm-yellow highlight wash and muted colour — an aged print.',
+        'curves': {'rgb': [(0, 28), (64, 78), (128, 140), (192, 198), (255, 236)]},
+        'sat': 0.78,
+        'split': ((70, 56, 40), (236, 222, 170), 0.5, 0.35),
+        'grain': 0.22, 'vignette': 0.28,
+    },
+    'cross_process': {
+        'label': 'Cross Process',
+        'desc': 'The punchy, skewed colour of C-41 film run in E-6 chemistry — teal shadows, yellow-green highlights.',
+        'curves': {'r': [(0, 0), (64, 48), (128, 140), (192, 214), (255, 255)],
+                   'g': [(0, 10), (128, 128), (255, 248)],
+                   'b': [(0, 30), (128, 120), (255, 220)]},
+        'sat': 1.25,
+        'split': ((20, 70, 80), (230, 225, 120), 0.5, 0.3),
+        'grain': 0.18, 'vignette': 0.2,
+    },
+    'warm_portrait': {
+        'label': 'Warm Portrait',
+        'desc': 'Soft warm skin tones with gently lifted shadows and a golden highlight — flattering for people.',
+        'curves': {'r': [(0, 12), (128, 138), (255, 255)],
+                   'b': [(0, 0), (128, 118), (255, 240)]},
+        'sat': 1.05,
+        'split': ((60, 40, 30), (255, 238, 200), 0.55, 0.28),
+        'grain': 0.1, 'vignette': 0.22,
+    },
+    'cool_cinematic': {
+        'label': 'Cool Cinematic',
+        'desc': 'The teal-and-orange blockbuster grade: cool blue shadows, warm highlights, crushed contrast.',
+        'curves': {'rgb': [(0, 14), (48, 40), (128, 128), (208, 220), (255, 244)]},
+        'sat': 1.1,
+        'split': ((18, 52, 78), (240, 170, 96), 0.5, 0.4),
+        'grain': 0.14, 'vignette': 0.3,
+    },
+    'sepia': {
+        'label': 'Sepia',
+        'desc': 'Warm brown-toned monochrome — the look of an old photographic print.',
+        'bw': (0.299, 0.587, 0.114),
+        'curves': {'rgb': [(0, 0), (128, 128), (255, 255)]},
+        'split': ((42, 26, 14), (255, 232, 180), 0.5, 0.85),
+        'grain': 0.16, 'vignette': 0.2,
+    },
+}
+
+FILM_LOOK_ORDER = ['bw_classic', 'bw_red', 'vintage', 'cross_process',
+                   'warm_portrait', 'cool_cinematic', 'sepia']
+
+
+def apply_film_look(rgb, preset_key, grain=None, vignette=None):
+    """Apply a VirtualPhotographer-style photographic FILM LOOK to an HxWx3 (or x4)
+    uint8 RGB image and return a fresh HxWx3 uint8 array. `preset_key` indexes
+    FILM_LOOKS. `grain` and `vignette` (each 0..1) override the preset defaults when
+    given, else the preset's own amounts are used. Pure NumPy/PIL (no OpenCV needed,
+    no Qt): tone curves + channel-mix B&W + split-toning + grain + vignette."""
+    preset = FILM_LOOKS.get(preset_key, FILM_LOOKS['bw_classic'])
+    src = _np.ascontiguousarray(rgb[..., :3].astype(_np.uint8))
+    f = src.astype(_np.float32)
+
+    # 1) B&W channel mix (if the preset is monochrome)
+    if 'bw' in preset:
+        wr, wg, wb = preset['bw']
+        f = _channel_mix_bw(f, wr, wg, wb)
+
+    # 2) per-channel tone curves
+    curves = preset.get('curves')
+    if curves:
+        work = _np.clip(f, 0, 255).astype(_np.uint8)
+        if 'rgb' in curves:
+            work = _apply_lut_rgb(work, _tone_curve_lut(curves['rgb']))
+        for ci, key in enumerate(('r', 'g', 'b')):
+            if key in curves:
+                lut = _tone_curve_lut(curves[key])
+                work[..., ci] = lut[work[..., ci]]
+        f = work.astype(_np.float32)
+
+    # 3) saturation
+    if 'sat' in preset:
+        f = _saturate(f, preset['sat'])
+
+    # 4) split-tone (shadows / highlights tint)
+    if 'split' in preset:
+        sh, hi, bal, strg = preset['split']
+        f = _split_tone(_np.clip(f, 0, 255), sh, hi, bal, strg)
+
+    # 5) grain + 6) vignette (slider overrides the preset default)
+    g = preset.get('grain', 0.0) if grain is None else float(grain)
+    v = preset.get('vignette', 0.0) if vignette is None else float(vignette)
+    f = _add_grain(f, max(0.0, min(1.0, g)))
+    f = _vignette(f, max(0.0, min(1.0, v)))
+
+    return _np.clip(f, 0, 255).astype(_np.uint8)
+
+
+# ---- art styles -----------------------------------------------------------
+def _oil_paint_numpy(rgb, radius, levels=20):
+    """NumPy fallback oil-paint filter: for each pixel pick the MOST COMMON intensity
+    bucket in its neighbourhood and average the colours that fall in that bucket — the
+    classic 'oilify' recipe. radius sets the window; levels the number of buckets."""
+    src = rgb.astype(_np.uint8)
+    h, w = src.shape[:2]
+    r = max(1, int(radius))
+    inten = (_luma(src.astype(_np.float32)) * (levels / 255.0)).astype(_np.int32)
+    inten = _np.clip(inten, 0, levels - 1)
+    pad = _np.pad(src, ((r, r), (r, r), (0, 0)), mode='edge')
+    padi = _np.pad(inten, ((r, r), (r, r)), mode='edge')
+    out = _np.empty_like(src)
+    # bucket counts and colour sums over the sliding window (vectorised per bucket)
+    counts = _np.zeros((h, w, levels), _np.int32)
+    sums = _np.zeros((h, w, levels, 3), _np.float32)
+    for dy in range(-r, r + 1):
+        for dx in range(-r, r + 1):
+            bi = padi[r + dy:r + dy + h, r + dx:r + dx + w]        # HxW bucket index
+            px = pad[r + dy:r + dy + h, r + dx:r + dx + w].astype(_np.float32)
+            yy, xx = _np.ogrid[0:h, 0:w]
+            counts[yy, xx, bi] += 1
+            sums[yy, xx, bi] += px
+    best = counts.argmax(axis=2)                                   # HxW most-common bucket
+    yy, xx = _np.ogrid[0:h, 0:w]
+    cnt = counts[yy, xx, best][..., None].astype(_np.float32)
+    out = (sums[yy, xx, best] / _np.maximum(cnt, 1.0))
+    return _np.clip(out, 0, 255).astype(_np.uint8)
+
+
+def _edges_numpy(gray, block=9, c=7):
+    """Adaptive-threshold-ish edge map (NumPy): a pixel is an edge (0) where it is
+    darker than its local mean by `c`, else white (255). `gray` is HxW uint8."""
+    g = Image.fromarray(gray.astype('uint8'), 'L')
+    mean = _np.asarray(g.filter(ImageFilter.BoxBlur(max(1, block // 2)))).astype(_np.int16)
+    e = _np.where(gray.astype(_np.int16) < mean - c, 0, 255).astype(_np.uint8)
+    return e
+
+
+ART_STYLES = {
+    'oil': {
+        'label': 'Oil Painting',
+        'desc': 'Thick daubs of paint — flat colour patches with soft, brushed edges.',
+    },
+    'watercolour': {
+        'label': 'Watercolour',
+        'desc': 'Soft washes of colour with the detail smoothed away, in the manner of a watercolour.',
+    },
+    'pencil_grey': {
+        'label': 'Pencil Sketch (grey)',
+        'desc': 'A graphite pencil drawing — pale paper with soft shading lines.',
+    },
+    'pencil_colour': {
+        'label': 'Pencil Sketch (colour)',
+        'desc': 'A coloured-pencil sketch — the pencil shading tinted with the photo’s colours.',
+    },
+    'cartoon': {
+        'label': 'Cartoon / Comic',
+        'desc': 'Bold flat colour with heavy black outlines — a comic-book / cel-shaded look.',
+    },
+    'detail': {
+        'label': 'Detail Boost',
+        'desc': 'An HDR-ish punch that lifts local detail and texture without a halo.',
+    },
+}
+
+ART_STYLE_ORDER = ['oil', 'watercolour', 'pencil_grey', 'pencil_colour', 'cartoon', 'detail']
+
+
+def apply_art_style(rgb, style_key, strength=0.6, force_fallback=False):
+    """Turn a photo into art (PhotoArtMaster-style). Takes an HxWx3 (or x4) uint8 RGB
+    image and returns a fresh HxWx3 uint8 array. `style_key` indexes ART_STYLES;
+    `strength` (0..1) scales the effect. Prefers OpenCV's non-photorealistic filters
+    (cv2.stylization / pencilSketch / detailEnhance / edgePreservingFilter, and an oil
+    effect) and always provides a NumPy/PIL fallback (set `force_fallback` to force
+    it). Pure function — no Qt."""
+    src = _np.ascontiguousarray(rgb[..., :3].astype(_np.uint8))
+    strength = float(max(0.0, min(1.0, strength)))
+    h, w = src.shape[:2]
+    use_cv2 = HAS_CV2 and not force_fallback
+
+    def blend(result):
+        """Mix the stylised result back over the original by `strength` so the slider
+        goes from the photo (0) to the full effect (1)."""
+        a = src.astype(_np.float32); b = result.astype(_np.float32)
+        return _np.clip(a * (1.0 - strength) + b * strength, 0, 255).astype(_np.uint8)
+
+    if style_key == 'oil':
+        radius = 3 + int(round(strength * 5))         # 3..8
+        result = None
+        if use_cv2:
+            try:                                      # cv2.xphoto.oilPainting if the contrib build has it
+                import cv2.xphoto as _xp              # noqa: F401
+                bgr = src[..., ::-1]
+                op = _cv2.xphoto.oilPainting(bgr, radius, 1)
+                result = _np.ascontiguousarray(op[..., ::-1])
+            except Exception:
+                try:                                  # stylization gives a painterly, flat-patch look too
+                    bgr = src[..., ::-1]
+                    st = _cv2.stylization(bgr, sigma_s=60, sigma_r=0.45)
+                    result = _np.ascontiguousarray(st[..., ::-1])
+                except Exception:
+                    result = None
+        if result is None:
+            result = _oil_paint_numpy(src, radius, levels=18)
+        return blend(result)
+
+    if style_key == 'watercolour':
+        result = None
+        if use_cv2:
+            try:
+                bgr = src[..., ::-1]
+                st = _cv2.stylization(bgr, sigma_s=60, sigma_r=0.6)
+                result = _np.ascontiguousarray(st[..., ::-1])
+            except Exception:
+                try:
+                    bgr = src[..., ::-1]
+                    ep = _cv2.edgePreservingFilter(bgr, flags=1, sigma_s=60, sigma_r=0.4)
+                    result = _np.ascontiguousarray(ep[..., ::-1])
+                except Exception:
+                    result = None
+        if result is None:
+            # fallback: edge-preserving smooth (reuses Smooth Skin's engine) +
+            # a touch of median to pool colour into washes, then slight saturation.
+            smooth = _edge_preserving_smooth(src, 6, force_fallback=True)
+            im = Image.fromarray(smooth, 'RGB').filter(ImageFilter.MedianFilter(5))
+            wc = _saturate(_np.asarray(im).astype(_np.float32), 1.12)
+            result = _np.clip(wc, 0, 255).astype(_np.uint8)
+        return blend(result)
+
+    if style_key == 'pencil_grey':
+        result = None
+        if use_cv2:
+            try:
+                bgr = src[..., ::-1]
+                grey, _col = _cv2.pencilSketch(bgr, sigma_s=60, sigma_r=0.07, shade_factor=0.05)
+                result = _np.dstack([grey, grey, grey])
+            except Exception:
+                result = None
+        if result is None:
+            result = _pencil_numpy(src, coloured=False)
+        return blend(result)
+
+    if style_key == 'pencil_colour':
+        result = None
+        if use_cv2:
+            try:
+                bgr = src[..., ::-1]
+                _grey, col = _cv2.pencilSketch(bgr, sigma_s=60, sigma_r=0.07, shade_factor=0.05)
+                result = _np.ascontiguousarray(col[..., ::-1])
+            except Exception:
+                result = None
+        if result is None:
+            result = _pencil_numpy(src, coloured=True)
+        return blend(result)
+
+    if style_key == 'cartoon':
+        result = _cartoon(src, strength, use_cv2)
+        return blend(result)
+
+    if style_key == 'detail':
+        result = None
+        if use_cv2:
+            try:
+                bgr = src[..., ::-1]
+                de = _cv2.detailEnhance(bgr, sigma_s=12, sigma_r=0.15)
+                result = _np.ascontiguousarray(de[..., ::-1])
+            except Exception:
+                result = None
+        if result is None:
+            # fallback: a strong unsharp-style local-contrast boost.
+            blur = _gaussian_blur_rgb(src, 3.0, force_fallback=True).astype(_np.float32)
+            boosted = src.astype(_np.float32) + 1.2 * (src.astype(_np.float32) - blur)
+            result = _np.clip(_saturate(boosted, 1.08), 0, 255).astype(_np.uint8)
+        return blend(result)
+
+    return src.copy()                                 # unknown key: no-op
+
+
+def _pencil_numpy(rgb, coloured=False):
+    """NumPy/PIL pencil-sketch fallback. The 'colour-dodge of a blurred inverted grey'
+    trick: edges stay dark, flats go white — a convincing graphite look. When
+    `coloured` the grey sketch is tinted by the photo's own (desaturated) colour."""
+    grey = _luma(rgb.astype(_np.float32))
+    inv = 255.0 - grey
+    blur = _np.asarray(Image.fromarray(inv.astype('uint8'), 'L').filter(
+        ImageFilter.GaussianBlur(12))).astype(_np.float32)
+    # colour dodge: base * 255 / (255 - top)
+    dodge = _np.clip(grey * 255.0 / _np.maximum(255.0 - blur, 1.0), 0, 255)
+    sk = dodge
+    if not coloured:
+        return _np.dstack([sk, sk, sk]).astype(_np.uint8)
+    # tint the sketch with the photo's own colour (softened), multiply-blend
+    colour = _saturate(rgb.astype(_np.float32), 0.6)
+    tinted = sk[..., None] / 255.0 * colour
+    return _np.clip(tinted, 0, 255).astype(_np.uint8)
+
+
+def _cartoon(rgb, strength, use_cv2):
+    """Cartoon / comic: flatten colour into bands and overlay bold dark outlines.
+    cv2 path = bilateral smoothing + adaptive-threshold edges; NumPy path =
+    edge-preserving smooth + posterise + a local-contrast edge map."""
+    src = rgb.astype(_np.uint8)
+    quant_levels = 8
+    if use_cv2:
+        try:
+            colour = src[..., ::-1].copy()
+            for _ in range(2):
+                colour = _cv2.bilateralFilter(colour, 9, 75, 75)
+            colour = colour[..., ::-1]
+            grey = _cv2.cvtColor(src[..., ::-1], _cv2.COLOR_BGR2GRAY)
+            grey = _cv2.medianBlur(grey, 5)
+            block = 9
+            edges = _cv2.adaptiveThreshold(grey, 255, _cv2.ADAPTIVE_THRESH_MEAN_C,
+                                           _cv2.THRESH_BINARY, block, 2 + int(strength * 6))
+            q = (colour.astype(_np.int32) // (256 // quant_levels)) * (256 // quant_levels) + (256 // quant_levels) // 2
+            q = _np.clip(q, 0, 255).astype(_np.uint8)
+            out = _np.where(edges[..., None] == 0, 0, q)
+            return out.astype(_np.uint8)
+        except Exception:
+            pass
+    # NumPy fallback
+    smooth = _edge_preserving_smooth(src, 5, force_fallback=True).astype(_np.int32)
+    step = 256 // quant_levels
+    q = (smooth // step) * step + step // 2
+    q = _np.clip(q, 0, 255).astype(_np.uint8)
+    grey = _luma(src.astype(_np.float32)).astype(_np.uint8)
+    edges = _edges_numpy(grey, block=9, c=2 + int(strength * 8))
+    out = _np.where(edges[..., None] == 0, 0, q)
+    return out.astype(_np.uint8)
 
 
 EXPORT_FORMATS = [
@@ -2458,6 +2900,203 @@ class SmoothSkinDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class _PhotoFXDialog(QDialog):
+    """Shared base for the two Photo FX studios (Film Look / Art Style). Both show a
+    preset chooser, strength slider(s) and a live preview on the canvas, and commit
+    the result to the active layer (undoable), in the spirit of SmoothSkinDialog.
+    Subclasses supply the preset list, the slider rows and the transform."""
+    def __init__(self, win, title):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle(title); self.setMinimumWidth(380)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()           # the layer we preview over
+        self._busy = False
+
+    def _slider(self, lo, hi, val):
+        s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(val); return s
+
+    def _val(self):
+        l = QLabel(); l.setMinimumWidth(46); l.setAlignment(Qt.AlignRight | Qt.AlignVCenter); return l
+
+    def _row(self, s, val):
+        rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+        holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250); return holder
+
+    # ---- subclass hooks ----
+    def _transform(self, rgb):
+        """Return the stylised HxWx3 uint8 array for the current settings."""
+        raise NotImplementedError
+
+    def _compute(self):
+        """The stylised RGBA PIL image for the current settings (whole layer)."""
+        base = q2pil(self.base)
+        rgb = _np.asarray(base.convert('RGB'))
+        out = self._transform(rgb)
+        alpha = _np.asarray(base.convert('RGBA'))[..., 3]
+        return Image.fromarray(_np.dstack([out, alpha]).astype('uint8'), 'RGBA')
+
+    def _refresh(self):
+        if self._busy: return
+        self._busy = True
+        self._update_labels()
+        try:
+            self.canvas.img = pil2q(self._compute())
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+        self._busy = False
+
+    def _update_labels(self):
+        pass
+
+    def accept(self):
+        try:
+            result = pil2q(self._compute())
+        except Exception:
+            self.canvas.img = self.base; self.canvas._fit(); super().reject(); return
+        c = self.canvas
+        self.canvas.img = self.base                  # undo the preview before committing
+        if self.cb_newlayer.isChecked():
+            c.snapshot_full()
+            layer = Layer(result, c._unique_name(self._layer_stem()))
+            c.active += 1; c.layers.insert(c.active, layer)
+            c.update(); self.win.refresh_layers()
+        else:
+            c.push_undo_layer(self.active_idx, self.base.copy())
+            c.img = result; c._fit()
+        super().accept()
+
+    def _layer_stem(self):
+        return 'Photo FX'
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
+class FilmLookDialog(_PhotoFXDialog):
+    """Photo FX ▸ Film Look — one-click VirtualPhotographer-style photographic presets
+    (B&W filters, vintage, cross-process, cinematic, sepia…), each a tone curve +
+    colour grade with Grain and Vignette sliders, previewed live on the picture. On
+    Apply the graded picture lands on its own new layer (so it can be dialled back
+    with the layer opacity) or replaces the active layer."""
+    def __init__(self, win):
+        super().__init__(win, 'Film Look')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Film Look — photographic presets</b>'))
+        info = QLabel('One-click photographic grades in the spirit of a film-emulation plug-in: each is a '
+                      'combination of tone curve, colour grade / split-tone, grain and vignette. Pick a look, '
+                      'then dial the Grain and Vignette to taste.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+
+        self.preset_cb = QComboBox()
+        for key in FILM_LOOK_ORDER:
+            self.preset_cb.addItem(FILM_LOOKS[key]['label'], key)
+        self.preset_cb.currentIndexChanged.connect(self._preset_changed)
+        v.addWidget(self.preset_cb)
+        self.desc = QLabel(); self.desc.setWordWrap(True); self.desc.setStyleSheet('color:#aab; font-style:italic')
+        v.addWidget(self.desc)
+
+        form = QFormLayout(); v.addLayout(form)
+        self.s_grain = self._slider(0, 100, 18)
+        self.s_vig = self._slider(0, 100, 20)
+        self.l_grain = self._val(); self.l_vig = self._val()
+        form.addRow('Grain:', self._row(self.s_grain, self.l_grain))
+        form.addRow('Vignette:', self._row(self.s_vig, self.l_vig))
+        for s in (self.s_grain, self.s_vig):
+            s.valueChanged.connect(self._refresh)
+
+        self.cb_newlayer = QCheckBox('Put the result on a new layer'); self.cb_newlayer.setChecked(True)
+        v.addWidget(self.cb_newlayer)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._preset_changed()                       # seed defaults + first preview
+
+    def _preset_key(self):
+        return self.preset_cb.currentData()
+
+    def _preset_changed(self):
+        key = self._preset_key()
+        preset = FILM_LOOKS[key]
+        self.desc.setText(preset.get('desc', ''))
+        self._busy = True                            # set the preset's default grain/vignette
+        self.s_grain.setValue(int(round(preset.get('grain', 0.0) * 100)))
+        self.s_vig.setValue(int(round(preset.get('vignette', 0.0) * 100)))
+        self._busy = False
+        self._refresh()
+
+    def _update_labels(self):
+        self.l_grain.setText(f'{self.s_grain.value()}')
+        self.l_vig.setText(f'{self.s_vig.value()}')
+
+    def _transform(self, rgb):
+        return apply_film_look(rgb, self._preset_key(),
+                               grain=self.s_grain.value() / 100.0,
+                               vignette=self.s_vig.value() / 100.0)
+
+    def _layer_stem(self):
+        return FILM_LOOKS[self._preset_key()]['label']
+
+
+class ArtStyleDialog(_PhotoFXDialog):
+    """Photo FX ▸ Art Style — turn a photo into art (PhotoArtMaster-style): Oil
+    Painting, Watercolour, Pencil Sketch (grey/colour), Cartoon/Comic, Detail Boost —
+    with a Strength slider and a live preview. Prefers OpenCV's non-photorealistic
+    filters, with a NumPy/PIL fallback. On Apply the art lands on its own new layer or
+    replaces the active layer."""
+    def __init__(self, win):
+        super().__init__(win, 'Art Style')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Art Style — turn a photo into art</b>'))
+        engine = 'OpenCV non-photorealistic filters' if HAS_CV2 else 'NumPy / PIL fallback'
+        info = QLabel('Re-render your photo as a painting, drawing or comic, in the spirit of a photo-to-art '
+                      'plug-in. Pick a style and set how strongly it is applied.<br>'
+                      f'<i>Engine: {engine}.</i>')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+
+        self.style_cb = QComboBox()
+        for key in ART_STYLE_ORDER:
+            self.style_cb.addItem(ART_STYLES[key]['label'], key)
+        self.style_cb.currentIndexChanged.connect(self._style_changed)
+        v.addWidget(self.style_cb)
+        self.desc = QLabel(); self.desc.setWordWrap(True); self.desc.setStyleSheet('color:#aab; font-style:italic')
+        v.addWidget(self.desc)
+
+        form = QFormLayout(); v.addLayout(form)
+        self.s_strength = self._slider(0, 100, 80)
+        self.l_strength = self._val()
+        form.addRow('Strength:', self._row(self.s_strength, self.l_strength))
+        self.s_strength.valueChanged.connect(self._refresh)
+
+        self.cb_newlayer = QCheckBox('Put the result on a new layer'); self.cb_newlayer.setChecked(True)
+        v.addWidget(self.cb_newlayer)
+        note = QLabel('A larger picture takes a moment to render each time you change a setting.')
+        note.setWordWrap(True); note.setStyleSheet('color:#889'); v.addWidget(note)
+
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._style_changed()
+
+    def _style_key(self):
+        return self.style_cb.currentData()
+
+    def _style_changed(self):
+        self.desc.setText(ART_STYLES[self._style_key()].get('desc', ''))
+        self._refresh()
+
+    def _update_labels(self):
+        self.l_strength.setText(f'{self.s_strength.value()}')
+
+    def _transform(self, rgb):
+        return apply_art_style(rgb, self._style_key(), strength=self.s_strength.value() / 100.0)
+
+    def _layer_stem(self):
+        return ART_STYLES[self._style_key()]['label']
+
+
 class CurveWidget(QWidget):
     """A small editable tone curve: draggable control points over a 0–255 diagonal.
     Points are stored in curve space (x,y both 0..255, origin bottom-left). Emits via
@@ -3087,6 +3726,10 @@ class Main(QMainWindow):
         flt.addAction(self.act('Find &Edges', lambda: self.canvas.apply_region(flt_edges)))
         flt.addAction(self.act('&Contour', lambda: self.canvas.apply_region(flt_contour)))
 
+        fx = m.addMenu('&Photo FX')
+        fx.addAction(self.act('&Film Look…', self.dlg_film_look))
+        fx.addAction(self.act('&Art Style…', self.dlg_art_style))
+
         sel = m.addMenu('&Select')
         sel.addAction(self.act('Select &All', lambda: self.canvas.select_all(), QKeySequence.SelectAll))
         sel.addAction(self.act('&Deselect', lambda: self.canvas.select_none(), QKeySequence.Deselect))
@@ -3400,6 +4043,16 @@ class Main(QMainWindow):
         """Open the Smooth Skin portrait-retouch studio (live preview on the canvas)."""
         if self._need_pil():
             SmoothSkinDialog(self).exec()
+
+    def dlg_film_look(self):
+        """Open the Film Look studio — one-click photographic presets (live preview)."""
+        if self._need_pil():
+            FilmLookDialog(self).exec()
+
+    def dlg_art_style(self):
+        """Open the Art Style studio — photo-to-art re-renderers (live preview)."""
+        if self._need_pil():
+            ArtStyleDialog(self).exec()
 
     def dlg_blur(self):
         if self._need_pil():

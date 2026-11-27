@@ -422,6 +422,43 @@ def capture(full=True):
     except Exception as e:
         print("lens flare demo failed:", e)
 
+    # Photo FX demo: build a small photographic-ish source (soft sky gradient, a sun,
+    # rolling hills and a little grain), then render every FILM LOOK and every ART
+    # STYLE from it so the manual shows a real catalogue. All synthetic.
+    try:
+        import numpy as _np, math as _m
+        fw, fh = 360, 260
+        yy, xx = _np.mgrid[0:fh, 0:fw]
+        # sky: warm gradient top->bottom
+        sky_t = _np.array([120, 170, 220], _np.float32)
+        sky_b = _np.array([235, 220, 180], _np.float32)
+        t = (yy / fh)[..., None]
+        img = sky_t * (1 - t) + sky_b * t
+        # a soft sun glow upper-left
+        sun = _np.exp(-(((xx - fw * 0.28) ** 2 + (yy - fh * 0.28) ** 2) / (2 * 55.0 ** 2)))
+        img += sun[..., None] * _np.array([70, 55, 20], _np.float32)
+        # rolling green hills across the lower third
+        hill = fh * 0.62 + 24 * _np.sin(xx / 60.0)
+        under = yy > hill
+        green = _np.array([70, 120, 70], _np.float32) + (yy / fh)[..., None] * _np.array([20, 10, -10], _np.float32)
+        img = _np.where(under[..., None], green, img)
+        # a reddish barn-ish block for colour variety
+        barn = (xx > fw * 0.62) & (xx < fw * 0.80) & (yy > fh * 0.52) & (yy < fh * 0.70)
+        img = _np.where(barn[..., None], _np.array([170, 70, 60], _np.float32), img)
+        rng = _np.random.default_rng(5)
+        img = _np.clip(img + rng.normal(0, 5, (fh, fw, 3)), 0, 255).astype(_np.uint8)
+        IM["fx_source"] = Image.fromarray(img, "RGB")
+        for _k in PC.FILM_LOOK_ORDER:
+            IM["film_" + _k] = Image.fromarray(
+                PC.apply_film_look(img, _k), "RGB")
+        for _k in PC.ART_STYLE_ORDER:
+            IM["art_" + _k] = Image.fromarray(
+                PC.apply_art_style(img, _k, strength=0.85), "RGB")
+        IM["fx_engine"] = ("OpenCV non-photorealistic filters" if PC.HAS_CV2
+                           else "NumPy / PIL fallback")
+    except Exception as e:
+        print("photo fx demo failed:", e)
+
     # layers demo: two stacked layers (scene + a translucent coloured wash).
     try:
         lw, lh = 420, 280
@@ -598,6 +635,15 @@ def capture(full=True):
     drive(w2._fx_dialog, "shadow")
     drive(w2._fx_dialog, "glow")
     drive(w2.dlg_lens_flare)      # Image ▸ Lens Flare… studio
+    try:                          # Photo FX — seed the photographic source so the previews look right
+        if IM.get("fx_source") is not None:
+            w2.canvas.load(PC.pil2q(IM["fx_source"].convert("RGBA")))
+            for _ in range(4):
+                app.processEvents()
+    except Exception as e:
+        print("photo fx seed failed:", e)
+    drive(w2.dlg_film_look)       # Photo FX ▸ Film Look… studio
+    drive(w2.dlg_art_style)       # Photo FX ▸ Art Style… studio
     try:                          # Smooth Skin — seed a skin-tone picture so the preview has skin
         if IM.get("smooth_before") is not None:
             from PIL import Image as _PI
@@ -1558,6 +1604,78 @@ crosshair to place the light source, or type positions into the <b>Light X</b> /
 <p>So the natural workflow is: make or cut out a subject on transparency, then apply the shadow or glow, then
 place the result on its new background.</p>""")]))
 
+    # Photo FX catalogue figures, built from the live demo renders + the preset data.
+    def _film_catalogue():
+        cards = []
+        for k in PC.FILM_LOOK_ORDER:
+            meta = PC.FILM_LOOKS[k]
+            f = fig(IM.get("film_" + k), f"<b>{H.escape(meta['label'])}</b> — {meta['desc']}")
+            if f:
+                cards.append(f)
+        return f'<div class="imgrow">{"".join(cards)}</div>' if cards else ""
+
+    def _art_catalogue():
+        cards = []
+        for k in PC.ART_STYLE_ORDER:
+            meta = PC.ART_STYLES[k]
+            f = fig(IM.get("art_" + k), f"<b>{H.escape(meta['label'])}</b> — {meta['desc']}")
+            if f:
+                cards.append(f)
+        return f'<div class="imgrow">{"".join(cards)}</div>' if cards else ""
+
+    ch.append(("Photo FX — film looks and art styles",
+      "<p class='lede'>Two one-click studios turn an ordinary photo into something with character. "
+      "<b>Film Look</b> applies a photographic grade — a black-and-white conversion, a faded vintage print, "
+      "a cinematic colour cast — in the spirit of a film-emulation plug-in. <b>Art Style</b> re-renders the "
+      "picture as art — an oil painting, a watercolour, a pencil sketch or a comic. Both live on the new "
+      "<b>Photo FX</b> menu, both preview live on the picture, and both land their result on its own layer so "
+      "you can dial it back or remove it.</p>", [
+      ("Film Look — photographic presets", f"""
+<p><b>Photo FX ▸ Film Look…</b> applies a photographic grade in a single click. Each preset is built from the
+same handful of ingredients a darkroom or a colour grade would use: a <b>tone curve</b> (how the shadows,
+midtones and highlights are mapped), a <b>colour grade</b> or <b>split-tone</b> (tinting the shadows one way
+and the highlights another), optional <b>film grain</b>, and a <b>vignette</b> that darkens the corners. The
+monochrome presets add a <b>channel mix</b> — the digital equivalent of screwing a coloured filter onto a
+black-and-white film, which is how a red filter turns a blue sky dramatically dark.</p>
+{fig(dlg('Film Look'), 'The Film Look studio: a preset menu with a one-line description, Grain and Vignette sliders, and a live preview on the picture. Each preset seeds its own sensible grain and vignette, which you can then adjust.')}
+<p>The two sliders fine-tune whichever preset you have chosen:</p>
+<ul>
+<li><b>Grain</b> — adds monochromatic film grain. A little adds texture and a filmic feel; too much looks noisy.</li>
+<li><b>Vignette</b> — darkens the corners to draw the eye inward, the way an old lens would. Subtle is usually best.</li>
+</ul>
+<p>The presets, shown applied to the same photograph:</p>
+{_film_catalogue()}
+{proc('grade a photo with a film look',
+  'Choose <b>Photo FX ▸ Film Look…</b>.',
+  'Pick a <b>preset</b> from the menu — the one-line description tells you what each one does, and the preview updates at once.',
+  'Nudge <b>Grain</b> and <b>Vignette</b> to taste; each preset starts from a sensible amount.',
+  'Leave <b>Put the result on a new layer</b> ticked (recommended) so you can lower that layer’s opacity later to ease the grade back, or hide it to compare.',
+  'Click <b>Apply</b>.')}
+{note('Film Look is pure NumPy/Pillow — tone curves, channel mixing, split-toning, grain and a vignette — so it needs nothing beyond the libraries the app already uses and always works.')}
+{tip('Grades stack. Apply a <b>Warm Portrait</b> look, then lower its layer opacity to blend it with the original for a gentler version — or add a second look on top for a custom result.')}"""),
+      ("Art Style — turn a photo into art", f"""
+<p><b>Photo FX ▸ Art Style…</b> re-renders your photograph as a painting, drawing or comic, in the spirit of a
+photo-to-art plug-in. Pick a style and set the <b>Strength</b> — the slider mixes the stylised result back over
+the original, so it runs from the untouched photo (0) to the full effect (100).</p>
+{fig(dlg('Art Style'), 'The Art Style studio: a style menu with a one-line description, a Strength slider, and a live preview on the picture.')}
+<p>The styles, shown applied to the same photograph:</p>
+{_art_catalogue()}
+<ul>
+<li><b>Oil Painting</b> — pools the picture into flat daubs of colour with soft, brushed edges.</li>
+<li><b>Watercolour</b> — smooths the detail into soft washes of colour.</li>
+<li><b>Pencil Sketch (grey / colour)</b> — a graphite or coloured-pencil drawing, pale paper with soft shading lines.</li>
+<li><b>Cartoon / Comic</b> — flat bands of colour with heavy black outlines, a cel-shaded / comic-book look.</li>
+<li><b>Detail Boost</b> — not a stylisation but a punchy, HDR-ish lift of local detail and texture.</li>
+</ul>
+{proc('turn a photo into art',
+  'Choose <b>Photo FX ▸ Art Style…</b>.',
+  'Pick a <b>style</b> from the menu; the preview shows it applied to your picture.',
+  'Set the <b>Strength</b> — lower it to blend the art back towards the original photo for a subtler result.',
+  'Leave <b>Put the result on a new layer</b> ticked so the original is kept underneath.',
+  'Click <b>Apply</b>.')}
+{note('Art Style uses OpenCV’s non-photorealistic-rendering filters for the best result, and the installer adds OpenCV automatically. If it is not present every style falls back to a built-in NumPy/Pillow recipe — a little less refined, but it needs nothing extra and always works.')}
+{tip('A larger picture takes a moment to re-render each time you change a setting, so set the style first and fine-tune the Strength last. Lower the applied layer’s opacity afterwards to mix the art with the photo beneath it.')}""")]))
+
     parts.append(("Part IV", "Layers, Cutouts and Effects", ch))
 
     # ============================================================ PART V
@@ -2016,6 +2134,8 @@ def build_index(numbered):
              "threshold", "posterize", "greyscale", "invert", "sepia", "auto contrast", "equalize",
              "gaussian blur", "unsharp mask", "median", "sharpen", "emboss", "find edges", "contour",
              "drop shadow", "outer glow", "resize", "enlarge", "upscale", "canvas size", "crop", "rotate", "flip", "straighten",
+             "photo fx", "film look", "art style", "oil painting", "watercolour", "pencil sketch", "cartoon",
+             "vintage", "cross process", "cinematic", "split-tone", "grain", "vignette",
              "undo", "zoom", "PNG", "JPEG", "pixel", "raster"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
