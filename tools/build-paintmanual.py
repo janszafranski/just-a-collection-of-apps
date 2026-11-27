@@ -459,6 +459,71 @@ def capture(full=True):
     except Exception as e:
         print("photo fx demo failed:", e)
 
+    # Effects studio catalogue: a clean-room demonstration of the new Eye-Candy-style
+    # effect set. Edge/shape effects (Bevel/Chrome/Glass/Gradient Glow) run on a cut-out
+    # shape on transparency; distortions (Motion Trail/Twirl) run on a small coloured
+    # motif; the procedural textures (Wood/Marble/Weave) are generated outright. Every
+    # render is produced by the real module-level core functions — all synthetic.
+    try:
+        import numpy as _np
+        ew, eh = 300, 220
+
+        def _shape_rgba():
+            """A rounded cross/star cut-out on transparency with a coloured fill."""
+            yy, xx = _np.mgrid[0:eh, 0:ew]
+            cx, cy = ew / 2.0, eh / 2.0
+            r = _np.sqrt(((xx - cx) / (ew * 0.40)) ** 2 + ((yy - cy) / (eh * 0.40)) ** 2)
+            ang = _np.arctan2(yy - cy, xx - cx)
+            edge = 0.72 + 0.22 * _np.cos(ang * 6)
+            alpha = _np.where(r < edge, 255, 0).astype(_np.uint8)
+            rgb = _np.dstack([
+                _np.full((eh, ew), 90, _np.uint8),
+                _np.full((eh, ew), 130, _np.uint8),
+                _np.full((eh, ew), 190, _np.uint8)])
+            return _np.dstack([rgb, alpha]).astype(_np.uint8)
+
+        def _motif_rgba():
+            """A small bright motif on transparency for the distortion demos."""
+            yy, xx = _np.mgrid[0:eh, 0:ew]
+            img = _np.zeros((eh, ew, 4), _np.uint8)
+            # a chequer of coloured bars so the twist/trail is obvious
+            bars = (((xx // 24) + (yy // 24)) % 2) == 0
+            img[..., 0] = _np.where(bars, 240, 60)
+            img[..., 1] = _np.where(bars, 170, 90)
+            img[..., 2] = _np.where(bars, 40, 180)
+            r = _np.sqrt(((xx - ew / 2) / (ew * 0.45)) ** 2 + ((yy - eh / 2) / (eh * 0.45)) ** 2)
+            img[..., 3] = _np.where(r < 1.0, 255, 0).astype(_np.uint8)
+            return img
+
+        def _over_checker(rgba):
+            """Composite an RGBA render over a light checker so transparency reads."""
+            from PIL import Image as _PI
+            h, w = rgba.shape[:2]
+            yy, xx = _np.mgrid[0:h, 0:w]
+            chk = _np.where(((xx // 12) + (yy // 12)) % 2 == 0, 235, 205).astype(_np.uint8)
+            bg = _np.dstack([chk, chk, chk]).astype(_np.float32)
+            a = (rgba[..., 3].astype(_np.float32) / 255.0)[..., None]
+            out = bg * (1 - a) + rgba[..., :3].astype(_np.float32) * a
+            return _PI.fromarray(out.astype("uint8"), "RGB")
+
+        shp = _shape_rgba(); mot = _motif_rgba()
+        IM["fx_shape_before"] = _over_checker(shp)
+        IM["fx_bevel"]  = _over_checker(PC.bevel(shp, width=16, smoothness=2, profile="round", intensity=0.8))
+        IM["fx_chrome"] = _over_checker(PC.chrome(shp, ramp="steel", width=18, contrast=0.7, shine=0.8))
+        IM["fx_glass"]  = _over_checker(PC.glass(shp, width=16, refraction=8.0, opacity=0.85))
+        IM["fx_glow"]   = _over_checker(PC.gradient_glow(shp, width=26, softness=0.6, opacity=0.9))
+        IM["fx_motif_before"] = _over_checker(mot)
+        IM["fx_motion"] = _over_checker(PC.motion_trail(mot, angle=25, length=40, echoes=10, falloff=0.75))
+        IM["fx_twirl"]  = _over_checker(PC.twirl(mot, angle=220, radius=min(ew, eh) / 2.0, falloff=1.2))
+        from PIL import Image as _PI
+        IM["fx_wood"]   = _PI.fromarray(PC.wood(eh, ew, spacing=16, turb=0.55, angle=18, seed=3)[..., :3], "RGB")
+        IM["fx_marble"] = _PI.fromarray(PC.marble(eh, ew, scale=38, turb=0.6, sharpness=5.0, seed=4)[..., :3], "RGB")
+        IM["fx_weave"]  = _PI.fromarray(PC.weave(eh, ew, strand=16, gap=3, seed=5)[..., :3], "RGB")
+        IM["fx_effects_engine"] = ("OpenCV (distance transform / remap)" if PC.HAS_CV2
+                                   else "NumPy / Pillow fallback")
+    except Exception as e:
+        print("effects catalogue demo failed:", e)
+
     # layers demo: two stacked layers (scene + a translucent coloured wash).
     try:
         lw, lh = 420, 280
@@ -635,6 +700,34 @@ def capture(full=True):
     drive(w2._fx_dialog, "shadow")
     drive(w2._fx_dialog, "glow")
     drive(w2.dlg_lens_flare)      # Image ▸ Lens Flare… studio
+    try:                          # Effects studios — seed a cut-out shape on transparency
+        if IM.get("fx_shape_before") is not None:
+            import numpy as _np
+            # rebuild the RGBA shape used in the catalogue (the IM entry is composited)
+            sh, sw = 220, 300
+            yy, xx = _np.mgrid[0:sh, 0:sw]
+            cx, cy = sw / 2.0, sh / 2.0
+            r = _np.sqrt(((xx - cx) / (sw * 0.40)) ** 2 + ((yy - cy) / (sh * 0.40)) ** 2)
+            ang = _np.arctan2(yy - cy, xx - cx)
+            alpha = _np.where(r < 0.72 + 0.22 * _np.cos(ang * 6), 255, 0).astype(_np.uint8)
+            rgb = _np.dstack([_np.full((sh, sw), 90, _np.uint8),
+                              _np.full((sh, sw), 130, _np.uint8),
+                              _np.full((sh, sw), 190, _np.uint8)])
+            shp = _np.dstack([rgb, alpha]).astype(_np.uint8)
+            w2.canvas.load(PC.pil2q(PC.Image.fromarray(shp, "RGBA")))
+            for _ in range(4):
+                app.processEvents()
+    except Exception as e:
+        print("effects seed failed:", e)
+    drive(w2._effect_dialog, PC.BevelDialog)          # Effects ▸ Bevels & edges ▸ Bevel…
+    drive(w2._effect_dialog, PC.ChromeDialog)         # Chrome…
+    drive(w2._effect_dialog, PC.GlassDialog)          # Glass…
+    drive(w2._effect_dialog, PC.GradientGlowDialog)   # Gradient Glow…
+    drive(w2._effect_dialog, PC.MotionTrailDialog)    # Effects ▸ Distort ▸ Motion Trail…
+    drive(w2._effect_dialog, PC.TwirlDialog)          # Twirl…
+    drive(w2._effect_dialog, PC.WoodDialog)           # Effects ▸ Textures ▸ Wood…
+    drive(w2._effect_dialog, PC.MarbleDialog)         # Marble…
+    drive(w2._effect_dialog, PC.WeaveDialog)          # Weave…
     try:                          # Photo FX — seed the photographic source so the previews look right
         if IM.get("fx_source") is not None:
             w2.canvas.load(PC.pil2q(IM["fx_source"].convert("RGBA")))
@@ -1602,7 +1695,97 @@ crosshair to place the light source, or type positions into the <b>Light X</b> /
       ("Working on transparency", f"""
 {caution('The drop shadow and outer glow show <i>through</i> transparent areas, so they only look right on a layer that has transparency around the artwork. Start from <b>File ▸ New</b> with a <b>Transparent background</b>, or cut the backdrop away first — otherwise the shadow or glow has nowhere to show. (The lens flare is different: it floats over whatever is beneath it, so it works on any picture.)')}
 <p>So the natural workflow is: make or cut out a subject on transparency, then apply the shadow or glow, then
-place the result on its new background.</p>""")]))
+place the result on its new background.</p>"""),
+      ("The Effects studio — bevels, distortions and textures", f"""
+<p>Below Drop Shadow and Outer Glow, the <b>Effects</b> menu holds a set of richer effects grouped into three
+submenus — <b>Bevels &amp; edges</b>, <b>Distort</b> and <b>Textures</b>. They are a clean-room take on the
+classic effect set that photo-plug-ins made popular, written from first principles. Every one previews live on
+the active layer and lands its result there (undoable), or on a new layer if you tick the box — so the
+workflow matches the rest of the app.</p>
+<p>The <b>Bevels &amp; edges</b> effects are driven by the <i>shape</i> of the active layer — its opaque
+pixels. They measure the distance of each pixel from the edge of that shape, build a little 3D surface from it,
+and light that surface. So they want a cut-out subject or lettering on a transparent layer; on a flat,
+fully-opaque photo there is no edge for them to catch. The <b>Distort</b> and <b>Texture</b> effects have no
+such requirement — distortions re-map the whole layer, and textures fill the current selection (or the layer's
+opaque pixels).</p>
+{note(f'The edge and distortion effects use a distance transform and pixel re-mapping that run on OpenCV when it is present (the installer adds it) for speed and quality, with a built-in NumPy/Pillow fallback that needs nothing extra and always works. Engine on this build: <i>{IM.get("fx_effects_engine", "NumPy / Pillow fallback")}</i>. The wood, marble and weave textures are generated from a seedable value-noise / turbulence function written for the app, so the same <b>Seed</b> always makes the same pattern.')}"""),
+      ("Bevels & edges — Bevel, Chrome, Glass, Gradient Glow", f"""
+<p>Four ways to treat the <i>edge</i> of a shape. The example shape — a cut-out on transparency — is shown
+before and after each effect.</p>
+{fig(IM.get('fx_shape_before'), 'The starting shape: a cut-out on a transparent layer (shown over a checker). The effects below act on the edge of its opaque pixels.')}
+<p><b>Bevel</b> raises the shape as if it were embossed out of the page. It builds a height that rises from the
+edge inward — a <b>Profile</b> of <b>Round</b>, <b>Flat</b> or <b>Button</b> sets its cross-section — then
+lights it: a <b>Light angle</b> and <b>elevation</b> decide where the highlight and shadow fall, <b>Width</b>
+sets how far in the bevel reaches, <b>Smoothness</b> softens it, and <b>Intensity</b> sets how pronounced the
+3D looks.</p>
+{fig(dlg('Bevel'), 'The Bevel dialog: profile, width, smoothness, light angle and elevation, and intensity, with a live preview.')}
+{fig(IM.get('fx_bevel'), 'A rounded bevel lit from the upper left — the rim nearest the light brightens, the far rim falls into shadow.')}
+<p><b>Chrome</b> treats that same bevel as polished metal: it maps a sky-to-ground reflection ramp across the
+curved edge, so the surface mirrors a bright sky above and a dark ground below. Choose the <b>Metal</b> (Sky,
+Steel, Gold or Rainbow), set the <b>Bevel width</b>, swing the <b>Light angle</b>, and use <b>Contrast</b> and
+<b>Shine</b> to make it harder and glossier.</p>
+{fig(dlg('Chrome'), 'The Chrome dialog: a metal-ramp menu, bevel width, light angle, contrast and shine.')}
+{fig(IM.get('fx_chrome'), 'The shape rendered as brushed steel — the reflection ramp bends across the bevel to read as curved metal.')}
+<p><b>Glass</b> makes the shape look like clear glass: a soft inner bevel, a small <b>Refraction</b> that bends
+the pixels at the rim (as light does through a glass edge) and a bright specular highlight. <b>Opacity</b>
+blends the glass treatment back towards the original.</p>
+{fig(dlg('Glass'), 'The Glass dialog: bevel width, refraction amount, opacity and light angle.')}
+{fig(IM.get('fx_glass'), 'The shape as clear glass — note how the pixels near the rim are displaced by the refraction, and the lit edge picks up a highlight.')}
+<p><b>Gradient Glow</b> is a richer Outer Glow: instead of one colour it fades a halo through up to four colour
+stops as it spreads out from the shape. Set the <b>Colours</b> (tick the 3rd and 4th to add stops), the
+<b>Width</b> of the halo, its <b>Softness</b> and <b>Opacity</b>. Like the plain glow it shows in the
+transparent area around the artwork.</p>
+{fig(dlg('Gradient Glow'), 'The Gradient Glow dialog: up to four colour stops, width, softness and opacity.')}
+{fig(IM.get('fx_glow'), 'A warm multi-stop glow fading from yellow through orange to deep red as it spreads out from the shape.')}
+{proc('bevel a cut-out shape',
+  'Put your subject or lettering on its own layer with transparency around it.',
+  'Choose <b>Effects ▸ Bevels &amp; edges ▸ Bevel…</b>.',
+  'Pick a <b>Profile</b> and set the <b>Width</b> and <b>Smoothness</b>; watch the preview.',
+  'Swing the <b>Light angle</b> and <b>elevation</b> so the highlight falls where you want it, and set the <b>Intensity</b>.',
+  'Click <b>Apply</b>.')}
+{tip('Chrome and Glass build on the same bevel as Bevel does, so if the edge looks wrong on them, adjusting the <b>Bevel width</b> fixes all three.')}"""),
+      ("Distort — Motion Trail and Twirl", f"""
+<p>Two effects that re-map the whole layer. The example motif is shown before and after each.</p>
+{fig(IM.get('fx_motif_before'), 'The starting motif for the distortion demos.')}
+<p><b>Motion Trail</b> smears the layer into a directional trail of fading copies, for a sense of speed. Set
+the <b>Angle</b> of travel, the <b>Length</b> of the smear, the number of <b>Echoes</b> and the
+<b>Falloff</b> (how quickly each echo fades). The crisp original is kept on top so the leading edge stays
+sharp.</p>
+{fig(dlg('Motion Trail'), 'The Motion Trail dialog: angle, length, echoes and falloff.')}
+{fig(IM.get('fx_motion'), 'The motif with a motion trail streaming to the right — fading echoes behind a sharp leading edge.')}
+<p><b>Twirl</b> twists the layer around its centre, strongest in the middle and easing out to the chosen
+<b>Radius</b>. The <b>Twist angle</b> can be positive or negative (clockwise / anticlockwise), and
+<b>Falloff</b> shapes how abruptly the twist relaxes at the edge.</p>
+{fig(dlg('Twirl'), 'The Twirl dialog: twist angle, radius and falloff.')}
+{fig(IM.get('fx_twirl'), 'The same motif given a strong twirl — the centre spins hard, easing to no rotation at the radius.')}
+{proc('add a motion trail',
+  'Choose <b>Effects ▸ Distort ▸ Motion Trail…</b>.',
+  'Set the <b>Angle</b> to the direction of travel and the <b>Length</b> of the smear.',
+  'Raise the <b>Echoes</b> for a smoother trail and set the <b>Falloff</b> so the tail fades out.',
+  'Click <b>Apply</b>.')}"""),
+      ("Textures — Wood, Marble and Weave", f"""
+<p>Three generated fills. They fill the <b>current selection</b> — or, with nothing selected, the opaque pixels
+of the active layer — so you can make a selection first to confine them. Each has a <b>Seed</b> (with a
+<b>Reroll</b> button) that re-rolls the pattern; the same seed always reproduces the same texture.</p>
+<p><b>Wood</b> grows turbulent rings between two wood tones. <b>Ring spacing</b> sets the period of the grain,
+<b>Grain</b> warps the rings with turbulence, and <b>Angle</b> tilts the whole plank.</p>
+{fig(dlg('Wood'), 'The Wood dialog: two wood tones, ring spacing, grain and angle, plus a seed.')}
+{fig(IM.get('fx_wood'), 'Procedural wood grain — turbulent rings between a light and a dark wood tone.')}
+<p><b>Marble</b> buckles a stripe pattern with turbulence into stone veins. <b>Scale</b> sets the vein spacing,
+<b>Waviness</b> the turbulence, and <b>Vein sharpness</b> how thin and crisp the veins are. Choose the
+<b>Vein</b> and <b>Stone</b> colours.</p>
+{fig(dlg('Marble'), 'The Marble dialog: vein and stone colours, scale, waviness and vein sharpness, plus a seed.')}
+{fig(IM.get('fx_marble'), 'Procedural marble — pale veins buckling across a dark stone background.')}
+<p><b>Weave</b> interlaces two colours of strand in a basket-weave, each strand shaded so it looks rounded.
+Set the <b>Strand width</b> and the <b>Gap</b> between strands.</p>
+{fig(dlg('Weave'), 'The Weave dialog: two strand colours, strand width and gap, plus a seed.')}
+{fig(IM.get('fx_weave'), 'A procedural basket weave — two strand colours passing over and under in a checkerboard.')}
+{proc('fill a shape with a texture',
+  'Optionally make a <b>selection</b> to confine the fill; otherwise it fills the active layer’s opaque pixels.',
+  'Choose <b>Effects ▸ Textures ▸ Wood…</b> (or <b>Marble…</b> / <b>Weave…</b>).',
+  'Set the pattern controls, and press <b>Reroll</b> until the <b>Seed</b> gives a pattern you like.',
+  'Click <b>Apply</b>.')}
+{note('Because the textures are seedable, noting a seed lets you reproduce exactly the same wood or marble later — handy for matching a second object to the first.')}""")]))
 
     # Photo FX catalogue figures, built from the live demo renders + the preset data.
     def _film_catalogue():
@@ -1823,7 +2006,10 @@ tilted horizon.</p>
 <tr><td>Select ▸ Select All · Deselect</td><td>Select the whole picture; clear the selection</td></tr>
 <tr><td>Layer ▸ New · Duplicate · Merge Down · Delete</td><td>Manage the layer stack</td></tr>
 <tr><td>Layer ▸ Add Layer Mask · From Selection · Apply · Delete Mask</td><td>Attach, apply or remove a non-destructive layer mask</td></tr>
-<tr><td>Effects ▸ Drop Shadow… · Outer Glow…</td><td>A soft shadow or halo behind the artwork</td></tr></table>""")]))
+<tr><td>Effects ▸ Drop Shadow… · Outer Glow…</td><td>A soft shadow or halo behind the artwork</td></tr>
+<tr><td>Effects ▸ Bevels &amp; edges ▸ Bevel… · Chrome… · Glass… · Gradient Glow…</td><td>3D edge treatments driven by the layer's shape</td></tr>
+<tr><td>Effects ▸ Distort ▸ Motion Trail… · Twirl…</td><td>Smear or swirl the whole layer</td></tr>
+<tr><td>Effects ▸ Textures ▸ Wood… · Marble… · Weave…</td><td>Fill the selection or shape with a generated texture</td></tr></table>""")]))
 
     ch.append(("Appendix B — Keyboard Shortcuts", "<p class='lede'>The shortcuts worth learning.</p>", [
       ("Files and editing", f"""<table class="ref"><tr><th>Action</th><th>Shortcut</th></tr>
@@ -2133,7 +2319,10 @@ def build_index(numbered):
              "brightness", "contrast", "levels", "hue", "saturation", "temperature", "colour balance",
              "threshold", "posterize", "greyscale", "invert", "sepia", "auto contrast", "equalize",
              "gaussian blur", "unsharp mask", "median", "sharpen", "emboss", "find edges", "contour",
-             "drop shadow", "outer glow", "resize", "enlarge", "upscale", "canvas size", "crop", "rotate", "flip", "straighten",
+             "drop shadow", "outer glow",
+             "bevel", "chrome", "glass", "gradient glow", "motion trail", "twirl",
+             "wood", "marble", "weave", "distance transform", "turbulence", "refraction", "seed",
+             "resize", "enlarge", "upscale", "canvas size", "crop", "rotate", "flip", "straighten",
              "photo fx", "film look", "art style", "oil painting", "watercolour", "pencil sketch", "cartoon",
              "vintage", "cross process", "cinematic", "split-tone", "grain", "vignette",
              "undo", "zoom", "PNG", "JPEG", "pixel", "raster"]

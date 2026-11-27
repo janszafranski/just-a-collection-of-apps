@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.14-00"
+VERSION = "1.15-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -970,6 +970,473 @@ def _cartoon(rgb, strength, use_cv2):
     edges = _edges_numpy(grey, block=9, c=2 + int(strength * 8))
     out = _np.where(edges[..., None] == 0, 0, q)
     return out.astype(_np.uint8)
+
+
+# ---------------------------------------------------------------- Effects studio
+# A clean-room, from-first-principles reimagining of the classic graphics-effect
+# *set* that plug-ins like Alien Skin Eye Candy made famous — bevels, chrome,
+# glass, gradient glow, motion trails, twirls and procedural wood / marble / weave
+# textures. Every recipe below is ORIGINAL code: edge/shape effects are driven by a
+# distance transform of the layer's own alpha, shaded through surface normals;
+# distortions remap the layer's pixels; textures are built from a small seedable
+# value-noise / fractal-turbulence generator we write ourselves. All the heavy
+# lifting lives in pure module-level functions that take and return HxWx(3 or 4)
+# uint8 ndarrays (no Qt), so they can be unit-tested headless — exactly like
+# smart_mask / smooth_skin / smart_enlarge / the Photo FX transforms, and following
+# the same HAS_CV2 guard (an OpenCV fast path with a NumPy/PIL fallback) throughout.
+
+def _ensure_rgba(arr):
+    """Return a contiguous HxWx4 uint8 copy of an HxWx3-or-4 array (alpha=255 if 3)."""
+    a = _np.ascontiguousarray(arr)
+    if a.ndim == 2:
+        a = _np.dstack([a, a, a])
+    if a.shape[2] == 3:
+        a = _np.dstack([a, _np.full(a.shape[:2], 255, _np.uint8)])
+    return a.astype(_np.uint8)
+
+
+def _distance_transform(binary, force_fallback=False):
+    """Euclidean distance (in px) from every True pixel to the nearest False pixel of
+    a boolean HxW mask. Prefers cv2.distanceTransform; otherwise a two-pass
+    chamfer / jump-flood-free NumPy approximation good enough for shading. Returns a
+    float32 HxW array (0 on / outside the shape edge, growing into the interior)."""
+    binary = _np.ascontiguousarray(binary.astype(bool))
+    if not binary.any():
+        return _np.zeros(binary.shape, _np.float32)
+    if HAS_CV2 and not force_fallback:
+        src = _np.where(binary, 255, 0).astype(_np.uint8)
+        try:
+            d = _cv2.distanceTransform(src, _cv2.DIST_L2, 5)
+            return d.astype(_np.float32)
+        except Exception:
+            pass
+    return _chamfer_distance(binary)
+
+
+def _chamfer_distance(binary):
+    """Pure-NumPy two-pass chamfer distance transform (3-4-5 weights, scaled to ~px).
+    Not exact Euclidean but smooth and monotone — ideal for bevel shading."""
+    h, w = binary.shape
+    INF = float(h + w) * 5.0
+    d = _np.where(binary, INF, 0.0).astype(_np.float32)
+    # forward pass (top-left to bottom-right)
+    for y in range(h):
+        row = d[y]
+        up = d[y - 1] if y > 0 else None
+        for x in range(w):
+            if row[x] == 0.0:
+                continue
+            best = row[x]
+            if x > 0:
+                best = min(best, row[x - 1] + 3.0)
+            if up is not None:
+                best = min(best, up[x] + 3.0)
+                if x > 0:
+                    best = min(best, up[x - 1] + 4.0)
+                if x < w - 1:
+                    best = min(best, up[x + 1] + 4.0)
+            row[x] = best
+    # backward pass (bottom-right to top-left)
+    for y in range(h - 1, -1, -1):
+        row = d[y]
+        dn = d[y + 1] if y < h - 1 else None
+        for x in range(w - 1, -1, -1):
+            if row[x] == 0.0:
+                continue
+            best = row[x]
+            if x < w - 1:
+                best = min(best, row[x + 1] + 3.0)
+            if dn is not None:
+                best = min(best, dn[x] + 3.0)
+                if x < w - 1:
+                    best = min(best, dn[x + 1] + 4.0)
+                if x > 0:
+                    best = min(best, dn[x - 1] + 4.0)
+            row[x] = best
+    return (d / 3.0).astype(_np.float32)   # 3-weight ≈ 1px orthogonal step
+
+
+def _bevel_height(alpha, width, smoothness, profile, force_fallback=False):
+    """Build a 0..1 HxW *height field* for a raised bevel on the shape described by an
+    HxW uint8 alpha. The height rises from the shape edge inward over `width` px,
+    shaped by `profile` ('round'/'flat'/'button'), then softened by `smoothness`.
+    Returns (height, inside) where inside is the bool shape mask."""
+    inside = alpha > 127
+    dist = _distance_transform(inside, force_fallback=force_fallback)
+    width = max(1.0, float(width))
+    t = _np.clip(dist / width, 0.0, 1.0)            # 0 at edge .. 1 at `width` inward
+    if profile == 'flat':
+        h = t                                       # linear ramp → chamfered edge
+    elif profile == 'button':
+        # rounded pillow that flattens on top (ease-out then plateau)
+        h = _np.sin(t * (math.pi / 2.0))
+    else:                                           # 'round' — spherical cap
+        h = _np.sqrt(_np.clip(1.0 - (1.0 - t) ** 2, 0.0, 1.0))
+    if smoothness > 0:
+        sig = float(smoothness)
+        h = _np.asarray(Image.fromarray((h * 255).astype('uint8'), 'L')
+                        .filter(ImageFilter.GaussianBlur(sig))).astype(_np.float32) / 255.0
+    h = h * inside                                  # height is 0 outside the shape
+    return h.astype(_np.float32), inside
+
+
+def _surface_normals(height, scale=3.0):
+    """Surface normals (nx,ny,nz) of a height field, from its gradient. `scale`
+    exaggerates the slope (steeper bevel). Returns three HxW float arrays, normalised."""
+    gy, gx = _np.gradient(height.astype(_np.float32))
+    nx = -gx * scale
+    ny = -gy * scale
+    nz = _np.ones_like(height)
+    norm = _np.sqrt(nx * nx + ny * ny + nz * nz) + 1e-6
+    return nx / norm, ny / norm, nz / norm
+
+
+def _light_vector(angle_deg, elevation_deg):
+    """Unit light direction from a compass angle (0°=right, CCW) and an elevation."""
+    a = math.radians(angle_deg)
+    e = math.radians(elevation_deg)
+    lx = math.cos(a) * math.cos(e)
+    ly = -math.sin(a) * math.cos(e)                 # screen y grows downward
+    lz = math.sin(e)
+    n = math.sqrt(lx * lx + ly * ly + lz * lz) + 1e-9
+    return lx / n, ly / n, lz / n
+
+
+def bevel(rgba, width=10, smoothness=2.0, profile='round', angle=135,
+          elevation=45, intensity=0.7, force_fallback=False):
+    """EFFECT 1 — raise a 3D bevel on the layer's alpha shape. Shades the shape with
+    diffuse + specular lighting of the surface normals derived from a distance-to-edge
+    height field, so the rim catches the light and the far side falls into shadow.
+    Takes/returns an HxWx(3 or 4) uint8 ndarray; the alpha is preserved. Pure (no Qt)."""
+    out = _ensure_rgba(rgba).astype(_np.float32)
+    alpha = out[..., 3]
+    height, inside = _bevel_height(alpha, width, smoothness, profile,
+                                   force_fallback=force_fallback)
+    nx, ny, nz = _surface_normals(height, scale=2.5 + intensity * 4.0)
+    lx, ly, lz = _light_vector(angle, elevation)
+    diff = _np.clip(nx * lx + ny * ly + nz * lz, 0.0, 1.0)
+    # specular (Blinn-ish): reflect the light off the normal towards the viewer (+z)
+    hx, hy, hz = lx, ly, lz + 1.0
+    hn = math.sqrt(hx * hx + hy * hy + hz * hz) + 1e-9
+    spec = _np.clip(nx * (hx / hn) + ny * (hy / hn) + nz * (hz / hn), 0.0, 1.0) ** 24
+    rgb = out[..., :3]
+    # shade = darken/lighten the existing colour by the diffuse term, add a highlight
+    shade = (0.5 + (diff - 0.5) * (0.6 + intensity))[..., None]
+    lit = rgb * shade + spec[..., None] * 255.0 * intensity
+    # only reshape the bevel band (where height ramps); the flat interior keeps colour
+    band = _np.clip(1.0 - height, 0.0, 1.0)[..., None]   # strongest at the edge
+    res = rgb * (1.0 - band) + lit * band
+    orig = _ensure_rgba(rgba).astype(_np.float32)[..., :3]
+    out[..., :3] = _np.where(inside[..., None], _np.clip(res, 0, 255), orig)  # outside untouched
+    return out.astype(_np.uint8)
+
+
+def _ramp_from_stops(stops, n=256):
+    """Build an n×3 float lookup ramp by linearly interpolating (pos0..1, (r,g,b)) stops."""
+    stops = sorted(stops, key=lambda s: s[0])
+    xs = [s[0] for s in stops]
+    cols = _np.array([s[1] for s in stops], _np.float32)
+    t = _np.linspace(0.0, 1.0, n)
+    ramp = _np.empty((n, 3), _np.float32)
+    for c in range(3):
+        ramp[:, c] = _np.interp(t, xs, cols[:, c])
+    return ramp
+
+
+CHROME_RAMPS = {
+    'sky': [(0.0, (18, 22, 40)), (0.45, (70, 110, 170)), (0.55, (210, 230, 255)),
+            (0.72, (120, 130, 150)), (0.85, (235, 240, 250)), (1.0, (40, 45, 60))],
+    'steel': [(0.0, (20, 20, 24)), (0.4, (90, 95, 105)), (0.5, (240, 245, 250)),
+              (0.62, (70, 75, 85)), (1.0, (200, 205, 215))],
+    'gold': [(0.0, (40, 26, 6)), (0.4, (150, 110, 30)), (0.55, (255, 240, 180)),
+             (0.7, (170, 120, 40)), (1.0, (90, 60, 12))],
+    'rainbow': [(0.0, (40, 0, 60)), (0.25, (0, 80, 220)), (0.5, (0, 210, 180)),
+                (0.7, (240, 200, 40)), (1.0, (220, 40, 60))],
+}
+CHROME_RAMP_ORDER = ['sky', 'steel', 'gold', 'rainbow']
+
+
+def chrome(rgba, ramp='sky', width=12, angle=135, contrast=0.6, shine=0.7,
+           force_fallback=False):
+    """EFFECT 2 — map a metallic light-to-dark ramp onto the bevel normals for a
+    reflective-metal look. The vertical component of the lit normal indexes a
+    sky/ground chrome gradient; `contrast` stretches it and `shine` adds a specular
+    hotspot. Pure; takes/returns HxWx(3 or 4) uint8."""
+    out = _ensure_rgba(rgba).astype(_np.float32)
+    alpha = out[..., 3]
+    height, inside = _bevel_height(alpha, width, 1.5, 'round', force_fallback=force_fallback)
+    nx, ny, nz = _surface_normals(height, scale=5.0)
+    lx, ly, lz = _light_vector(angle, 55)
+    # reflect the view ray (+z) about the normal; its tilt drives the ramp coordinate
+    refl = _np.clip(nx * lx + ny * ly + nz * lz, -1.0, 1.0)
+    coord = (refl * 0.5 + 0.5)
+    coord = _np.clip((coord - 0.5) * (1.0 + contrast * 2.0) + 0.5, 0.0, 1.0)
+    ramp_tbl = _ramp_from_stops(CHROME_RAMPS.get(ramp, CHROME_RAMPS['sky']))
+    idx = _np.clip((coord * 255).astype(_np.int32), 0, 255)
+    metal = ramp_tbl[idx]
+    # specular hotspot for extra shine
+    hx, hy, hz = lx, ly, lz + 1.0
+    hn = math.sqrt(hx * hx + hy * hy + hz * hz) + 1e-9
+    spec = _np.clip(nx * (hx / hn) + ny * (hy / hn) + nz * (hz / hn), 0.0, 1.0) ** 40
+    metal = metal + spec[..., None] * 255.0 * shine
+    out[..., :3] = _np.clip(metal, 0, 255)
+    out[~inside, 3] = alpha[~inside]
+    return out.astype(_np.uint8)
+
+
+def _warp_remap(rgb, map_x, map_y, force_fallback=False):
+    """Sample an HxWx3/4 uint8 image at float coordinate maps (map_x, map_y). Prefers
+    cv2.remap (bilinear, border-reflect); else a NumPy nearest-ish gather."""
+    h, w = rgb.shape[:2]
+    if HAS_CV2 and not force_fallback:
+        try:
+            return _cv2.remap(rgb, map_x.astype(_np.float32), map_y.astype(_np.float32),
+                              _cv2.INTER_LINEAR, borderMode=_cv2.BORDER_REFLECT)
+        except Exception:
+            pass
+    xi = _np.clip(_np.round(map_x).astype(_np.int32), 0, w - 1)
+    yi = _np.clip(_np.round(map_y).astype(_np.int32), 0, h - 1)
+    return rgb[yi, xi]
+
+
+def glass(rgba, width=10, refraction=6.0, opacity=0.8, angle=135, force_fallback=False):
+    """EFFECT 3 — a glassy inner bevel: a soft inner-bevel shading, a small refraction
+    that displaces the underlying pixels sideways near the edge (as light bends through
+    the glass rim), and a crisp specular highlight. Pure; HxWx(3 or 4) uint8 in/out."""
+    out = _ensure_rgba(rgba).astype(_np.float32)
+    alpha = out[..., 3]
+    height, inside = _bevel_height(alpha, width, 1.0, 'round', force_fallback=force_fallback)
+    nx, ny, nz = _surface_normals(height, scale=6.0)
+    h, w = alpha.shape
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    # refraction: push the sampling coordinate along the surface-normal tilt
+    map_x = xx + nx * refraction
+    map_y = yy + ny * refraction
+    refr = _warp_remap(out[..., :3].astype(_np.uint8), map_x, map_y,
+                       force_fallback=force_fallback).astype(_np.float32)
+    # glass tint + inner-bevel shading (brighten the lit rim, darken the far rim)
+    lx, ly, lz = _light_vector(angle, 50)
+    diff = _np.clip(nx * lx + ny * ly + nz * lz, -1.0, 1.0)
+    rim = _np.clip(1.0 - height, 0.0, 1.0)[..., None]
+    shaded = refr * (1.0 + diff[..., None] * 0.5 * rim)
+    hx, hy, hz = lx, ly, lz + 1.0
+    hn = math.sqrt(hx * hx + hy * hy + hz * hz) + 1e-9
+    spec = _np.clip(nx * (hx / hn) + ny * (hy / hn) + nz * (hz / hn), 0.0, 1.0) ** 32
+    shaded = shaded + spec[..., None] * 255.0
+    glassed = out[..., :3] * (1.0 - opacity) + shaded * opacity
+    out[..., :3] = _np.clip(glassed, 0, 255)
+    out[~inside, :3] = _ensure_rgba(rgba)[~inside, :3].astype(_np.float32)
+    out[..., 3] = alpha
+    return out.astype(_np.uint8)
+
+
+def gradient_glow(rgba, stops=None, width=16, softness=0.6, opacity=0.85,
+                  force_fallback=False):
+    """EFFECT 4 — a multi-stop coloured glow OUTSIDE the alpha shape (a richer Outer
+    Glow). A distance transform of the *background* maps each ring of pixels around
+    the shape to a colour stop, fading out over `width` px. `stops` is a list of
+    (pos0..1, (r,g,b)); `softness` blurs the falloff. Pure; HxWx(3 or 4) uint8."""
+    src = _ensure_rgba(rgba)
+    alpha = src[..., 3]
+    if stops is None:
+        stops = [(0.0, (255, 240, 120)), (0.5, (255, 120, 40)), (1.0, (180, 20, 60))]
+    inside = alpha > 127
+    outside = ~inside
+    dist = _distance_transform(outside, force_fallback=force_fallback)   # 0 at edge → out
+    width = max(1.0, float(width))
+    t = _np.clip(dist / width, 0.0, 1.0)             # 0 at shape edge .. 1 at glow reach
+    ramp = _ramp_from_stops(stops)
+    idx = _np.clip((t * 255).astype(_np.int32), 0, 255)
+    glow_rgb = ramp[idx]
+    # intensity fades to zero at the glow's outer reach; softness eases the profile
+    gi = 1.0 - t
+    gi = gi ** (0.4 + (1.0 - softness) * 2.0)
+    gi = _np.where(outside, gi, 0.0).astype(_np.float32)
+    if softness > 0:
+        gi = _np.asarray(Image.fromarray((gi * 255).astype('uint8'), 'L')
+                         .filter(ImageFilter.GaussianBlur(softness * width * 0.3))
+                         ).astype(_np.float32) / 255.0
+    gi = gi * opacity
+    # composite: glow underneath, original shape on top
+    out = src.astype(_np.float32)
+    a = (alpha.astype(_np.float32) / 255.0)[..., None]
+    base_rgb = glow_rgb * gi[..., None]
+    base_a = gi
+    comp_rgb = out[..., :3] * a + base_rgb * (1.0 - a)
+    comp_a = _np.clip(alpha.astype(_np.float32) + base_a * 255.0 * (1.0 - a[..., 0]), 0, 255)
+    out[..., :3] = comp_rgb
+    out[..., 3] = comp_a
+    return _np.clip(out, 0, 255).astype(_np.uint8)
+
+
+def motion_trail(rgba, angle=0, length=24, echoes=8, falloff=0.7, force_fallback=False):
+    """EFFECT 5 — a directional motion smear/echo of the whole layer: stamp `echoes`
+    progressively fainter, progressively offset copies of the layer along `angle`
+    (compass degrees), spread over `length` px, with each echo dimmed by `falloff`.
+    Pure; HxWx(3 or 4) uint8 in/out (alpha is smeared too)."""
+    src = _ensure_rgba(rgba).astype(_np.float32)
+    h, w = src.shape[:2]
+    echoes = max(1, int(echoes))
+    a = math.radians(angle)
+    dx = math.cos(a); dy = -math.sin(a)
+    acc = _np.zeros((h, w, 4), _np.float32)
+    wsum = 0.0
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    for i in range(echoes):
+        frac = i / max(1, echoes - 1) if echoes > 1 else 0.0
+        off = frac * length
+        weight = falloff ** i
+        map_x = xx - dx * off
+        map_y = yy - dy * off
+        sample = _warp_remap(src, map_x, map_y, force_fallback=force_fallback).astype(_np.float32)
+        # outside-the-frame samples (reflected) shouldn't bleed colour: gate by whether
+        # the source coordinate was in-bounds
+        inb = ((map_x >= 0) & (map_x < w) & (map_y >= 0) & (map_y < h)).astype(_np.float32)
+        sample = sample * inb[..., None]
+        acc += sample * weight
+        wsum += weight
+    out = acc / max(1e-6, wsum)
+    # keep the crisp original on top of the trail so the leading edge stays sharp
+    a0 = (src[..., 3] / 255.0)[..., None]
+    out[..., :3] = out[..., :3] * (1.0 - a0) + src[..., :3] * a0
+    out[..., 3] = _np.maximum(out[..., 3], src[..., 3])
+    return _np.clip(out, 0, 255).astype(_np.uint8)
+
+
+def twirl(rgba, angle=120, radius=None, falloff=1.0, force_fallback=False):
+    """EFFECT 6 — a radial twist (swirl) around the layer centre. Each pixel is rotated
+    about the centre by an amount that is `angle` degrees at the centre and eases to 0
+    at `radius`; `falloff` shapes how quickly the twist relaxes outward. Uses cv2.remap
+    when present, else a NumPy coordinate map. Pure; HxWx(3 or 4) uint8."""
+    src = _ensure_rgba(rgba)
+    h, w = src.shape[:2]
+    cx, cy = (w - 1) / 2.0, (h - 1) / 2.0
+    if radius is None:
+        radius = min(w, h) / 2.0
+    radius = max(1.0, float(radius))
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    dx = xx - cx; dy = yy - cy
+    r = _np.sqrt(dx * dx + dy * dy)
+    theta = _np.arctan2(dy, dx)
+    # twist strength: full at centre, 0 beyond radius, eased by falloff
+    s = _np.clip(1.0 - r / radius, 0.0, 1.0) ** max(0.1, falloff)
+    rot = math.radians(angle) * s
+    ct = _np.cos(rot); st = _np.sin(rot)
+    # sample FROM the un-rotated source (inverse map): rotate the sample coord back
+    map_x = cx + (dx * ct + dy * st)
+    map_y = cy + (-dx * st + dy * ct)
+    out = _warp_remap(src, map_x, map_y, force_fallback=force_fallback)
+    return _ensure_rgba(out)
+
+
+# ---- seedable value-noise / fractal turbulence (for the procedural textures) ----
+def _value_noise(h, w, scale, seed=0):
+    """A single octave of smooth value noise: a coarse grid of random values at `scale`
+    px spacing, bilinearly interpolated up to HxW. Deterministic for a given `seed`.
+    Returns a float HxW array in 0..1."""
+    scale = max(2.0, float(scale))
+    gh = int(math.ceil(h / scale)) + 2
+    gw = int(math.ceil(w / scale)) + 2
+    rng = _np.random.default_rng(seed)
+    grid = rng.random((gh, gw)).astype(_np.float32)
+    # bilinear upsample via Pillow's resize (smooth, deterministic)
+    big = Image.fromarray((grid * 255).astype('uint8'), 'L').resize((w, h), Image.BILINEAR)
+    return _np.asarray(big).astype(_np.float32) / 255.0
+
+
+def _turbulence(h, w, scale, octaves=4, seed=0):
+    """Fractal turbulence: sum several octaves of value noise at halving scale and
+    halving amplitude. Deterministic for a given `seed`. Returns float HxW in ~0..1."""
+    total = _np.zeros((h, w), _np.float32)
+    amp = 1.0; amp_sum = 0.0; s = float(scale)
+    for o in range(max(1, int(octaves))):
+        total += _value_noise(h, w, s, seed=seed + o * 101) * amp
+        amp_sum += amp
+        amp *= 0.5
+        s = max(2.0, s / 2.0)
+    return total / max(1e-6, amp_sum)
+
+
+def _blend_two(c0, c1, t):
+    """Blend two (r,g,b) colours by a float HxW weight t (0→c0, 1→c1). Returns HxWx3."""
+    c0 = _np.asarray(c0, _np.float32); c1 = _np.asarray(c1, _np.float32)
+    return c0 + (c1 - c0) * t[..., None]
+
+
+def wood(h, w, spacing=18, turb=0.5, color_a=(150, 95, 45), color_b=(95, 55, 22),
+         angle=0, seed=0):
+    """EFFECT 7 — procedural wood grain. Concentric growth rings (a sinusoid of the
+    distance from a grain axis) are perturbed by fractal turbulence, then the ring
+    phase picks between two wood colours. `spacing` sets the ring period (px); `turb`
+    warps the rings; `angle` tilts the grain. Deterministic for a given `seed`.
+    Returns a fresh HxWx4 uint8 texture (fully opaque)."""
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    a = math.radians(angle)
+    # distance from a grain axis running through the centre, rotated by `angle`
+    cx, cy = w / 2.0, h / 2.0
+    u = (xx - cx) * math.cos(a) + (yy - cy) * math.sin(a)
+    v = -(xx - cx) * math.sin(a) + (yy - cy) * math.cos(a)
+    rings = _np.sqrt(u * u + (v * 0.25) ** 2)        # elongated rings → plank look
+    t = _turbulence(h, w, max(6.0, spacing * 2.0), octaves=4, seed=seed)
+    rings = rings + t * spacing * turb * 4.0
+    phase = _np.sin(rings / max(1.0, spacing) * math.pi * 2.0) * 0.5 + 0.5
+    phase = phase ** 1.3                              # sharpen the dark lines a touch
+    rgb = _blend_two(color_a, color_b, phase)
+    # a faint lengthwise fibre streak for realism
+    fibre = (_value_noise(h, w, 3.0, seed=seed + 7) - 0.5) * 18.0
+    rgb = _np.clip(rgb + fibre[..., None], 0, 255)
+    return _ensure_rgba(rgb.astype(_np.uint8))
+
+
+def marble(h, w, scale=40, turb=0.6, sharpness=4.0, vein=(240, 240, 245),
+           bg=(60, 70, 90), seed=0):
+    """EFFECT 8 — procedural marble veining. A sinusoid across the image is distorted by
+    fractal turbulence so the stripes buckle into marble veins; `sharpness` tightens the
+    veins, `scale` sets their spacing, `turb` their waviness. Deterministic for `seed`.
+    Returns a fresh HxWx4 uint8 texture (opaque)."""
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    t = _turbulence(h, w, max(6.0, float(scale)), octaves=5, seed=seed)
+    val = xx / max(1.0, float(scale)) + t * turb * 8.0
+    veins = _np.abs(_np.sin(val * math.pi))
+    veins = veins ** max(0.2, 1.0 / max(0.2, sharpness))   # higher sharpness → thinner veins
+    rgb = _blend_two(bg, vein, veins)
+    return _ensure_rgba(rgb.astype(_np.uint8))
+
+
+def weave(h, w, strand=14, gap=3, color_a=(170, 120, 70), color_b=(120, 80, 45),
+          seed=0):
+    """EFFECT 9 (stretch) — a basket-weave over/under pattern. Horizontal and vertical
+    strands of width `strand` separated by `gap` cross in a checkerboard of which strand
+    passes OVER, shaded with a cylindrical highlight so each strand looks rounded.
+    Deterministic for `seed` (used only for a faint colour jitter). Returns HxWx4 uint8."""
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    period = float(strand + gap)
+    cx = (xx % period); cy = (yy % period)
+    in_x = cx < strand                               # on a vertical strand
+    in_y = cy < strand                               # on a horizontal strand
+    # which strand is on top alternates per cell (basket weave)
+    cell_x = _np.floor(xx / period).astype(_np.int32)
+    cell_y = _np.floor(yy / period).astype(_np.int32)
+    v_over = ((cell_x + cell_y) % 2 == 0)            # vertical strand over here
+    # cylindrical shading across each strand (bright centre, dark edges)
+    shade_x = _np.sin(_np.clip(cx / max(1.0, strand), 0, 1) * math.pi)
+    shade_y = _np.sin(_np.clip(cy / max(1.0, strand), 0, 1) * math.pi)
+    rgb = _np.zeros((h, w, 3), _np.float32)
+    # base: the gap (shadow between strands)
+    rgb[:] = _np.asarray((30, 22, 14), _np.float32)
+    # horizontal strands
+    horiz = in_y & (~in_x | ~v_over | ~in_y)
+    hcol = _np.asarray(color_b, _np.float32)
+    rgb = _np.where((in_y & (~in_x | ~v_over))[..., None],
+                    hcol * (0.55 + 0.45 * shade_y[..., None]), rgb)
+    # vertical strands
+    vcol = _np.asarray(color_a, _np.float32)
+    rgb = _np.where((in_x & (~in_y | v_over))[..., None],
+                    vcol * (0.55 + 0.45 * shade_x[..., None]), rgb)
+    rng = _np.random.default_rng(seed)
+    jit = (rng.random((h, w, 1)).astype(_np.float32) - 0.5) * 10.0
+    rgb = _np.clip(rgb + jit, 0, 255)
+    return _ensure_rgba(rgb.astype(_np.uint8))
 
 
 EXPORT_FORMATS = [
@@ -3097,6 +3564,518 @@ class ArtStyleDialog(_PhotoFXDialog):
         return ART_STYLES[self._style_key()]['label']
 
 
+class _EffectDialog(QDialog):
+    """Shared base for the new Effects studios (Bevel / Chrome / Glass / Gradient Glow /
+    Motion Trail / Twirl / Wood / Marble / Weave). Each shows a preset/slider panel and
+    a live preview on the active layer, then commits the result to that layer, undoably —
+    the same spirit as SmoothSkinDialog / _PhotoFXDialog. Subclasses build the controls
+    and supply _transform(rgba)->rgba (HxWx4 uint8). A small live preview THUMBNAIL (like
+    EnlargeDialog) also shows the result, so it reads even on a tiny or off-screen layer."""
+    def __init__(self, win, title):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle(title); self.setMinimumWidth(400)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()           # the layer we preview over
+        self._busy = False
+
+    # ---- widget helpers (match the other studios) ----
+    def _slider(self, lo, hi, val):
+        s = QSlider(Qt.Horizontal); s.setRange(lo, hi); s.setValue(val); return s
+
+    def _val(self):
+        l = QLabel(); l.setMinimumWidth(50); l.setAlignment(Qt.AlignRight | Qt.AlignVCenter); return l
+
+    def _row(self, s, val):
+        rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+        holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250); return holder
+
+    def _colour_btn(self, holder, key, default):
+        """A colour-swatch button backed by self._cols[key]; updates preview on change."""
+        if not hasattr(self, '_cols'):
+            self._cols = {}
+        self._cols[key] = QColor(*default) if isinstance(default, (tuple, list)) else QColor(default)
+        btn = QPushButton('Colour')
+        def tint():
+            c = self._cols[key]
+            btn.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"};padding:3px 10px')
+        def pick():
+            c = QColorDialog.getColor(self._cols[key], self, 'Colour')
+            if c.isValid():
+                self._cols[key] = c; tint(); self._refresh()
+        btn.clicked.connect(pick); tint()
+        return btn
+
+    def _col_rgb(self, key):
+        c = self._cols[key]; return (c.red(), c.green(), c.blue())
+
+    def _finish_ui(self, v):
+        """Add the preview thumbnail, the 'new layer' checkbox and the OK/Cancel box."""
+        self.cb_newlayer = QCheckBox('Put the result on a new layer'); self.cb_newlayer.setChecked(False)
+        v.addWidget(self.cb_newlayer)
+        self.preview = QLabel('preview'); self.preview.setFixedHeight(120)
+        self.preview.setAlignment(Qt.AlignCenter)
+        self.preview.setStyleSheet('border:1px solid #556; background:#222')
+        v.addWidget(self.preview)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply')
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+
+    # ---- subclass hook ----
+    def _transform(self, rgba):
+        raise NotImplementedError
+
+    def _update_labels(self):
+        pass
+
+    def _compute(self):
+        """The result RGBA PIL image for the current settings (whole layer)."""
+        base = q2pil(self.base)
+        rgba = _np.asarray(base.convert('RGBA'))
+        out = self._transform(rgba)
+        return Image.fromarray(_ensure_rgba(out), 'RGBA')
+
+    def _refresh(self):
+        if self._busy: return
+        self._busy = True
+        self._update_labels()
+        try:
+            res = self._compute()
+            self.canvas.img = pil2q(res)
+            # thumbnail over a checker so transparency reads
+            self._show_thumb(res)
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+        self._busy = False
+
+    def _show_thumb(self, pil):
+        pm = QPixmap.fromImage(pil2q(pil))
+        sw, sh = self.preview.width() or 360, self.preview.height()
+        self.preview.setPixmap(pm.scaled(sw, sh, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+    def accept(self):
+        try:
+            result = pil2q(self._compute())
+        except Exception:
+            self.canvas.img = self.base; self.canvas._fit(); super().reject(); return
+        c = self.canvas
+        self.canvas.img = self.base                  # undo the preview before committing
+        if self.cb_newlayer.isChecked():
+            c.snapshot_full()
+            layer = Layer(result, c._unique_name(self._layer_stem()))
+            c.active += 1; c.layers.insert(c.active, layer)
+            c.update(); self.win.refresh_layers()
+        else:
+            c.push_undo_layer(self.active_idx, self.base.copy())
+            c.img = result; c._fit()
+        super().accept()
+
+    def _layer_stem(self):
+        return 'Effect'
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
+class BevelDialog(_EffectDialog):
+    """Effects ▸ Bevel… — raise a lit 3D bevel on the active layer's alpha shape."""
+    def __init__(self, win):
+        super().__init__(win, 'Bevel')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Bevel — a raised 3D edge</b>'))
+        info = QLabel('Raises a bevelled, lit edge on the opaque shape of the active layer, '
+                      'as if it were embossed out of the page. Works best on a cut-out subject '
+                      'or lettering on a transparent layer.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.profile = QComboBox(); self.profile.addItems(['Round', 'Flat', 'Button'])
+        self.profile.currentIndexChanged.connect(self._refresh)
+        form.addRow('Profile:', self.profile)
+        self.s_width = self._slider(1, 60, 12); self.l_width = self._val()
+        self.s_smooth = self._slider(0, 20, 2); self.l_smooth = self._val()
+        self.s_angle = self._slider(0, 359, 135); self.l_angle = self._val()
+        self.s_elev = self._slider(5, 85, 45); self.l_elev = self._val()
+        self.s_int = self._slider(0, 100, 70); self.l_int = self._val()
+        form.addRow('Width:', self._row(self.s_width, self.l_width))
+        form.addRow('Smoothness:', self._row(self.s_smooth, self.l_smooth))
+        form.addRow('Light angle:', self._row(self.s_angle, self.l_angle))
+        form.addRow('Light elevation:', self._row(self.s_elev, self.l_elev))
+        form.addRow('Intensity:', self._row(self.s_int, self.l_int))
+        for s in (self.s_width, self.s_smooth, self.s_angle, self.s_elev, self.s_int):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_width.setText(f'{self.s_width.value()} px')
+        self.l_smooth.setText(f'{self.s_smooth.value()}')
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+        self.l_elev.setText(f'{self.s_elev.value()}°')
+        self.l_int.setText(f'{self.s_int.value()}')
+
+    def _transform(self, rgba):
+        prof = ['round', 'flat', 'button'][self.profile.currentIndex()]
+        return bevel(rgba, width=self.s_width.value(), smoothness=self.s_smooth.value(),
+                     profile=prof, angle=self.s_angle.value(), elevation=self.s_elev.value(),
+                     intensity=self.s_int.value() / 100.0)
+
+    def _layer_stem(self):
+        return 'Bevel'
+
+
+class ChromeDialog(_EffectDialog):
+    """Effects ▸ Chrome… — a reflective-metal look mapped onto the shape's bevel."""
+    def __init__(self, win):
+        super().__init__(win, 'Chrome')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Chrome — reflective metal</b>'))
+        info = QLabel('Turns the active layer’s shape into polished metal by mapping a '
+                      'sky-to-ground reflection ramp across a bevelled edge.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.ramp = QComboBox()
+        for k in CHROME_RAMP_ORDER:
+            self.ramp.addItem(k.capitalize(), k)
+        self.ramp.currentIndexChanged.connect(self._refresh)
+        form.addRow('Metal:', self.ramp)
+        self.s_width = self._slider(1, 60, 14); self.l_width = self._val()
+        self.s_angle = self._slider(0, 359, 135); self.l_angle = self._val()
+        self.s_contrast = self._slider(0, 100, 60); self.l_contrast = self._val()
+        self.s_shine = self._slider(0, 100, 70); self.l_shine = self._val()
+        form.addRow('Bevel width:', self._row(self.s_width, self.l_width))
+        form.addRow('Light angle:', self._row(self.s_angle, self.l_angle))
+        form.addRow('Contrast:', self._row(self.s_contrast, self.l_contrast))
+        form.addRow('Shine:', self._row(self.s_shine, self.l_shine))
+        for s in (self.s_width, self.s_angle, self.s_contrast, self.s_shine):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_width.setText(f'{self.s_width.value()} px')
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+        self.l_contrast.setText(f'{self.s_contrast.value()}')
+        self.l_shine.setText(f'{self.s_shine.value()}')
+
+    def _transform(self, rgba):
+        return chrome(rgba, ramp=self.ramp.currentData(), width=self.s_width.value(),
+                      angle=self.s_angle.value(), contrast=self.s_contrast.value() / 100.0,
+                      shine=self.s_shine.value() / 100.0)
+
+    def _layer_stem(self):
+        return 'Chrome'
+
+
+class GlassDialog(_EffectDialog):
+    """Effects ▸ Glass… — a glassy inner bevel with edge refraction and a highlight."""
+    def __init__(self, win):
+        super().__init__(win, 'Glass')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Glass — a clear glassy bevel</b>'))
+        info = QLabel('Gives the layer’s shape a clear-glass edge: a soft inner bevel, a small '
+                      'refraction that bends the pixels at the rim, and a bright specular highlight.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.s_width = self._slider(1, 60, 12); self.l_width = self._val()
+        self.s_refr = self._slider(0, 40, 6); self.l_refr = self._val()
+        self.s_op = self._slider(0, 100, 80); self.l_op = self._val()
+        self.s_angle = self._slider(0, 359, 135); self.l_angle = self._val()
+        form.addRow('Bevel width:', self._row(self.s_width, self.l_width))
+        form.addRow('Refraction:', self._row(self.s_refr, self.l_refr))
+        form.addRow('Opacity:', self._row(self.s_op, self.l_op))
+        form.addRow('Light angle:', self._row(self.s_angle, self.l_angle))
+        for s in (self.s_width, self.s_refr, self.s_op, self.s_angle):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_width.setText(f'{self.s_width.value()} px')
+        self.l_refr.setText(f'{self.s_refr.value()} px')
+        self.l_op.setText(f'{self.s_op.value()} %')
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+
+    def _transform(self, rgba):
+        return glass(rgba, width=self.s_width.value(), refraction=float(self.s_refr.value()),
+                     opacity=self.s_op.value() / 100.0, angle=self.s_angle.value())
+
+    def _layer_stem(self):
+        return 'Glass'
+
+
+class GradientGlowDialog(_EffectDialog):
+    """Effects ▸ Gradient Glow… — a multi-stop coloured glow outside the shape."""
+    def __init__(self, win):
+        super().__init__(win, 'Gradient Glow')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Gradient Glow — a coloured halo</b>'))
+        info = QLabel('Surrounds the layer’s shape with a halo that fades through up to four '
+                      'colours as it spreads out — a richer Outer Glow. Needs transparency around '
+                      'the artwork for the glow to show.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        crow = QHBoxLayout()
+        self.b1 = self._colour_btn(self, 's1', (255, 240, 120))
+        self.b2 = self._colour_btn(self, 's2', (255, 120, 40))
+        self.b3 = self._colour_btn(self, 's3', (180, 20, 60))
+        self.b4 = self._colour_btn(self, 's4', (60, 0, 80))
+        self.use3 = QCheckBox('3rd'); self.use4 = QCheckBox('4th')
+        self.use3.setChecked(True)
+        self.use3.toggled.connect(self._refresh); self.use4.toggled.connect(self._refresh)
+        for wdg in (QLabel('Inner'), self.b1, self.b2, self.use3, self.b3, self.use4, self.b4):
+            crow.addWidget(wdg)
+        cw = QWidget(); cw.setLayout(crow); form.addRow('Colours:', cw)
+        self.s_width = self._slider(2, 80, 18); self.l_width = self._val()
+        self.s_soft = self._slider(0, 100, 60); self.l_soft = self._val()
+        self.s_op = self._slider(0, 100, 85); self.l_op = self._val()
+        form.addRow('Width:', self._row(self.s_width, self.l_width))
+        form.addRow('Softness:', self._row(self.s_soft, self.l_soft))
+        form.addRow('Opacity:', self._row(self.s_op, self.l_op))
+        for s in (self.s_width, self.s_soft, self.s_op):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_width.setText(f'{self.s_width.value()} px')
+        self.l_soft.setText(f'{self.s_soft.value()}')
+        self.l_op.setText(f'{self.s_op.value()} %')
+
+    def _stops(self):
+        cols = [self._col_rgb('s1'), self._col_rgb('s2')]
+        if self.use3.isChecked(): cols.append(self._col_rgb('s3'))
+        if self.use4.isChecked(): cols.append(self._col_rgb('s4'))
+        n = len(cols)
+        return [(i / (n - 1), c) for i, c in enumerate(cols)]
+
+    def _transform(self, rgba):
+        return gradient_glow(rgba, stops=self._stops(), width=self.s_width.value(),
+                             softness=self.s_soft.value() / 100.0,
+                             opacity=self.s_op.value() / 100.0)
+
+    def _layer_stem(self):
+        return 'Gradient Glow'
+
+
+class MotionTrailDialog(_EffectDialog):
+    """Effects ▸ Motion Trail… — a directional smear/echo of the whole layer."""
+    def __init__(self, win):
+        super().__init__(win, 'Motion Trail')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Motion Trail — a sense of speed</b>'))
+        info = QLabel('Smears the active layer into a directional trail of fading echoes, as if it '
+                      'were moving fast. Works on the whole layer.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.s_angle = self._slider(0, 359, 0); self.l_angle = self._val()
+        self.s_len = self._slider(1, 200, 28); self.l_len = self._val()
+        self.s_echo = self._slider(2, 24, 8); self.l_echo = self._val()
+        self.s_fall = self._slider(10, 95, 70); self.l_fall = self._val()
+        form.addRow('Angle:', self._row(self.s_angle, self.l_angle))
+        form.addRow('Length:', self._row(self.s_len, self.l_len))
+        form.addRow('Echoes:', self._row(self.s_echo, self.l_echo))
+        form.addRow('Falloff:', self._row(self.s_fall, self.l_fall))
+        for s in (self.s_angle, self.s_len, self.s_echo, self.s_fall):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+        self.l_len.setText(f'{self.s_len.value()} px')
+        self.l_echo.setText(f'{self.s_echo.value()}')
+        self.l_fall.setText(f'{self.s_fall.value() / 100.0:.2f}')
+
+    def _transform(self, rgba):
+        return motion_trail(rgba, angle=self.s_angle.value(), length=self.s_len.value(),
+                            echoes=self.s_echo.value(), falloff=self.s_fall.value() / 100.0)
+
+    def _layer_stem(self):
+        return 'Motion Trail'
+
+
+class TwirlDialog(_EffectDialog):
+    """Effects ▸ Twirl… — a radial swirl around the layer centre."""
+    def __init__(self, win):
+        super().__init__(win, 'Twirl')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Twirl — a radial swirl</b>'))
+        info = QLabel('Twists the active layer around its centre, strongest in the middle and easing '
+                      'out to the chosen radius.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.s_angle = self._slider(-720, 720, 150); self.l_angle = self._val()
+        self.s_radius = self._slider(5, 100, 70); self.l_radius = self._val()
+        self.s_fall = self._slider(10, 300, 100); self.l_fall = self._val()
+        form.addRow('Twist angle:', self._row(self.s_angle, self.l_angle))
+        form.addRow('Radius:', self._row(self.s_radius, self.l_radius))
+        form.addRow('Falloff:', self._row(self.s_fall, self.l_fall))
+        for s in (self.s_angle, self.s_radius, self.s_fall):
+            s.valueChanged.connect(self._refresh)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+        self.l_radius.setText(f'{self.s_radius.value()} %')
+        self.l_fall.setText(f'{self.s_fall.value() / 100.0:.2f}')
+
+    def _transform(self, rgba):
+        h, w = rgba.shape[:2]
+        rad = self.s_radius.value() / 100.0 * (min(w, h) / 2.0)
+        return twirl(rgba, angle=self.s_angle.value(), radius=rad,
+                     falloff=self.s_fall.value() / 100.0)
+
+    def _layer_stem(self):
+        return 'Twirl'
+
+
+class _TextureDialog(_EffectDialog):
+    """Shared base for the procedural-texture fills (Wood / Marble / Weave). The texture
+    is generated at the layer size, then filled into the current selection (or the whole
+    layer if nothing is selected). A Seed spin lets the user reroll the pattern."""
+    def _texture(self, h, w, seed):
+        raise NotImplementedError
+
+    def _seed_row(self, form):
+        from PySide6.QtWidgets import QSpinBox as _QS
+        self.sp_seed = _QS(); self.sp_seed.setRange(0, 9999); self.sp_seed.setValue(0)
+        self.sp_seed.valueChanged.connect(self._refresh)
+        reroll = QPushButton('Reroll')
+        reroll.clicked.connect(lambda: self.sp_seed.setValue((self.sp_seed.value() + 1) % 10000))
+        row = QHBoxLayout(); row.addWidget(self.sp_seed, 1); row.addWidget(reroll)
+        hw = QWidget(); hw.setLayout(row); form.addRow('Seed:', hw)
+
+    def _transform(self, rgba):
+        src = _ensure_rgba(rgba)
+        h, w = src.shape[:2]
+        tex = self._texture(h, w, self.sp_seed.value())
+        # fill into the current selection, else the whole opaque layer
+        mask = self.canvas.sel_mask()
+        if mask is None:
+            # confine to the layer's own opaque pixels so it reads as a fill of the shape
+            m = (src[..., 3] > 0).astype(_np.float32)
+            if not m.any():
+                m = _np.ones(src.shape[:2], _np.float32)
+        else:
+            if mask.shape != (h, w):
+                mask = _np.asarray(Image.fromarray(mask.astype('uint8'), 'L').resize((w, h), Image.NEAREST))
+            m = (mask.astype(_np.float32) / 255.0) * (src[..., 3] > 0)
+        wgt = m[..., None]
+        out = src.astype(_np.float32)
+        out[..., :3] = out[..., :3] * (1.0 - wgt) + tex[..., :3].astype(_np.float32) * wgt
+        return out.astype(_np.uint8)
+
+
+class WoodDialog(_TextureDialog):
+    """Effects ▸ Wood… — fill with procedural wood grain."""
+    def __init__(self, win):
+        super().__init__(win, 'Wood')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Wood — procedural grain</b>'))
+        info = QLabel('Fills the current selection (or the opaque pixels of the active layer) with '
+                      'generated wood grain — turbulent growth rings between two wood tones.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.ba = self._colour_btn(self, 'a', (150, 95, 45))
+        self.bb = self._colour_btn(self, 'b', (95, 55, 22))
+        crow = QHBoxLayout(); crow.addWidget(self.ba); crow.addWidget(self.bb)
+        cw = QWidget(); cw.setLayout(crow); form.addRow('Wood tones:', cw)
+        self.s_space = self._slider(4, 80, 18); self.l_space = self._val()
+        self.s_turb = self._slider(0, 100, 50); self.l_turb = self._val()
+        self.s_angle = self._slider(0, 359, 0); self.l_angle = self._val()
+        form.addRow('Ring spacing:', self._row(self.s_space, self.l_space))
+        form.addRow('Grain:', self._row(self.s_turb, self.l_turb))
+        form.addRow('Angle:', self._row(self.s_angle, self.l_angle))
+        for s in (self.s_space, self.s_turb, self.s_angle):
+            s.valueChanged.connect(self._refresh)
+        self._seed_row(form)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_space.setText(f'{self.s_space.value()} px')
+        self.l_turb.setText(f'{self.s_turb.value()}')
+        self.l_angle.setText(f'{self.s_angle.value()}°')
+
+    def _texture(self, h, w, seed):
+        return wood(h, w, spacing=self.s_space.value(), turb=self.s_turb.value() / 100.0,
+                    color_a=self._col_rgb('a'), color_b=self._col_rgb('b'),
+                    angle=self.s_angle.value(), seed=seed)
+
+    def _layer_stem(self):
+        return 'Wood'
+
+
+class MarbleDialog(_TextureDialog):
+    """Effects ▸ Marble… — fill with procedural marble veining."""
+    def __init__(self, win):
+        super().__init__(win, 'Marble')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Marble — procedural veining</b>'))
+        info = QLabel('Fills the current selection (or the opaque pixels of the active layer) with '
+                      'generated marble — turbulent veins over a stone background.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.bv = self._colour_btn(self, 'vein', (240, 240, 245))
+        self.bg = self._colour_btn(self, 'bg', (60, 70, 90))
+        crow = QHBoxLayout(); crow.addWidget(QLabel('Vein')); crow.addWidget(self.bv)
+        crow.addWidget(QLabel('Stone')); crow.addWidget(self.bg)
+        cw = QWidget(); cw.setLayout(crow); form.addRow('Colours:', cw)
+        self.s_scale = self._slider(8, 120, 40); self.l_scale = self._val()
+        self.s_turb = self._slider(0, 100, 60); self.l_turb = self._val()
+        self.s_sharp = self._slider(10, 120, 40); self.l_sharp = self._val()
+        form.addRow('Scale:', self._row(self.s_scale, self.l_scale))
+        form.addRow('Waviness:', self._row(self.s_turb, self.l_turb))
+        form.addRow('Vein sharpness:', self._row(self.s_sharp, self.l_sharp))
+        for s in (self.s_scale, self.s_turb, self.s_sharp):
+            s.valueChanged.connect(self._refresh)
+        self._seed_row(form)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_scale.setText(f'{self.s_scale.value()} px')
+        self.l_turb.setText(f'{self.s_turb.value()}')
+        self.l_sharp.setText(f'{self.s_sharp.value() / 10.0:.1f}')
+
+    def _texture(self, h, w, seed):
+        return marble(h, w, scale=self.s_scale.value(), turb=self.s_turb.value() / 100.0,
+                      sharpness=self.s_sharp.value() / 10.0, vein=self._col_rgb('vein'),
+                      bg=self._col_rgb('bg'), seed=seed)
+
+    def _layer_stem(self):
+        return 'Marble'
+
+
+class WeaveDialog(_TextureDialog):
+    """Effects ▸ Weave… — fill with a basket-weave over/under pattern."""
+    def __init__(self, win):
+        super().__init__(win, 'Weave')
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('<b>Weave — a basket-weave pattern</b>'))
+        info = QLabel('Fills the current selection (or the opaque pixels of the active layer) with '
+                      'an interlaced basket weave — two colours of strand passing over and under.')
+        info.setWordWrap(True); info.setStyleSheet('color:#889'); v.addWidget(info)
+        form = QFormLayout(); v.addLayout(form)
+        self.ba = self._colour_btn(self, 'a', (170, 120, 70))
+        self.bb = self._colour_btn(self, 'b', (120, 80, 45))
+        crow = QHBoxLayout(); crow.addWidget(self.ba); crow.addWidget(self.bb)
+        cw = QWidget(); cw.setLayout(crow); form.addRow('Strand colours:', cw)
+        self.s_strand = self._slider(3, 50, 14); self.l_strand = self._val()
+        self.s_gap = self._slider(0, 20, 3); self.l_gap = self._val()
+        form.addRow('Strand width:', self._row(self.s_strand, self.l_strand))
+        form.addRow('Gap:', self._row(self.s_gap, self.l_gap))
+        for s in (self.s_strand, self.s_gap):
+            s.valueChanged.connect(self._refresh)
+        self._seed_row(form)
+        self._finish_ui(v); self._refresh()
+
+    def _update_labels(self):
+        self.l_strand.setText(f'{self.s_strand.value()} px')
+        self.l_gap.setText(f'{self.s_gap.value()} px')
+
+    def _texture(self, h, w, seed):
+        return weave(h, w, strand=self.s_strand.value(), gap=self.s_gap.value(),
+                     color_a=self._col_rgb('a'), color_b=self._col_rgb('b'), seed=seed)
+
+    def _layer_stem(self):
+        return 'Weave'
+
+
 class CurveWidget(QWidget):
     """A small editable tone curve: draggable control points over a 0–255 diagonal.
     Points are stored in curve space (x,y both 0..255, origin bottom-left). Emits via
@@ -3753,6 +4732,19 @@ class Main(QMainWindow):
         fx = m.addMenu('Effe&cts')
         fx.addAction(self.act('Drop &Shadow…', lambda: self._fx_dialog('shadow')))
         fx.addAction(self.act('Outer &Glow…', lambda: self._fx_dialog('glow')))
+        fx.addSeparator()
+        edges = fx.addMenu('&Bevels && edges')
+        edges.addAction(self.act('&Bevel…', lambda: self._effect_dialog(BevelDialog)))
+        edges.addAction(self.act('&Chrome…', lambda: self._effect_dialog(ChromeDialog)))
+        edges.addAction(self.act('G&lass…', lambda: self._effect_dialog(GlassDialog)))
+        edges.addAction(self.act('&Gradient Glow…', lambda: self._effect_dialog(GradientGlowDialog)))
+        dist = fx.addMenu('&Distort')
+        dist.addAction(self.act('&Motion Trail…', lambda: self._effect_dialog(MotionTrailDialog)))
+        dist.addAction(self.act('&Twirl…', lambda: self._effect_dialog(TwirlDialog)))
+        tex = fx.addMenu('&Textures')
+        tex.addAction(self.act('&Wood…', lambda: self._effect_dialog(WoodDialog)))
+        tex.addAction(self.act('&Marble…', lambda: self._effect_dialog(MarbleDialog)))
+        tex.addAction(self.act('W&eave…', lambda: self._effect_dialog(WeaveDialog)))
         h = m.addMenu('&Help')
         h.addAction(self.act('&Quick Start', self.open_quickstart))
         h.addAction(self.act('&User Guide', self.open_manual))
@@ -3942,6 +4934,13 @@ class Main(QMainWindow):
         if not dlg.exec(): return
         if glow: self.canvas.apply_fx(col[0], bl.value(), 0, 0, op.value(), twice=True)
         else: self.canvas.apply_fx(col[0], bl.value(), dx.value(), dy.value(), op.value())
+
+    def _effect_dialog(self, cls):
+        """Open one of the new Effects studios (Bevel/Chrome/Glass/Gradient Glow/Motion
+        Trail/Twirl/Wood/Marble/Weave). They need Pillow+NumPy for their maths."""
+        if not self._need_pil():
+            return
+        cls(self).exec()
 
     def dlg_lens_flare(self):
         """Open the Lens Flare studio (live preview over the composited image)."""
