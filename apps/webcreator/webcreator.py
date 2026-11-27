@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.20-00"
+VERSION = "1.21-00"
 
 
 def _just_dir(kind):
@@ -7714,7 +7714,12 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ Studio
     def dock(self, title, widget, name):
-        d = QDockWidget(title, self); d.setObjectName(name); d.setWidget(widget)
+        d = QDockWidget(title, self); d.setObjectName(name)
+        # A modest minimum lets the dock be dragged narrow (the tab bar's small minimum,
+        # set in flatten_dock_tabs, is what actually frees the panel); list panels keep
+        # reflowing their own content.
+        widget.setMinimumWidth(min(widget.minimumWidth() or 180, 150))
+        d.setWidget(widget)
         d.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, d); return d
 
@@ -7821,14 +7826,20 @@ class MainWindow(QMainWindow):
                'QTabBar::tab:last{padding-right:26px;}'
                # the ◀ ▶ scroll buttons the tab bar shows when its tabs overflow: make them
                # flat plain triangles (transparent background, no box), not Qt's boxed default.
-               'QTabBar QToolButton{background:transparent;border:none;width:16px;}'
-               'QTabBar QToolButton:hover{background:palette(midlight);border-radius:3px;}')
+               'QTabBar QToolButton{width:0px;height:0px;border:none;margin:0;padding:0;}'
+               'QTabBar::scroller{width:0px;}')   # hide Qt's < > ; we draw our own triangles
+        docks = self.findChildren(QDockWidget)
         for tb in self.findChildren(QTabBar):
             tb.setStyleSheet(css)
-            tb.setUsesScrollButtons(False)  # we add our OWN ◀ ▶ arrows (left and right), not Qt's boxed pair
             tb.setElideMode(Qt.ElideNone)   # keep the full tab name; scroll to the hidden ones
             tb.setExpanding(False)
             self._label_blank_tabs(tb)
+            # In-panel tab bars honour minimumWidth; the QMainWindow dock tab bar is sized
+            # by its minimumSizeHint, so it needs scroll buttons enabled to get a small
+            # minimum (letting the panel shrink). Either way we draw our own ◀ ▶ triangles.
+            in_panel = any(d.isAncestorOf(tb) for d in docks)
+            tb.setUsesScrollButtons(not in_panel)
+            tb.setMinimumWidth(40)
             self._add_tabbar_arrows(tb)
 
     def _label_blank_tabs(self, tb):
