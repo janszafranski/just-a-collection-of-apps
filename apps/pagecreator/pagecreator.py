@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.29-00"
+VERSION = "1.30-00"
 
 
 def _just_dir(kind):
@@ -7107,15 +7107,13 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------ Studio
     def dock(self, title, widget, name):
         d = QDockWidget(title, self); d.setObjectName(name)
-        # Wrap the panel so the dock can be dragged NARROWER than the panel's natural
-        # width: _DockScroll fills when wide and scrolls when narrow (unlike a plain
-        # widgetResizable scroll area, which refuses to shrink below the content).
-        sa = _DockScroll(); sa.setWidgetResizable(False); sa.setFrameShape(QScrollArea.NoFrame)
-        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        sa.setWidget(widget)
-        sa.setMinimumWidth(60)          # the dock can shrink to here; content scrolls past it
-        d.setWidget(sa)
+        # The panel is set directly (NOT wrapped in a scroll area): list panels like
+        # Assets reflow/resize their own thumbnails as the dock widens, which a wrapper
+        # was preventing. The dock still shrinks because the tab bar now has a small
+        # minimum (scroll buttons) — see flatten_dock_tabs. A small floor keeps controls
+        # usable; narrower than that, the ◀ ▶ tabs scroll.
+        widget.setMinimumWidth(min(widget.minimumWidth() or 180, 150))
+        d.setWidget(widget)
         d.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, d); return d
 
@@ -8839,14 +8837,27 @@ class MainWindow(QMainWindow):
         self.refresh_assets(); self.hint(f'Added {added} picture(s) to Assets — double-click one to place it.')
 
     def asset_add_file(self):
-        path, _ = QFileDialog.getOpenFileName(self, 'Add a picture to assets', os.path.expanduser('~/Pictures'),
-                                              'Pictures (*.png *.jpg *.jpeg *.gif *.webp *.svg)')
-        if not path: return
-        uri = self.picture_uri(path)
-        if not uri: QMessageBox.warning(self, APP, "That file couldn't be read as a picture."); return
-        self.commit(); k = add_asset(self.site, uri)
-        self.site.setdefault('assetnames', {})[k] = os.path.basename(path)
-        self.refresh_assets(); self.hint('Added to Assets — double-click it to place it on the page.')
+        paths, _ = QFileDialog.getOpenFileNames(self, 'Add pictures to assets', os.path.expanduser('~/Pictures'),
+                                                'Pictures (*.png *.jpg *.jpeg *.gif *.webp *.svg *.bmp *.tif *.tiff)')
+        if paths: self._add_asset_paths(paths)
+
+    def asset_add_folder(self):
+        d = QFileDialog.getExistingDirectory(self, 'Add every picture in a folder', os.path.expanduser('~/Pictures'))
+        if not d: return
+        exts = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.svg', '.bmp', '.tif', '.tiff')
+        paths = [os.path.join(dp, f) for dp, _dn, fns in os.walk(d) for f in fns if f.lower().endswith(exts)]
+        if paths: self._add_asset_paths(sorted(paths))
+        else: self.hint('No pictures found in that folder.')
+
+    def _add_asset_paths(self, paths):
+        self.commit(); added = 0
+        for path in paths:
+            uri = self.picture_uri(path)
+            if not uri: continue
+            k = add_asset(self.site, uri)
+            self.site.setdefault('assetnames', {})[k] = os.path.basename(path); added += 1
+        self.refresh_assets()
+        self.hint(f'Added {added} picture(s) to Assets — double-click one to place it on the page.')
 
     def asset_add_ai(self):
         o = {'type': 'picture', 'x': 0, 'y': 0, 'w': DEF['picture']['w'], 'h': DEF['picture']['h']}
