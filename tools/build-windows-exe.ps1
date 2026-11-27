@@ -142,7 +142,10 @@ function Build-One {
   $FontDir  = Join-Path $AppDir 'fonts'
   $FontReal = Join-Path (Join-Path $AppsRoot 'pagecreator') 'fonts'
   if ((Test-Path $FontDir) -and (Test-Path $FontReal)) {
-    $pyargs += @('--add-data', "$FontReal$Sep" + 'fonts')
+    # NB: build the value in a variable — `"$x$Sep" + 'fonts'` inside @(...) is
+    # parsed by PowerShell as THREE array elements, which mangles the args.
+    $fontArg = $FontReal + $Sep + 'fonts'
+    $pyargs += @('--add-data', $fontArg)
   }
 
   $pyargs += $Main
