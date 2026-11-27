@@ -136,11 +136,13 @@ function Build-One {
     if ($found) { Log "  bundling ffmpeg for $($entry.id)" }
   }
 
-  # bundled fonts (fonts\ may be a symlink into pagecreator\fonts — resolve it)
-  $FontDir = Join-Path $AppDir 'fonts'
-  if (Test-Path $FontDir) {
-    $resolved = (Resolve-Path $FontDir).Path
-    $pyargs += @('--add-data', "$resolved$Sep" + 'fonts')
+  # bundled fonts: each app's fonts\ is a symlink into pagecreator\fonts, which
+  # git on Windows checks out as a text stub (so Resolve-Path yields an empty
+  # source and PyInstaller rejects the --add-data). Bundle the REAL directory.
+  $FontDir  = Join-Path $AppDir 'fonts'
+  $FontReal = Join-Path (Join-Path $AppsRoot 'pagecreator') 'fonts'
+  if ((Test-Path $FontDir) -and (Test-Path $FontReal)) {
+    $pyargs += @('--add-data', "$FontReal$Sep" + 'fonts')
   }
 
   $pyargs += $Main
