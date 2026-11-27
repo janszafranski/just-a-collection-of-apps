@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.30-00"
+VERSION = "1.31-00"
 
 
 def _just_dir(kind):
@@ -6403,6 +6403,7 @@ class StartupAssistant(QDialog):
             base = os.path.splitext(os.path.basename(p))[0]
             cat = base.split('__')[0] if '__' in base else (os.path.basename(os.path.dirname(p)) or 'Templates')
             groups.setdefault(cat, []).append(p)
+        self._tpl_jobs = []   # (button, path) pairs for lazy thumbnail rendering
         for cat, items in groups.items():
             lab = QLabel(f'{cat}  ·  {len(items)}'); lab.setStyleSheet('font-weight:600;margin-top:12px'); vl.addWidget(lab)
             grid = QGridLayout(); grid.setSpacing(8); vl.addLayout(grid)
@@ -6410,13 +6411,57 @@ class StartupAssistant(QDialog):
                 base = os.path.splitext(os.path.basename(p))[0]
                 name = base.split('__')[-1].replace('_', ' ')
                 b = QToolButton(); b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
-                b.setIcon(self._preset_icon(210, 297)); b.setIconSize(QSize(58, 58))
-                b.setText(name); b.setFixedSize(132, 112); b.setAutoRaise(True); b.setCursor(Qt.PointingHandCursor)
+                b.setIcon(self._preset_icon(210, 297)); b.setIconSize(QSize(72, 96))
+                b.setText(name); b.setFixedSize(132, 128); b.setAutoRaise(True); b.setCursor(Qt.PointingHandCursor)
                 b.setToolTip(p)
                 b.clicked.connect(lambda _=0, path=p: self._open_my_template(path))
                 grid.addWidget(b, i // 4, i % 4)
+                self._tpl_jobs.append((b, p))
         vl.addStretch()
         self._mytpl_area.setWidget(inner)
+        QTimer.singleShot(50, self._render_tpl_thumbs)   # fill real previews in the background
+
+    def _render_tpl_thumbs(self):
+        from PySide6.QtGui import QIcon
+        jobs = getattr(self, '_tpl_jobs', None)
+        if not jobs:
+            return
+        for _ in range(3):                      # a few per tick keeps the dialog responsive
+            if not jobs:
+                return
+            b, p = jobs.pop(0)
+            try:
+                pm = self._ppp_thumb(p)
+                if pm is not None:
+                    b.setIcon(QIcon(pm))
+            except Exception:
+                pass
+        QTimer.singleShot(0, self._render_tpl_thumbs)
+
+    def _ppp_thumb(self, path, w=120):
+        """A cached page-1 preview of a .ppp template (rendered via the app's own page
+        renderer). Cached to disk by path+mtime so it's instant after the first pass."""
+        import hashlib
+        from PySide6.QtGui import QPixmap
+        st = os.stat(path)
+        cdir = os.path.expanduser('~/.cache/pagedesigner/tplthumbs'); os.makedirs(cdir, exist_ok=True)
+        cf = os.path.join(cdir, hashlib.md5(f'{path}:{st.st_mtime_ns}:{w}'.encode()).hexdigest() + '.png')
+        if os.path.isfile(cf):
+            pm = QPixmap(cf)
+            if not pm.isNull():
+                return pm
+        root = self._mytpl_win.webplus_root()
+        if not root:
+            return None
+        site = import_pageplus_file(path, root)
+        pages = site.get('pages') or []
+        if not pages:
+            return None
+        img = render_page_image(site, pages[0], width=w)
+        if img is None or img.isNull():
+            return None
+        img.save(cf, 'PNG')
+        return QPixmap.fromImage(img)
 
     def _choose_templates_folder(self):
         d = QFileDialog.getExistingDirectory(self, 'Choose your templates folder', self._templates_folder(self._mytpl_win))
