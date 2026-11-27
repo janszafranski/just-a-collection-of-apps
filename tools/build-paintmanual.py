@@ -1030,6 +1030,18 @@ and open a photo straight into PAINTcanvas — no hunting through folders.</p>
 {fig(dlg('Open from Library'), 'The Image Library picker: browse your stock-photo collections by category and click a thumbnail to open it.')}
 {note('Thumbnails are decoded small and fast, so even a library of thousands of high-resolution photos scrolls smoothly. The library is read straight from disk — nothing is copied until you edit and save.')}
 {tip('No library yet? The same dialog has a <b>Browse for an image…</b> button to open any image file on your computer.')}"""),
+      ("Merging photos to a panorama", f"""
+<p>When you have several overlapping photos of a wide scene — a landscape, a street, a room — <b>File ▸ Merge
+Photos to Panorama…</b> stitches them into one wide picture automatically, in the spirit of Serif’s
+PanoramaPlus. It matches the shared detail between the shots, warps them into line and blends the seams, then
+opens the finished panorama as a new document for you to crop and save.</p>
+{proc('stitch photos into a panorama',
+  'Choose <b>File ▸ Merge Photos to Panorama…</b>.',
+  'Select <b>two or more</b> overlapping photos of the same scene and confirm.',
+  'Wait a moment while the photos are matched, warped and blended into one wide image.',
+  'The panorama opens as a new picture. <b>Crop</b> away the ragged edges the stitch leaves, then <b>Save</b>.')}
+{tip('Panoramas stitch best when consecutive shots overlap by about a third, are taken from the same spot (pivot on the camera, don’t walk sideways), and keep the same exposure. If the photos can’t be matched, PAINTcanvas tells you rather than guessing.')}
+{note('Photo Merge relies on OpenCV’s automatic stitcher. The installer adds OpenCV automatically; if it is somehow missing, the command shows a short message telling you how to install it and does nothing else.')}"""),
       ("Saving your work", f"""
 <p>Save with <b>File ▸ Save</b> ({K('Ctrl')}+{K('S')}) or <b>Save As…</b>. PAINTcanvas writes two formats:</p>
 <ul>
@@ -1226,7 +1238,28 @@ two-tone background, or a coloured fade behind a subject.</p>
   'Choose the <b>Text</b> tool and set the colour.',
   'Click where the text should start.',
   'Type the text in the little box that appears and confirm. It is painted at a size based on the brush size (roughly four times it).')}
-{caution('Because the text becomes pixels immediately, you cannot re-edit the words afterwards — only paint over them or undo. For headline text you will keep tweaking, set it in PAGEdesigner or DRAWmaster instead, where text stays editable.')}""")]))
+{caution('Because the text becomes pixels immediately, you cannot re-edit the words afterwards — only paint over them or undo. For headline text you will keep tweaking, set it in PAGEdesigner or DRAWmaster instead, where text stays editable.')}"""),
+      ("Natural-media wet brushes (Oil and Smudge)", f"""
+<p>Two tools near the middle of the tool palette paint <b>wet</b> — in the spirit of ArtRage oils. Unlike
+the ordinary Brush, which lays a flat colour down on top, these pick up and mix with the colour already on
+the canvas as you drag, for soft, blended, painterly strokes.</p>
+<ul>
+<li><b>Oil brush</b> (🎨) — wet paint that <b>blends with what is underneath</b> (wet-on-wet). Your current
+colour is loaded onto the brush and mixed into the paint it drags through, so one colour melts into the next
+with soft, feathered edges — the way real oil paint smears on a wet canvas.</li>
+<li><b>Smudge / palette knife</b> (👆) — lays down <b>no</b> new colour at all; it simply <b>drags and mixes
+the colour that is already there</b>. Use it to smear one area into another, soften a hard join between two
+colours, or pull a highlight out into a streak.</li>
+</ul>
+{proc('blend colours with the Oil brush',
+  'Choose the <b>Oil brush</b> (🎨) and set a <b>Colour</b> and a generous <b>Size</b> — wet brushes show their character best when they are fairly large.',
+  'Drag across the canvas. Where you cross paint that is already there, your colour mixes into it rather than covering it, leaving a soft, feathered edge.',
+  'Keep dragging to build the blend, or lift and start again to re-load the brush with fresh colour.')}
+{proc('smear and blend with the Smudge tool',
+  'Choose the <b>Smudge / palette knife</b> (👆). It ignores the current colour — it moves existing paint.',
+  'Drag from one colour into another to smear them together, or drag along a hard edge to soften it.',
+  'Short strokes mix a little; long ones pull colour a long way, like a palette knife across the picture.')}
+{tip('Wet brushes work on whatever layer is active, exactly like the ordinary Brush — so you can blend on a separate layer and ease the whole effect back later with the layer’s opacity. For a photo turned painterly in one step instead, see <b>Photo FX ▸ Art Style ▸ Oil Painting</b>.')}""")]))
 
     ch.append(("Retouching",
       "<p class='lede'>These tools repair and refine a photograph: the Clone stamp copies one part of a "
@@ -2097,7 +2130,8 @@ Or <b>File ▸ Open…</b> an existing photo.</p>
 {f('workspace', 'The workspace: tools on the left, the paint toolbar on top, Layers on the right.')}"""))
     S.append(("Meet the tools", f"""
 <p>The vertical <b>tool palette</b> holds every tool — brush, eraser, shapes, fill, gradient, the
-eyedropper, text, clone, red-eye, dodge and burn, the selection marquees, and the Cutout tool.</p>
+eyedropper, text, clone, red-eye, dodge and burn, the natural-media <b>Oil brush</b> and <b>Smudge</b>, the
+selection marquees, and the Cutout tool.</p>
 {fig(IM.get('toolpalette'), 'The tool palette, top to bottom.', 'tall')}"""))
     S.append(("Paint and draw", f"""
 <p>Set a <b>Colour</b> and <b>Size</b> on the paint toolbar, then draw: the <b>Brush</b> for freehand
@@ -2106,7 +2140,8 @@ areas, and the <b>Gradient</b> for a smooth fade.</p>
 {f('shapes', 'A brush stroke, a line, outlined and filled shapes, and a gradient.')}"""))
     S.append(("Retouch", """
 <p>Clean a photo up with the <b>Clone</b> stamp (Ctrl-click a source, then paint over the blemish), fix
-flash eyes with <b>Red-eye</b>, and brush light or dark with <b>Dodge</b> and <b>Burn</b>.</p>"""))
+flash eyes with <b>Red-eye</b>, and brush light or dark with <b>Dodge</b> and <b>Burn</b>. Blend colour like
+real oils with the wet <b>Oil brush</b> and the <b>Smudge / palette knife</b>.</p>"""))
     S.append(("Adjust colour and tone", f"""
 <p>The <b>Adjust</b> menu corrects a picture: <b>Brightness / Contrast</b>, <b>Levels</b>, <b>Hue /
 Saturation</b>, <b>Colour Temperature</b> and one-click <b>Auto Contrast</b>, <b>Greyscale</b> and
@@ -2313,7 +2348,9 @@ def build_index(numbered):
                 if term and len(term) < 46 and not term.lower().startswith(("appendix", "1 ", "2 ", "3 ", "4 ")):
                     entries.setdefault(term, set()).add((n, anchor))
     TERMS = ["brush", "eraser", "line", "rectangle", "ellipse", "fill", "gradient", "pick colour",
-             "text", "clone", "red-eye", "dodge", "burn", "selection", "marquee", "cutout",
+             "text", "clone", "red-eye", "dodge", "burn", "oil brush", "smudge", "palette knife",
+             "wet-on-wet", "natural media", "panorama", "stitch",
+             "selection", "marquee", "cutout",
              "cutout studio", "smart mask", "scribble", "feather", "grabcut", "transparency",
              "layer", "opacity", "blend", "merge", "flatten",
              "brightness", "contrast", "levels", "hue", "saturation", "temperature", "colour balance",

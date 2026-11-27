@@ -6,7 +6,7 @@ generators already produce; injects a cover + print CSS and prints via QtWebEngi
     python3 tools/make_pdfs.py            # all creative apps
     python3 tools/make_pdfs.py paint      # one app
 """
-import base64, os, sys
+import base64, os, sys, tempfile
 from datetime import date
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
@@ -71,16 +71,28 @@ def inject_cover(html, name, kind, accent, appdir):
 
 
 def html_to_pdf(html, pdf_path):
+    # Load from a temp file alongside the PDF rather than via setHtml(): setHtml
+    # silently fails (loadFinished=False → an empty PDF) once the inlined, data-URI
+    # HTML grows past roughly 2 MB, which the big illustrated manuals now exceed.
     pg = QWebEnginePage(); loop = QEventLoop(); res = {}
-    def finished(_ok):
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", suffix=".html",
+        dir=os.path.dirname(os.path.abspath(pdf_path)), delete=False)
+    tmp.write(html); tmp.close()
+    def finished(ok):
+        res["loaded"] = ok
         lay = QPageLayout(QPageSize(QPageSize.A4), QPageLayout.Portrait, QMarginsF(14, 14, 14, 14))
         pg.printToPdf(pdf_path, lay)
     def done(_p, good):
         res["ok"] = good; loop.quit()
     pg.loadFinished.connect(finished); pg.pdfPrintingFinished.connect(done)
-    pg.setHtml(html, QUrl.fromLocalFile(os.path.abspath(pdf_path)))
-    QTimer.singleShot(60000, loop.quit); loop.exec()
-    return res.get("ok", False)
+    pg.load(QUrl.fromLocalFile(tmp.name))
+    QTimer.singleShot(120000, loop.quit); loop.exec()
+    try:
+        os.unlink(tmp.name)
+    except OSError:
+        pass
+    return res.get("ok", False) and res.get("loaded", False)
 
 
 def main():

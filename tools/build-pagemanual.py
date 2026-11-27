@@ -527,6 +527,18 @@ work. Down its left side are its sections; the large area on the right shows wha
   '<b>Open</b> to reopen recent work or browse for a saved file.',
   'Click your choice to open a document and close the Assistant.')}
 {tip('Prefer to start on a blank page every time? Untick <b>Show this at startup</b> at the bottom. You can always summon the Assistant again from <b>File ▸ New</b>.')}"""),
+      ("My Templates — your own library", f"""
+<p>Alongside the built-in <b>Design Templates</b>, the Assistant has a <b>My Templates</b> tab for a
+library of <i>your own</i> PagePlus templates — the <code>.ppp</code> files you have made or bought.
+Point it at the folder they live in and every template appears as a page-1 preview you can start from in
+one click.</p>
+{proc('browse and start from your own templates',
+  'In the Startup Assistant, choose <b>My Templates</b>.',
+  'The first time, click <b>Choose folder…</b> and pick the folder your <code>.ppp</code> templates live in. (It looks in <i>~/Documents/pageplus-templates</i> by default.)',
+  'The templates appear as previews of their first page, grouped by category.',
+  'Click one. A <b>new, untitled document</b> opens from it, ready to make your own.')}
+{note('Starting from one of your templates never alters the original file — PAGEdesigner makes a fresh document from it, exactly like opening a design template, so the same template is there to reuse next time.')}
+{tip('Previews are rendered once and cached, so a large library opens quickly on later visits. Change the folder at any time with <b>Choose folder…</b> to switch between libraries.')}"""),
       ("Starting from a blank paper size", f"""
 <p>Choose <b>New Publication</b> to begin with an empty page at a standard size.</p>
 {fig(IM.get('startup_sizes'), 'New Publication — pick a paper size, grouped by purpose, or set your own.')}
@@ -599,7 +611,12 @@ toolbar sits alongside it. Toolbars can be shown or hidden from <b>View</b>, and
 <li><b>Transform</b> — exact position, size and rotation;</li>
 <li><b>Layers</b> — stacking and grouping of objects.</li>
 </ul>
-{tip('Any panel can be shown or hidden from the <b>View</b> menu, and dragged out into its own floating window if you like more room.')}"""),
+<p>The whole panel group is <b>resizable</b>: rest the pointer on the <b>splitter</b> — the dividing edge
+between the page and the panels — and drag it to widen the panels (to see more of a swatch grid or a long
+layer list) or narrow them (to give the page more room). When you narrow the panels so far that the row of
+tabs no longer fits, small <b>◀ ▶ arrows</b> appear at its ends; click them to scroll the tab row and reach
+a tab that has slid out of view.</p>
+{tip('Any panel can be shown or hidden from the <b>View</b> menu, and dragged out into its own floating window if you like more room. Drag the splitter back out whenever you want the panels wider again.')}"""),
       ("Moving around and zooming", f"""
 <p>You will zoom in to place things precisely and out to judge the whole page.</p>
 {proc('change the zoom',
@@ -1384,12 +1401,13 @@ steps. For the complete reference — every feature, worked projects and a full 
 {f('sample', 'A finished one-page newsletter, laid out entirely in PAGEdesigner.')}"""))
     S.append(("Start a publication", f"""
 <p>When PAGEdesigner opens it shows the <b>Startup Assistant</b>. Choose <b>Start from a design</b> to
-build on a ready-made template, or <b>New Publication</b> for a blank paper size — A4, a card, a booklet
-or a poster.</p>
-{f('startup_sizes', 'The Startup Assistant: start from a design, a paper size, or recent work.')}"""))
+build on a ready-made template, <b>New Publication</b> for a blank paper size — A4, a card, a booklet
+or a poster — or <b>My Templates</b> to start from your own PagePlus (<code>.ppp</code>) library.</p>
+{f('startup_sizes', 'The Startup Assistant: start from a design, a paper size, your own templates, or recent work.')}"""))
     S.append(("The workspace", f"""
 <p>Your page sits in the middle, the <b>tools</b> down the left, the <b>menus and toolbars</b> across the
-top, and the <b>panels</b> on the right.</p>
+top, and the <b>panels</b> on the right. Drag the <b>splitter</b> at the panels' edge to make them wider or
+narrower; when narrow, small <b>◀ ▶ arrows</b> scroll the tab row.</p>
 {f('workspace', 'Tools on the left, your page in the middle, panels on the right.')}"""))
     S.append(("Start from a template", f"""
 <p>The quickest route to a finished piece is <b>Start from a design</b>. Pick a layout, then make it your
@@ -1595,7 +1613,7 @@ def build_index(numbered):
              "bleed", "crop marks", "preflight", "colour scheme", "swatch", "transparency", "QuickShape",
              "asset", "template", "eBook", "EPUB", "PDF", "spell check", "page number", "align", "group",
              "lock", "guides", "drop shadow", "outer glow", "text wrap", "crop", "picture frame",
-             "Startup Assistant", "rulers", "margins", "booklet"]
+             "Startup Assistant", "My Templates", "splitter", "rulers", "margins", "booklet"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
             if _re.search(r"\b" + _re.escape(t) + r"\b", plain, _re.I):
