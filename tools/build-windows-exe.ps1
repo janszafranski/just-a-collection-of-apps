@@ -147,6 +147,28 @@ function Build-One {
 
   $pyargs += $Main
 
+  # Diagnose + repair: log and drop any --add-data/--add-binary whose value isn't
+  # exactly SOURCE<sep>DEST with both sides non-empty (PyInstaller 6 rejects those
+  # with "You have to specify both SOURCE and DEST" and fails the whole build).
+  $safe = New-Object System.Collections.ArrayList
+  $i = 0
+  while ($i -lt $pyargs.Count) {
+    $a = [string]$pyargs[$i]
+    if (($a -eq '--add-data' -or $a -eq '--add-binary') -and ($i + 1 -lt $pyargs.Count)) {
+      $v = [string]$pyargs[$i + 1]
+      $parts = $v.Split($Sep)
+      if ($parts.Length -eq 2 -and $parts[0] -ne '' -and $parts[1] -ne '') {
+        [void]$safe.Add($a); [void]$safe.Add($v)
+      } else {
+        Warn "  dropping malformed $a value: '$v'"
+      }
+      $i += 2
+    } else {
+      [void]$safe.Add($a); $i += 1
+    }
+  }
+  $pyargs = $safe.ToArray()
+
   & python -m PyInstaller @pyargs
   if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed for $($entry.id)" }
   Log "Built $($entry.product).exe"
