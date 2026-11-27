@@ -417,15 +417,15 @@ Want the quick tour? <a href="welcome.html"><b>See the whole family &mdash; crea
 desktop tools &mdash; on one page &rsaquo;</b></a>
 </p>"""
     body = INTRO + callout + f"""
-<h2>The apps</h2>
-<div class="apps">
-{''.join(cards)}
-</div>
-
-<h2 style="margin-top:2em">just a&hellip; {html.escape(hub['title'])} &mdash; the launcher</h2>
+<h2 style="margin-top:1.4em">just a&hellip; {html.escape(hub['title'])} &mdash; the launcher</h2>
 <p>{html.escape(hub['blurb'])}</p>
 <a href="{hub['slug']}"><img class="shot" src="assets/{hub['shot']}" alt="The CREATORsuite hub"></a>
 <p class="small"><a href="{hub['slug']}">About the launcher &amp; how to install it &rsaquo;</a></p>
+
+<h2 style="margin-top:2em">The apps</h2>
+<div class="apps">
+{''.join(cards)}
+</div>
 
 <h2>Install</h2>
 <p>Each app installs and updates on its own. Clone once, then run whichever installers you
