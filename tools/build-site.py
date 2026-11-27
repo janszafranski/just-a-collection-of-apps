@@ -296,11 +296,11 @@ APPS_META = [
                 "My Templates — browse and start from your own PagePlus .ppp library",
                 "Vector PDF export with bleed & crop marks"],
          based="PagePlus",
-         grid=dict(dir="page", heading="Start from the right size",
-                   note="Every paper size the Startup Assistant offers — A-sizes, business stationery, "
-                        "booklets and large-format posters. Each thumbnail is drawn to the sheet's real "
-                        "proportions. Pick one and start laying out.",
-                   ph="Filter sizes by name or category…"),
+         grid=dict(dir="page", heading="Start from a template",
+                   note="Ready-made designs — posters, flyers, menus, newsletters, business cards, "
+                        "certificates, invitations and more. Each one is drawn by the app itself; pick "
+                        "one and replace the placeholder text and pictures with your own.",
+                   ph="Filter templates by name or category…"),
          gallery=[("shot-page.png", "Lay out pages with rulers and guides, the tool palette down the "
                    "left, and the Pages, Layers and Transform panels to the right of the canvas."),
                   ("shot-page-start.png", "Start from a paper size — A-sizes, business cards, booklets "

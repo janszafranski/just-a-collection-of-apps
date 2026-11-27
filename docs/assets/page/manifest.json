@@ -1,110 +1,110 @@
 [
-{
-"file": "page/a4.png",
-"label": "A4",
-"meta": "Documents \u00b7 210\u00d7297 mm",
-"tags": "Documents A4 210\u00d7297 mm"
-},
-{
-"file": "page/a4-landscape.png",
-"label": "A4 Landscape",
-"meta": "Documents \u00b7 297\u00d7210 mm",
-"tags": "Documents A4 Landscape 297\u00d7210 mm"
-},
-{
-"file": "page/a5.png",
-"label": "A5",
-"meta": "Documents \u00b7 148\u00d7210 mm",
-"tags": "Documents A5 148\u00d7210 mm"
-},
-{
-"file": "page/a3.png",
-"label": "A3",
-"meta": "Documents \u00b7 297\u00d7420 mm",
-"tags": "Documents A3 297\u00d7420 mm"
-},
-{
-"file": "page/us-letter.png",
-"label": "US Letter",
-"meta": "Documents \u00b7 216\u00d7279 mm",
-"tags": "Documents US Letter 216\u00d7279 mm"
-},
-{
-"file": "page/us-legal.png",
-"label": "US Legal",
-"meta": "Documents \u00b7 216\u00d7356 mm",
-"tags": "Documents US Legal 216\u00d7356 mm"
-},
-{
-"file": "page/business-card.png",
-"label": "Business Card",
-"meta": "Business \u00b7 85\u00d755 mm",
-"tags": "Business Business Card 85\u00d755 mm"
-},
-{
-"file": "page/letterhead.png",
-"label": "Letterhead",
-"meta": "Business \u00b7 210\u00d7297 mm",
-"tags": "Business Letterhead 210\u00d7297 mm"
-},
-{
-"file": "page/dl-flyer.png",
-"label": "DL Flyer",
-"meta": "Business \u00b7 99\u00d7210 mm",
-"tags": "Business DL Flyer 99\u00d7210 mm"
-},
-{
-"file": "page/postcard.png",
-"label": "Postcard",
-"meta": "Business \u00b7 148\u00d7105 mm",
-"tags": "Business Postcard 148\u00d7105 mm"
-},
-{
-"file": "page/comp-slip.png",
-"label": "Comp. Slip",
-"meta": "Business \u00b7 210\u00d799 mm",
-"tags": "Business Comp. Slip 210\u00d799 mm"
-},
-{
-"file": "page/a5-booklet.png",
-"label": "A5 Booklet",
-"meta": "Booklet & Folded \u00b7 148\u00d7210 mm \u00b7 4pp",
-"tags": "Booklet & Folded A5 Booklet 148\u00d7210 mm \u00b7 4pp"
-},
-{
-"file": "page/a4-booklet.png",
-"label": "A4 Booklet",
-"meta": "Booklet & Folded \u00b7 210\u00d7297 mm \u00b7 4pp",
-"tags": "Booklet & Folded A4 Booklet 210\u00d7297 mm \u00b7 4pp"
-},
-{
-"file": "page/greeting-card.png",
-"label": "Greeting Card",
-"meta": "Booklet & Folded \u00b7 105\u00d7148 mm \u00b7 4pp",
-"tags": "Booklet & Folded Greeting Card 105\u00d7148 mm \u00b7 4pp"
-},
-{
-"file": "page/tri-fold.png",
-"label": "Tri-fold",
-"meta": "Booklet & Folded \u00b7 297\u00d7210 mm",
-"tags": "Booklet & Folded Tri-fold 297\u00d7210 mm"
-},
-{
-"file": "page/a3-poster.png",
-"label": "A3 Poster",
-"meta": "Large Format \u00b7 297\u00d7420 mm",
-"tags": "Large Format A3 Poster 297\u00d7420 mm"
-},
-{
-"file": "page/a2-poster.png",
-"label": "A2 Poster",
-"meta": "Large Format \u00b7 420\u00d7594 mm",
-"tags": "Large Format A2 Poster 420\u00d7594 mm"
-},
-{
-"file": "page/a1-poster.png",
-"label": "A1 Poster",
-"meta": "Large Format \u00b7 594\u00d7841 mm",
-"tags": "Large Format A1 Poster 594\u00d7841 mm"
-}
+ {
+  "file": "page/event-poster.png",
+  "label": "Event poster",
+  "meta": "Posters",
+  "tags": "posters event poster"
+ },
+ {
+  "file": "page/sale-flyer.png",
+  "label": "Sale flyer",
+  "meta": "Flyers",
+  "tags": "flyers sale flyer"
+ },
+ {
+  "file": "page/gig-poster.png",
+  "label": "Gig poster",
+  "meta": "Posters",
+  "tags": "posters gig poster"
+ },
+ {
+  "file": "page/community-newsletter.png",
+  "label": "Community newsletter",
+  "meta": "Newsletters",
+  "tags": "newsletters community newsletter"
+ },
+ {
+  "file": "page/caf-menu.png",
+  "label": "Caf\u00e9 menu",
+  "meta": "Menus",
+  "tags": "menus caf\u00e9 menu"
+ },
+ {
+  "file": "page/letterhead.png",
+  "label": "Letterhead",
+  "meta": "Stationery",
+  "tags": "stationery letterhead"
+ },
+ {
+  "file": "page/certificate.png",
+  "label": "Certificate",
+  "meta": "Certificates",
+  "tags": "certificates certificate"
+ },
+ {
+  "file": "page/party-invitation.png",
+  "label": "Party invitation",
+  "meta": "Invitations",
+  "tags": "invitations party invitation"
+ },
+ {
+  "file": "page/business-card-classic.png",
+  "label": "Business card \u2014 classic",
+  "meta": "Business cards",
+  "tags": "business cards business card \u2014 classic"
+ },
+ {
+  "file": "page/business-card-bold.png",
+  "label": "Business card \u2014 bold",
+  "meta": "Business cards",
+  "tags": "business cards business card \u2014 bold"
+ },
+ {
+  "file": "page/social-quote.png",
+  "label": "Social \u2014 quote",
+  "meta": "Social posts",
+  "tags": "social posts social \u2014 quote"
+ },
+ {
+  "file": "page/social-promo.png",
+  "label": "Social \u2014 promo",
+  "meta": "Social posts",
+  "tags": "social posts social \u2014 promo"
+ },
+ {
+  "file": "page/workshop-poster.png",
+  "label": "Workshop poster",
+  "meta": "Posters",
+  "tags": "posters workshop poster"
+ },
+ {
+  "file": "page/property-for-sale.png",
+  "label": "Property for sale",
+  "meta": "Flyers",
+  "tags": "flyers property for sale"
+ },
+ {
+  "file": "page/gift-voucher.png",
+  "label": "Gift voucher",
+  "meta": "Vouchers & cards",
+  "tags": "vouchers & cards gift voucher"
+ },
+ {
+  "file": "page/appointment-card.png",
+  "label": "Appointment card",
+  "meta": "Business cards",
+  "tags": "business cards appointment card"
+ },
+ {
+  "file": "page/price-list.png",
+  "label": "Price list",
+  "meta": "Menus",
+  "tags": "menus price list"
+ },
+ {
+  "file": "page/thank-you-card.png",
+  "label": "Thank-you card",
+  "meta": "Vouchers & cards",
+  "tags": "vouchers & cards thank-you card"
+ }
 ]
