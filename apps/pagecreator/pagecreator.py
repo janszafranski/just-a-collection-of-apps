@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.32-00"
+VERSION = "1.33-00"
 
 
 def _just_dir(kind):
@@ -66,6 +66,48 @@ def _justapps_recent(appkey, path):
 
 
 IMAGE_LIBRARY_DIR = os.path.expanduser('~/.local/share/justapps/images')
+
+# ---- font style grouping (FontManager-style) -------------------------------
+FONT_CATEGORY_ORDER = ['Sans serif', 'Serif', 'Slab serif', 'Display',
+                       'Script', 'Handwriting', 'Monospace']
+
+
+def font_category(name):
+    """Classify a font family into a broad style group by its name (heuristic)."""
+    n = (name or '').lower()
+    def has(*ks): return any(k in n for k in ks)
+    if has('mono', 'consol', 'courier', ' code', 'cousine', 'inconsolata', 'fira code', 'jetbrains', 'source code'):
+        return 'Monospace'
+    if has('script', 'brush', 'pacifico', 'lobster', 'dancing', 'satisfy', 'sacramento', 'allura',
+           'alex brush', 'great vibes', 'tangerine', 'kaushan', 'cookie', 'parisienne', 'yellowtail',
+           'pinyon', 'niconne', 'cursive', 'calligraph', 'vibes', 'pacific'):
+        return 'Script'
+    if has('hand', 'marker', 'permanent', 'indie', 'shadows into', 'gochi', 'patrick', 'architects',
+           'reenie', 'nanum pen', 'just another', 'caveat', 'amatic', 'kalam', 'gloria', 'neucha'):
+        return 'Handwriting'
+    if has('slab', 'rockwell', 'zilla', 'josefin slab'):
+        return 'Slab serif'
+    if has('black', 'ultra', 'heavy', 'poster', 'display', 'titan', 'anton', 'bungee', 'bangers',
+           'fredoka', 'righteous', 'alfa', 'abril', 'archivo black', 'bebas', 'oswald', 'passion',
+           'staatliches', 'teko', 'fjalla', 'monoton', 'bowlby', 'creepster', 'faster', 'bowlby',
+           'graduate', 'luckiest', 'bagel', 'bungee', 'rubik mono', 'squada', 'orbitron', 'press start'):
+        return 'Display'
+    if has('serif', 'times', 'georgia', 'garamond', ' roman', 'playfair', 'merriweather', 'lora',
+           'pt serif', 'noto serif', 'crimson', 'cormorant', 'baskerville', 'eb garamond', 'vollkorn',
+           'spectral', 'bitter', 'source serif', 'domine', 'frank ruhl', 'cardo', 'gentium', 'alegreya',
+           'arvo', 'tinos', 'liberation serif'):
+        return 'Serif'
+    return 'Sans serif'
+
+
+def group_fonts_by_style(families):
+    """Return an OrderedDict {category: [families]} for the given font families,
+    sorted within each group, categories in a fixed order, empty groups dropped."""
+    import collections as _c
+    cats = _c.OrderedDict((c, []) for c in FONT_CATEGORY_ORDER)
+    for fam in families:
+        cats[font_category(fam)].append(fam)
+    return _c.OrderedDict((c, sorted(f, key=str.lower)) for c, f in cats.items() if f)
 _IMG_EXTS = ('.jpg', '.jpeg', '.png', '.webp')
 
 
@@ -7421,16 +7463,13 @@ class MainWindow(QMainWindow):
             row = QWidget(); rl = QVBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0); rl.setSpacing(0)
             rl.addWidget(b); rl.addWidget(lab); return row
 
-        groups = []
-        if getattr(self, 'bundled_fonts', None):
-            groups.append(('Bundled fonts', list(self.bundled_fonts)))
         uf = getattr(self, 'user_fonts', None) or []
-        if uf:
-            byl = collections.OrderedDict()
-            for fam in uf:
-                byl.setdefault(fam[0].upper() if fam[:1].isalpha() else '#', []).append(fam)
-            for k, fams in byl.items():
-                groups.append((f'My fonts · {k}', fams))
+        allf, seen = [], set()
+        for fam in list(getattr(self, 'bundled_fonts', None) or []) + list(uf):
+            if fam not in seen:
+                seen.add(fam); allf.append(fam)
+        # Group by style (FontManager-style): Sans / Serif / Script / Display / …
+        groups = [(cat, fams) for cat, fams in group_fonts_by_style(allf).items()]
 
         self._font_sections = []
         for i, (title, fams) in enumerate(groups):
