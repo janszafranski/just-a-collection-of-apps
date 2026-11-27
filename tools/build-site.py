@@ -502,11 +502,19 @@ def _app_body(m):
                     f'src="assets/{img}" alt="{e(cap)}">'
                     f'<figcaption class="mute small">{e(cap)}</figcaption></figure>\n')
     feats = "".join(f"<li>{e(f)}</li>" for f in m["feats"])
-    tour = f"<h2>A closer look</h2>\n{gallery}" if gallery else ""
+    # The hub page leads with its screenshot (right under the banner); every other app
+    # keeps the shot in an 'A closer look' section lower down.
+    is_hub = (m.get("key") == "collectionofapps")
+    hero = ""
+    if is_hub and m.get("gallery"):
+        img, cap = m["gallery"][0]
+        hero = (f'<figure style="margin:.3em 0 1.6em"><img class="shot" style="margin-bottom:.5em" '
+                f'src="assets/{img}" alt="{e(cap)}"><figcaption class="mute small">{e(cap)}</figcaption></figure>\n')
+    tour = "" if is_hub else (f"<h2>A closer look</h2>\n{gallery}" if gallery else "")
     return f"""<nav class="crumbs mute"><a href="index.html">{e(SITE)}</a> &rsaquo; just a&hellip; {e(m['title'])}</nav>
 <h2 style="margin-top:0">just a&hellip; {e(m['title'])}</h2>
 <img class="shot" src="assets/{m['banner']}" alt="just a… {e(m['title'])}">
-{based}
+{hero}{based}
 <p class="lede">{e(m['blurb'])}</p>
 {tour}
 {_grid_section(m)}
