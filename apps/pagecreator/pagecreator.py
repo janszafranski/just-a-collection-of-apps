@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.23-05"
+VERSION = "1.27-00"
 
 
 def _just_dir(kind):
@@ -6537,6 +6537,25 @@ STANDARD = ['#000000', '#3a3a3a', '#757575', '#b0b0b0', '#e0e0e0', '#ffffff', '#
             '#27ae60', '#16a085', '#2980b9', '#2c3e50', '#8e44ad', '#d35400', '#f5e6c8', '#dfe8e1']
 
 
+from PySide6.QtWidgets import QScrollArea
+
+
+class _DockScroll(QScrollArea):
+    """A scroll area for dock panels that lets the dock shrink BELOW the panel's
+    natural width. Unlike setWidgetResizable(True) — which adopts the child's
+    minimum and then refuses to shrink further — this expands the child to fill
+    when the panel is wide, but lets it keep its natural size and SCROLL when the
+    panel is narrower. That makes the right studio panel draggable small, with the
+    tab bar's ◀ ▶ arrows taking over, like the left side."""
+    def resizeEvent(self, e):
+        super().resizeEvent(e)
+        wdg = self.widget()
+        if wdg is not None:
+            vp = self.viewport().size()
+            mh = wdg.minimumSizeHint()
+            wdg.resize(max(vp.width(), mh.width()), max(vp.height(), mh.height()))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -7018,7 +7037,16 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------ Studio
     def dock(self, title, widget, name):
-        d = QDockWidget(title, self); d.setObjectName(name); d.setWidget(widget)
+        d = QDockWidget(title, self); d.setObjectName(name)
+        # Wrap the panel so the dock can be dragged NARROWER than the panel's natural
+        # width: _DockScroll fills when wide and scrolls when narrow (unlike a plain
+        # widgetResizable scroll area, which refuses to shrink below the content).
+        sa = _DockScroll(); sa.setWidgetResizable(False); sa.setFrameShape(QScrollArea.NoFrame)
+        sa.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sa.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        sa.setWidget(widget)
+        sa.setMinimumWidth(60)          # the dock can shrink to here; content scrolls past it
+        d.setWidget(sa)
         d.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
         self.addDockWidget(Qt.RightDockWidgetArea, d); return d
 
@@ -7123,17 +7151,35 @@ class MainWindow(QMainWindow):
                # triangles sit cleanly BEFORE 'Site' and AFTER 'Layers' without covering the text.
                'QTabBar::tab:first{padding-left:26px;}'
                'QTabBar::tab:last{padding-right:26px;}'
-               # the ◀ ▶ scroll buttons the tab bar shows when its tabs overflow: make them
-               # flat plain triangles (transparent background, no box), not Qt's boxed default.
-               'QTabBar QToolButton{background:transparent;border:none;width:16px;}'
-               'QTabBar QToolButton:hover{background:palette(midlight);border-radius:3px;}')
+               # Hide Qt's OWN scroll buttons (the boxed < > pair it parks at one end when a
+               # dock tab bar overflows). We draw our own ◀ / ▶ TriangleButtons instead — one
+               # before the first tab and one after the last — matching the left Assets bar.
+               # (Those are QAbstractButtons, not QToolButtons, so this rule doesn't touch them.)
+               'QTabBar QToolButton{width:0px;height:0px;border:none;margin:0;padding:0;}')
+        docks = self.findChildren(QDockWidget)
         for tb in self.findChildren(QTabBar):
             tb.setStyleSheet(css)
-            tb.setUsesScrollButtons(False)  # we add our OWN ◀ ▶ arrows (left and right), not Qt's boxed pair
             tb.setElideMode(Qt.ElideNone)   # keep the full tab name; scroll to the hidden ones
             tb.setExpanding(False)
             self._label_blank_tabs(tb)
-            self._add_tabbar_arrows(tb)
+            # Is this a tab bar living INSIDE a panel (e.g. Assets' Browse/Open), or the
+            # QMainWindow-managed dock tab bar for the right studio group?
+            in_panel = any(d.isAncestorOf(tb) for d in docks)
+            if in_panel:
+                # Normal layout honours minimumWidth, so our hand-drawn ◀ ▶ arrows work —
+                # this is the left Assets bar the user likes.
+                tb.setUsesScrollButtons(False)
+                tb.setMinimumWidth(40)
+                self._add_tabbar_arrows(tb)
+            else:
+                # The dock tab bar is sized by the dock layout using its minimumSizeHint,
+                # which with no scroll buttons is the FULL width of every tab — that is what
+                # pins the right panel open and won't let it shrink. Enabling scroll buttons
+                # gives it a small minimum (panel drags narrow) and Qt scrolls the tabs,
+                # styled flat as ◀ ▶ by the CSS above.
+                tb.setUsesScrollButtons(True)
+                tb.setMinimumWidth(40)
+                self._add_tabbar_arrows(tb)   # same hand-drawn ◀ ▶ triangles as the left bar
 
     def _label_blank_tabs(self, tb):
         """A tabified dock whose title was blanked (to hide its untabbed title bar) shows
@@ -7522,6 +7568,9 @@ class MainWindow(QMainWindow):
         self.d_colour.raise_(); self.d_site.raise_()
         self.resizeDocks([self.d_colour, self.d_site], [320, 410], Qt.Vertical)
         self.resizeDocks([self.d_assets], [196], Qt.Horizontal)  # two columns; narrow for one
+        # Open the right studio at a sensible width (not pinned wide to show all 7 tab labels).
+        # The tab bar scrolls (◀ ▶) when narrowed; drag the splitter to resize, like the left.
+        self.resizeDocks([self.d_site], [280], Qt.Horizontal)
         self.view_menu.addSeparator()
         sm = self.view_menu.addMenu('Studio')
         for d, lbl in ((self.d_site, 'Site'), (self.d_assets, 'Assets'), (self.d_swatch, 'Swatches'),
