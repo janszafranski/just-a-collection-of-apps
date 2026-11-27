@@ -115,6 +115,8 @@
     color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
   .inst{font:inherit;font-weight:600;font-size:14.5px;cursor:pointer;border:0;border-radius:7px;
     color:#fff;background:var(--acc);padding:9px 18px;transition:background .18s ease,transform .1s ease}
+  /* the same control as an anchor (e.g. the Windows → Releases link) */
+  a.inst{display:inline-block;text-decoration:none;line-height:1}
   .inst:hover{background:var(--acc-deep)}
   .inst:active{transform:translateY(1px)}
   .inst:focus-visible{outline:3px solid color-mix(in srgb,var(--acc) 40%,#fff);outline-offset:2px}
@@ -216,6 +218,7 @@
               drop straight back into a project. Install this and it offers you the rest.</p>
             <div class="get">
               <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/collectionofapps/install.sh">Install</button><span class="plat">Linux</span></div>
+              <div class="getopt"><a class="inst" href="https://github.com/janszafranski/just-a-collection-of-apps/releases">Install</a><span class="plat">Windows</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/">Details ↗</a>
             </div>
           </div>
@@ -231,6 +234,7 @@
               where you want them, then publish plain HTML you can upload anywhere.</p>
             <div class="get">
               <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/webcreator/install.sh">Install</button><span class="plat">Linux</span></div>
+              <div class="getopt"><a class="inst" href="https://github.com/janszafranski/just-a-collection-of-apps/releases">Install</a><span class="plat">Windows</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/webcreator.html">Details ↗</a>
             </div>
           </div>
@@ -246,6 +250,7 @@
               flows between columns, master pages, guides — then export a vector PDF.</p>
             <div class="get">
               <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/pagecreator/install.sh">Install</button><span class="plat">Linux</span></div>
+              <div class="getopt"><a class="inst" href="https://github.com/janszafranski/just-a-collection-of-apps/releases">Install</a><span class="plat">Windows</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/pagedesigner.html">Details ↗</a>
             </div>
           </div>
@@ -261,6 +266,7 @@
               photos, apply adjustments and filters.</p>
             <div class="get">
               <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/paint/install.sh">Install</button><span class="plat">Linux</span></div>
+              <div class="getopt"><a class="inst" href="https://github.com/janszafranski/just-a-collection-of-apps/releases">Install</a><span class="plat">Windows</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/paintcanvas.html">Details ↗</a>
             </div>
           </div>
@@ -276,6 +282,7 @@
               saved as scalable SVG it can re-open and keep editing.</p>
             <div class="get">
               <div class="getopt"><button class="inst" data-cmd="git clone https://github.com/janszafranski/just-a-collection-of-apps.git && cd just-a-collection-of-apps && apps/draw/install.sh">Install</button><span class="plat">Linux</span></div>
+              <div class="getopt"><a class="inst" href="https://github.com/janszafranski/just-a-collection-of-apps/releases">Install</a><span class="plat">Windows</span></div>
               <a class="more" href="https://janszafranski.github.io/just-a-collection-of-apps/drawmaster.html">Details ↗</a>
             </div>
           </div>
@@ -428,7 +435,9 @@
       toast.classList.add('show');
       clearTimeout(t);t=setTimeout(function(){toast.classList.remove('show')},3200);
     }
-    document.querySelectorAll('.inst').forEach(function(b){
+    // only the copy-a-command buttons (Linux); plain links like the Windows
+    // one point at the Releases page and are left to navigate normally.
+    document.querySelectorAll('.inst[data-cmd]').forEach(function(b){
       b.addEventListener('click',function(){
         var c=b.getAttribute('data-cmd');
         if(navigator.clipboard&&navigator.clipboard.writeText){
