@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.31-00"
+VERSION = "1.32-00"
 
 
 def _just_dir(kind):
@@ -7643,11 +7643,17 @@ class MainWindow(QMainWindow):
         # full words, no truncation — scroll the row with the < > arrows when it overflows
         al.addWidget(self._hscroll_row([browse, add_file, add_ai, paint]))
         self.asset_filter = 'all'; self.asset_cat_group = QButtonGroup(self); crow = QHBoxLayout(); crow.setSpacing(3)
-        for i, (fk, lbl) in enumerate((('all', 'All'), ('pictures', 'Pictures'), ('graphics', 'Graphics'))):
+        for i, (fk, lbl) in enumerate((('all', 'All'), ('pictures', 'Pictures'), ('graphics', 'Graphics'), ('library', 'Library'))):
             b = QToolButton(); b.setText(lbl); b.setCheckable(True); b.setChecked(fk == 'all'); b.setToolButtonStyle(Qt.ToolButtonTextOnly)
-            b.clicked.connect(lambda _=False, fk=fk: (setattr(self, 'asset_filter', fk), self.refresh_assets()))
+            if fk == 'library':
+                b.setToolTip('Browse your stock-photo library — double-click or drag a photo onto the page')
+            b.clicked.connect(lambda _=False, fk=fk: self._set_asset_filter(fk))
             self.asset_cat_group.addButton(b, i); crow.addWidget(b)
         crow.addStretch(); al.addLayout(crow)
+        # Stock-library category chooser — only shown in 'Library' mode
+        self.lib_combo = QComboBox(); self.lib_combo.setVisible(False)
+        self.lib_combo.currentIndexChanged.connect(lambda _=0: self.refresh_assets())
+        al.addWidget(self.lib_combo)
         # Thumbnails sit in uniform framed boxes with no caption (the name is the tooltip).
         # ThumbGrid grows the icons with the panel and reflows between one and two columns.
         self.asset_list = ThumbGrid()
@@ -8850,10 +8856,38 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     # ------------------------------------------------------------ Assets panel
+    def _set_asset_filter(self, fk):
+        self.asset_filter = fk
+        is_lib = (fk == 'library')
+        if hasattr(self, 'lib_combo'):
+            self.lib_combo.setVisible(is_lib)
+            if is_lib and self.lib_combo.count() == 0:    # populate categories on first use
+                for label, path in scan_image_library():
+                    self.lib_combo.addItem(label, path)
+                if self.lib_combo.count() == 0:
+                    self.lib_combo.addItem('No stock library installed', '')
+        self.refresh_assets()
+
+    def _fill_library_assets(self):
+        """Fill the Assets grid with photos from the chosen stock-library category."""
+        cat = self.lib_combo.currentData() if hasattr(self, 'lib_combo') else None
+        if cat and os.path.isdir(cat):
+            exts = ('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp')
+            for f in sorted(x for x in os.listdir(cat) if x.lower().endswith(exts)):
+                p = os.path.join(cat, f)
+                pm = library_thumbnail(p, 80)
+                icon = QIcon(pm) if pm and not pm.isNull() else QIcon()
+                it = QListWidgetItem(icon, '')
+                it.setData(Qt.UserRole, p); it.setData(Qt.UserRole + 1, 'lib'); it.setToolTip(f)
+                self.asset_list.addItem(it)
+        if hasattr(self.asset_list, 'relayout'): self.asset_list.relayout()
+
     def refresh_assets(self):
         """Fill the Assets panel with a thumbnail of every image in the site."""
         if not hasattr(self, 'asset_list'): return
         self.asset_list.clear()
+        if getattr(self, 'asset_filter', 'all') == 'library':
+            self._fill_library_assets(); return
         names = self.site.get('assetnames', {})
         flt = getattr(self, 'asset_filter', 'all')
         for key, uri in self.site.get('assets', {}).items():
@@ -8913,6 +8947,8 @@ class MainWindow(QMainWindow):
         self.refresh_assets()
 
     def asset_insert(self, it):
+        if it and it.data(Qt.UserRole + 1) == 'lib':     # a stock-library photo (file path)
+            self.insert_picture_from_path(it.data(Qt.UserRole)); return
         key = it.data(Qt.UserRole) if it else None
         if not key: return
         cc = self.view.mapToScene(self.view.viewport().rect().center())
