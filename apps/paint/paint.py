@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.15-00"
+VERSION = "1.16-00"
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -4645,6 +4645,7 @@ class Main(QMainWindow):
         f.addAction(self.act('&New…', self.new, QKeySequence.New))
         f.addAction(self.act('&Open…', self.open, QKeySequence.Open))
         f.addAction(self.act('Open from &Library…', self.open_from_library))
+        f.addAction(self.act('Merge Photos to &Panorama…', self.merge_panorama))
         f.addAction(self.act('&Save', self.save, QKeySequence.Save))
         f.addAction(self.act('Save &As…', self.save_as, QKeySequence.SaveAs))
         f.addAction(self.act('&Export…', self.export, 'Ctrl+Shift+E'))
@@ -5270,6 +5271,60 @@ class Main(QMainWindow):
         and open it as a new document through the normal open path."""
         path = library_picker(self, 'Open from Library')
         if path: self.open_path(path)
+
+    def merge_panorama(self):
+        """File ▸ Merge Photos to Panorama… — stitch several overlapping photos into one
+        wide panorama (in the spirit of Serif PanoramaPlus) and open it as a new document.
+        Uses OpenCV's automatic stitcher (feature match → warp → blend)."""
+        if not HAS_CV2:
+            QMessageBox.warning(self, APP, "Photo Merge needs OpenCV, which isn't installed.\n\n"
+                                "Install it and reopen PAINTcanvas:\n"
+                                "    pip install opencv-python-headless\n"
+                                "    (or: sudo pacman -S python-opencv)")
+            return
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, 'Choose 2 or more overlapping photos to stitch', _just_dir('pics'),
+            'Images (*.png *.jpg *.jpeg *.bmp *.webp *.tif *.tiff);;All files (*)')
+        if not paths:
+            return
+        if len(paths) < 2:
+            QMessageBox.information(self, APP, 'Pick at least two overlapping photos to stitch.')
+            return
+        import numpy as _np
+        self.statusBar().showMessage(f'Stitching {len(paths)} photos…'); QApplication.processEvents()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            imgs = []
+            for p in paths:
+                try:    # np.fromfile+imdecode handles non-ASCII paths cv2.imread chokes on
+                    arr = _cv2.imdecode(_np.fromfile(p, dtype=_np.uint8), _cv2.IMREAD_COLOR)
+                except Exception:
+                    arr = _cv2.imread(p)
+                if arr is not None:
+                    imgs.append(arr)
+            if len(imgs) < 2:
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(self, APP, 'Could not read enough of those photos to stitch.')
+                return
+            stitcher = _cv2.Stitcher_create(_cv2.Stitcher_PANORAMA)
+            status, pano = stitcher.stitch(imgs)
+        except Exception as e:
+            QApplication.restoreOverrideCursor()
+            QMessageBox.warning(self, APP, f'Stitching failed:\n{e}')
+            return
+        QApplication.restoreOverrideCursor()
+        if status != 0 or pano is None:
+            QMessageBox.warning(self, APP,
+                                'Those photos could not be stitched automatically.\n\n'
+                                'Panoramas work best when consecutive shots overlap by about a third, '
+                                'are taken from the same spot, and keep the same exposure.')
+            self.statusBar().showMessage('Stitch cancelled.', 4000)
+            return
+        rgb = _cv2.cvtColor(pano, _cv2.COLOR_BGR2RGB)
+        h, w = rgb.shape[:2]
+        qi = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format_RGB888).convertToFormat(QImage.Format_ARGB32).copy()
+        self.canvas.load(qi); self.path = None; self.update_title()
+        self.statusBar().showMessage(f'Stitched {len(imgs)} photos → {w}×{h}. Crop the ragged edges, then Save.', 8000)
 
     def save(self):
         if not self.path or not self.path.lower().endswith(('.png', '.jpg', '.jpeg')):

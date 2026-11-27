@@ -18,7 +18,7 @@
       pwsh -File tools\build-windows-exe.ps1 -App paint      # just one app
 #>
 param(
-  [ValidateSet('paint', 'draw', 'pagecreator', 'webcreator', 'all')]
+  [ValidateSet('paint', 'draw', 'pagecreator', 'webcreator', 'movie', 'collectionofapps', 'all')]
   [string]$App = 'all'
 )
 $ErrorActionPreference = 'Stop'
@@ -48,7 +48,16 @@ $Matrix = @(
   @{ id = 'webcreator';  product = 'just a... WEBcreator';   main = 'webcreator.py';
      modules = @('test_webplus_import.py');
      data = @('banner.png', 'manual.pdf', 'quickstart.pdf', 'manual.html', 'quickstart.html',
-              'serif-templates.json', 'guide_example_site.png') }
+              'serif-templates.json', 'guide_example_site.png') },
+  # MOVIEeditor renders with ffmpeg, so its .exe bundles ffmpeg.exe + ffprobe.exe
+  # (placed in <repo>\ffmpeg\ by the CI workflow before this script runs).
+  @{ id = 'movie';       product = 'just a... MOVIEeditor';  main = 'movie.py';
+     modules = @();
+     data = @('banner.png', 'manual.pdf', 'quickstart.pdf', 'manual.html', 'quickstart.html');
+     ffmpeg = $true },
+  @{ id = 'collectionofapps'; product = 'just a... CREATORsuite'; main = 'collectionofapps.py';
+     modules = @();
+     data = @('banner.png', 'manual.html') }
 )
 
 function Log  ($m) { Write-Host ":: $m" -ForegroundColor Cyan }
@@ -113,6 +122,18 @@ function Build-One {
     $src = Join-Path $AppDir $d
     if (Test-Path $src) { $pyargs += @('--add-data', "$src$Sep.") }
     else { Warn "  (data file $d not present — skipping)" }
+  }
+
+  # MOVIEeditor: bundle ffmpeg.exe + ffprobe.exe (its render engine) from <repo>\ffmpeg\
+  if ($entry.ffmpeg) {
+    $FfDir = Join-Path $RepoRoot 'ffmpeg'
+    $found = $false
+    foreach ($tool in @('ffmpeg.exe', 'ffprobe.exe')) {
+      $src = Join-Path $FfDir $tool
+      if (Test-Path $src) { $pyargs += @('--add-binary', "$src$Sep."); $found = $true }
+      else { Warn "  ($tool not found in $FfDir — the MOVIEeditor .exe will need ffmpeg on PATH)" }
+    }
+    if ($found) { Log "  bundling ffmpeg for $($entry.id)" }
   }
 
   # bundled fonts (fonts\ may be a symlink into pagecreator\fonts — resolve it)

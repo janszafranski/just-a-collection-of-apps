@@ -49,7 +49,20 @@ jobs:
           python -m pip install opencv-python-headless; if (-not $?) { Write-Host "opencv optional - skipping" }
           exit 0
 
-      - name: Build all four executables
+      - name: Fetch ffmpeg for MOVIEeditor
+        shell: pwsh
+        run: |
+          # MOVIEeditor shells out to ffmpeg/ffprobe; bundle a static Windows build
+          # into <repo>\ffmpeg\ so its .exe works without ffmpeg installed.
+          $url = 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip'
+          Invoke-WebRequest -Uri $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg_dl -Force
+          New-Item -ItemType Directory -Force -Path ffmpeg | Out-Null
+          Get-ChildItem -Recurse ffmpeg_dl -Include ffmpeg.exe, ffprobe.exe |
+            ForEach-Object { Copy-Item $_.FullName ffmpeg\ -Force }
+          Get-ChildItem ffmpeg
+
+      - name: Build all six executables
         shell: pwsh
         run: pwsh -File tools/build-windows-exe.ps1 -App all
 

@@ -41,8 +41,21 @@ BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE, 'manual.pdf'), os.path.join(HERE, 'manual.html')) if os.path.isfile(p)), os.path.join(HERE, 'manual.pdf'))
 QUICKSTART = next((p for p in (os.path.join(HERE, 'quickstart.pdf'), os.path.join(HERE, 'quickstart.html')) if os.path.isfile(p)), os.path.join(HERE, 'quickstart.pdf'))
 
-FFMPEG = shutil.which('ffmpeg')
-FFPROBE = shutil.which('ffprobe')
+def _bundled_tool(name):
+    """A copy of ffmpeg/ffprobe shipped inside a PyInstaller bundle (Windows .exe),
+    or beside the app, takes priority over whatever is on PATH."""
+    bases = [getattr(sys, '_MEIPASS', None), HERE]
+    for base in bases:
+        if not base:
+            continue
+        for cand in (os.path.join(base, name), os.path.join(base, name + '.exe')):
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
+FFMPEG = _bundled_tool('ffmpeg') or shutil.which('ffmpeg')
+FFPROBE = _bundled_tool('ffprobe') or shutil.which('ffprobe')
 
 VIDEO_EXT = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.wmv', '.m4v', '.mpg', '.mpeg', '.flv', '.3gp'}
 IMAGE_EXT = {'.png', '.jpg', '.jpeg', '.bmp', '.gif', '.webp', '.tif', '.tiff'}
@@ -98,6 +111,12 @@ BLEND_MODES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
 # title animations
 TEXT_ANIMS = [('none', 'None'), ('fade', 'Fade in & out'), ('slideL', 'Slide in from left'),
               ('slideR', 'Slide in from right'), ('slideU', 'Rise up')]
+
+
+def _ff_path(p):
+    """Make a filesystem path safe inside an ffmpeg filtergraph (Windows drive
+    colons and backslashes would otherwise be read as option separators)."""
+    return p.replace('\\', '/').replace(':', '\\:')
 
 
 def _font_variant(bold, italic):
@@ -253,9 +272,22 @@ def _font_file():
             return r.stdout.strip()
     except Exception:
         pass
-    for p in ('/usr/share/fonts/noto/NotoSans-Regular.ttf',
-              '/usr/share/fonts/TTF/DejaVuSans.ttf',
-              '/usr/share/fonts/dejavu/DejaVuSans.ttf'):
+    cands = ['/usr/share/fonts/noto/NotoSans-Regular.ttf',
+             '/usr/share/fonts/TTF/DejaVuSans.ttf',
+             '/usr/share/fonts/dejavu/DejaVuSans.ttf',
+             r'C:\Windows\Fonts\arial.ttf', r'C:\Windows\Fonts\segoeui.ttf',
+             '/System/Library/Fonts/Supplemental/Arial.ttf']
+    # a font bundled with the app (Windows .exe has no fontconfig)
+    for base in (getattr(sys, '_MEIPASS', None), HERE):
+        if base:
+            fdir = os.path.join(base, 'fonts')
+            if os.path.isdir(fdir):
+                pref = [f for f in sorted(os.listdir(fdir)) if f.lower().endswith('.ttf')
+                        and any(k in f.lower() for k in ('dejavu', 'noto', 'roboto', 'opensans', 'arial'))]
+                any_ttf = [f for f in sorted(os.listdir(fdir)) if f.lower().endswith('.ttf')]
+                for f in (pref + any_ttf):
+                    cands.insert(0, os.path.join(fdir, f))
+    for p in cands:
         if os.path.isfile(p):
             return p
     return ''
@@ -473,7 +505,7 @@ class RenderWorker(QThread):
             x_expr = f"if(lt({T},{AD}),w+(({xbase})-w)*({T}/{AD}),{xbase})"
         elif anim == 'slideU':
             y_expr = f"if(lt({T},{AD}),h+(({ybase})-h)*({T}/{AD}),{ybase})"
-        parts = [f"drawtext=fontfile='{font}'", f"text='{content}'", f"fontsize={size}",
+        parts = [f"drawtext=fontfile='{_ff_path(font)}'", f"text='{content}'", f"fontsize={size}",
                  f"fontcolor=#{col}", f"x='{x_expr}'", f"y='{y_expr}'"]
         if alpha_expr:
             parts.append(f"alpha='{alpha_expr}'")
