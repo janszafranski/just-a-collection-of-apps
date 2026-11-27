@@ -113,10 +113,11 @@
   .getopt{display:flex;flex-direction:column;align-items:center;gap:6px}
   .plat{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;
     color:var(--mute);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
-  .inst{font:inherit;font-weight:600;font-size:14.5px;cursor:pointer;border:0;border-radius:7px;
+  .inst{font:inherit;font-weight:600;font-size:14.5px;line-height:1.2;cursor:pointer;border:0;border-radius:7px;
+    box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;text-align:center;
     color:#fff;background:var(--acc);padding:9px 18px;transition:background .18s ease,transform .1s ease}
-  /* the same control as an anchor (e.g. the Windows → Releases link) */
-  a.inst{display:inline-block;text-decoration:none;line-height:1}
+  /* same control whether <button> (Linux) or <a> (Windows → Releases): identical box so both pills match */
+  a.inst{text-decoration:none}
   .inst:hover{background:var(--acc-deep)}
   .inst:active{transform:translateY(1px)}
   .inst:focus-visible{outline:3px solid color-mix(in srgb,var(--acc) 40%,#fff);outline-offset:2px}
