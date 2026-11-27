@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.19-00"
+VERSION = "1.20-00"
 
 
 def _just_dir(kind):
@@ -400,6 +400,33 @@ DEF = {
     # Page Flip — a flip-book / page-turning viewer over an ordered set of page images.
     'pageflip': dict(w=560, h=360, pages=[], spread='double', auto=False, speed=5.0,
                      fit='contain', radius=4, strokeW=1, stroke='#d4dade', fill='#2b2b2b', accent='#2a7d6b'),
+    # --- Interactive add-ons (v1.20) ----------------------------------------
+    # Before / After — two images stacked, a draggable divider wipes between them.
+    'beforeafter': dict(w=480, h=320, before=None, after=None, start=50, labels=True,
+                        beforelabel='Before', afterlabel='After', orient='horizontal', fit='cover',
+                        accent='#ffffff', radius=0, strokeW=0, stroke='#333333', fill='#1b2227'),
+    # Lightbox Gallery — a thumbnail grid that opens a full-screen overlay (prev/next/keys).
+    'lbgallery': dict(w=560, h=320, images=[], captions={}, cols=3, gap=8, showcaps=True,
+                      strip=True, fit='cover', radius=4, accent='#2a7d6b', fill='',
+                      strokeW=0, stroke='#333333'),
+    # Feature Tabs — a tabbed content panel (keyboard accessible, no-JS stacked fallback).
+    'tabs':     dict(w=560, h=320, tabs=[dict(title='Tab one', body='<p>First panel.</p>'),
+                                         dict(title='Tab two', body='<p>Second panel.</p>')],
+                     active=0, orient='top', font='Noto Sans', size=16, color='#2b2b2b',
+                     accent='#2a7d6b', cardbg='#ffffff', fill='', stroke='#d4dade', strokeW=1, radius=8),
+    # News Ticker — a horizontal scrolling strip of headline items with an optional label.
+    'ticker':   dict(w=640, h=48, items=[dict(text='Breaking: your headline here', href=''),
+                                         dict(text='Another story scrolls past', href='')],
+                     label='NEWS', speed=40, direction='left', pause=True, font='Noto Sans',
+                     size=15, color='#ffffff', accent='#2a7d6b', fill='#1b2227', radius=6,
+                     strokeW=0, stroke='#333333'),
+    # Video Player — a real HTML5 <video> with poster + native controls (no Flash/library).
+    'videoplayer': dict(w=640, h=360, src='', url='', poster=None, controls=True, autoplay=False,
+                        loop=False, responsive=True, radius=4, strokeW=0, stroke='#333333', fill='#000000'),
+    # Portfolio Grid — a filterable image grid (filter buttons by category, CSS transition).
+    'portfolio': dict(w=640, h=420, items=[], cols=3, gap=10, alllabel='All', fit='cover',
+                      showtitles=True, lightbox=True, font='Noto Sans', size=14, color='#2b2b2b',
+                      accent='#2a7d6b', fill='', radius=6, strokeW=0, stroke='#333333'),
 }
 # A SLIDE in a slider object: heading / caption text over an image, with an optional button.
 SLIDE_DEF = dict(image=None, heading='', caption='', btn='', link='')
@@ -426,7 +453,8 @@ NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
                   nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed', slider='Slider / carousel', paypal='PayPal button',
-                  rotator='Text rotator', accordion='Accordion (FAQs)', skills='Skills chart', imgzoom='Image zoom', spin360='360° viewer', bgvideo='Background video', popupform='Popup form', backtotop='Back to top', pageflip='Page flip')
+                  rotator='Text rotator', accordion='Accordion (FAQs)', skills='Skills chart', imgzoom='Image zoom', spin360='360° viewer', bgvideo='Background video', popupform='Popup form', backtotop='Back to top', pageflip='Page flip',
+                  beforeafter='Before / after', lbgallery='Lightbox gallery', tabs='Feature tabs', ticker='News ticker', videoplayer='Video player', portfolio='Portfolio grid')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -2233,6 +2261,218 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
             rad = o.get('radius', 4); p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
         if edit:
             _badge(p, w, '📖 page flip · %d' % len(pages))
+    elif t == 'beforeafter':
+        # Two images stacked; the divider sits at `start` %. We draw the 'after' image full,
+        # then clip the 'before' image to the divider's side, plus a handle on the seam.
+        p.save(); path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.setClipPath(path)
+        p.fillRect(r, QColor(o.get('fill', '#1b2227')))
+        cover = o.get('fit', 'cover') == 'cover'
+        def _fit(dst, key):
+            pm = pixmap_for(site, key) if key else None
+            if not pm or pm.isNull(): return
+            pw_, ph_ = pm.width(), pm.height()
+            if cover:
+                sc = max(dst.width() / pw_, dst.height() / ph_); sw_, sh_ = dst.width() / sc, dst.height() / sc
+                p.drawPixmap(dst, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+            else:
+                sc = min(dst.width() / pw_, dst.height() / ph_); tw, th = pw_ * sc, ph_ * sc
+                p.drawPixmap(QRectF(dst.x() + (dst.width() - tw) / 2, dst.y() + (dst.height() - th) / 2, tw, th),
+                             pm, QRectF(0, 0, pw_, ph_))
+        vertical = o.get('orient', 'horizontal') == 'vertical'
+        pos = max(0, min(100, int(o.get('start', 50)))) / 100.0
+        _fit(r, o.get('after'))
+        p.save()
+        clip = QRectF(0, 0, w * pos, h) if not vertical else QRectF(0, 0, w, h * pos)
+        p.setClipRect(clip); _fit(r, o.get('before')); p.restore()
+        # divider line + handle
+        acc = QColor(o.get('accent', '#ffffff')); p.setPen(QPen(acc, 2))
+        if not vertical:
+            dx = w * pos; p.drawLine(QPointF(dx, 0), QPointF(dx, h))
+            p.setBrush(acc); p.setPen(Qt.NoPen); p.drawEllipse(QPointF(dx, h / 2), 13, 13)
+        else:
+            dy = h * pos; p.drawLine(QPointF(0, dy), QPointF(w, dy))
+            p.setBrush(acc); p.setPen(Qt.NoPen); p.drawEllipse(QPointF(w / 2, dy), 13, 13)
+        if o.get('labels', True):
+            f = QFont('Arial'); f.setPixelSize(12); f.setBold(True); p.setFont(f)
+            for txt, rect in ((o.get('beforelabel', 'Before'), QRectF(8, 8, w / 2 - 12, 20)),
+                              (o.get('afterlabel', 'After'), QRectF(w / 2 + 4, 8, w / 2 - 12, 20))):
+                tw = QFontMetrics(f).horizontalAdvance(txt) + 14
+                br = QRectF(rect.x() if txt == o.get('beforelabel', 'Before') else rect.right() - tw, rect.y(), tw, 20)
+                p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 150)); p.drawRoundedRect(br, 4, 4)
+                p.setPen(QColor('#ffffff')); p.drawText(br, Qt.AlignCenter, txt)
+        if not (o.get('before') or o.get('after')) and edit:
+            f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#dfe4e7'))
+            p.drawText(r, Qt.AlignCenter, 'Double-click to add before / after images')
+        p.restore()
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '◨ before / after')
+    elif t == 'lbgallery':
+        # A thumbnail grid preview.
+        if o.get('fill'): p.fillRect(r, QColor(o['fill']))
+        keys = [k for k in (o.get('images') or []) if k in site.get('assets', {})]
+        cols = max(1, int(o.get('cols', 3))); gap = int(o.get('gap', 8))
+        cover = o.get('fit', 'cover') == 'cover'
+        cw = (w - gap * (cols - 1)) / cols if cols else w
+        rows = max(1, (len(keys) + cols - 1) // cols) if keys else 1
+        ch = cw * 0.72
+        x = y = 0.0; cnt = 0
+        for k in keys:
+            if y + ch > h + ch: break
+            cell = QRectF((cnt % cols) * (cw + gap), (cnt // cols) * (ch + gap), cw, ch)
+            if cell.top() > h: break
+            p.save(); cp = QPainterPath(); cp.addRoundedRect(cell, 3, 3); p.setClipPath(cp)
+            p.fillRect(cell, QColor('#dde2e5'))
+            pm = pixmap_for(site, k)
+            if pm and not pm.isNull():
+                pw_, ph_ = pm.width(), pm.height()
+                if cover:
+                    sc = max(cell.width() / pw_, cell.height() / ph_); sw_, sh_ = cell.width() / sc, cell.height() / sc
+                    p.drawPixmap(cell, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+                else:
+                    sc = min(cell.width() / pw_, cell.height() / ph_); tw, th = pw_ * sc, ph_ * sc
+                    p.drawPixmap(QRectF(cell.x() + (cell.width() - tw) / 2, cell.y() + (cell.height() - th) / 2, tw, th), pm, QRectF(0, 0, pw_, ph_))
+            p.restore(); cnt += 1
+        if not keys and edit:
+            f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#6b767c'))
+            p.drawText(r, Qt.AlignCenter, 'Double-click to add gallery images')
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '🔍 gallery · %d' % len(keys))
+    elif t == 'tabs':
+        tabs = o.get('tabs') or []; acc = QColor(o.get('accent', '#2a7d6b'))
+        active = max(0, min(len(tabs) - 1, int(o.get('active', 0)))) if tabs else 0
+        side = o.get('orient', 'top') == 'side'
+        f = qfont(o); fb = QFont(f); fb.setBold(True); p.setFont(fb); fm = QFontMetrics(fb)
+        if o.get('fill'): p.fillRect(r, QColor(o['fill']))
+        if side:
+            tabw = min(w * 0.34, 160); ty = 0.0
+            for i, tb in enumerate(tabs):
+                th_ = fm.height() + 18
+                tr = QRectF(0, ty, tabw, th_)
+                p.setPen(Qt.NoPen); p.setBrush(acc if i == active else QColor(o.get('cardbg', '#ffffff')))
+                p.drawRect(tr)
+                p.setPen(QColor('#ffffff') if i == active else QColor(o.get('color', '#2b2b2b')))
+                p.drawText(tr.adjusted(12, 0, -6, 0), Qt.AlignVCenter | Qt.AlignLeft,
+                           fm.elidedText(tb.get('title', ''), Qt.ElideRight, int(tabw - 18)))
+                ty += th_
+            panel = QRectF(tabw, 0, w - tabw, h)
+            p.setPen(QPen(QColor(o.get('stroke', '#d4dade')), 1)); p.setBrush(QColor(o.get('cardbg', '#ffffff'))); p.drawRect(panel)
+            if tabs:
+                p.setFont(f); p.setPen(QColor(o.get('color', '#2b2b2b')))
+                body = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tabs[active].get('body', ''))).strip()
+                p.drawText(panel.adjusted(14, 12, -14, -12), Qt.TextWordWrap | Qt.AlignTop, body)
+        else:
+            barh = fm.height() + 16; tx = 0.0
+            for i, tb in enumerate(tabs):
+                tw = fm.horizontalAdvance(tb.get('title', 'Tab')) + 28
+                tr = QRectF(tx, 0, tw, barh)
+                p.setPen(Qt.NoPen); p.setBrush(acc if i == active else QColor(o.get('cardbg', '#ffffff')))
+                p.drawRoundedRect(QRectF(tr.x(), tr.y(), tr.width(), tr.height() + 6), 6, 6)
+                p.setPen(QColor('#ffffff') if i == active else QColor(o.get('color', '#2b2b2b')))
+                p.drawText(tr, Qt.AlignCenter, tb.get('title', 'Tab'))
+                tx += tw + 4
+            panel = QRectF(0, barh, w, h - barh)
+            p.setPen(QPen(QColor(o.get('stroke', '#d4dade')), 1)); p.setBrush(QColor(o.get('cardbg', '#ffffff'))); p.drawRect(panel)
+            if tabs:
+                p.setFont(f); p.setPen(QColor(o.get('color', '#2b2b2b')))
+                body = re.sub(r'\s+', ' ', re.sub(r'<[^>]+>', ' ', tabs[active].get('body', ''))).strip()
+                p.drawText(panel.adjusted(14, 12, -14, -12), Qt.TextWordWrap | Qt.AlignTop, body)
+        if edit:
+            _badge(p, w, '▭ tabs · %d' % len(tabs))
+    elif t == 'ticker':
+        items = o.get('items') or []
+        p.save(); path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.setClipPath(path)
+        p.fillRect(r, QColor(o.get('fill', '#1b2227')))
+        acc = QColor(o.get('accent', '#2a7d6b')); f = qfont(o); p.setFont(f); fm = QFontMetrics(f)
+        x0 = 0.0
+        if (o.get('label') or '').strip():
+            lbl = o['label']; lw = fm.horizontalAdvance(lbl) + 24
+            p.setPen(Qt.NoPen); p.setBrush(acc); p.drawRect(QRectF(0, 0, lw, h))
+            p.setPen(QColor('#ffffff')); fbL = QFont(f); fbL.setBold(True); p.setFont(fbL)
+            p.drawText(QRectF(0, 0, lw, h), Qt.AlignCenter, lbl); p.setFont(f); x0 = lw
+        p.setPen(QColor(o.get('color', '#ffffff')))
+        tx = x0 + 14
+        for it in items:
+            txt = '•  ' + (it.get('text', '') if isinstance(it, dict) else str(it))
+            tw = fm.horizontalAdvance(txt) + 20
+            p.drawText(QRectF(tx, 0, tw, h), Qt.AlignVCenter | Qt.AlignLeft, txt)
+            tx += tw
+            if tx > w: break
+        p.restore()
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '≋ ticker · %d' % len(items))
+    elif t == 'videoplayer':
+        p.save(); path = QPainterPath(); path.addRoundedRect(r, rad, rad); p.setClipPath(path)
+        pm = pixmap_for(site, o.get('poster')) if o.get('poster') else None
+        if pm and not pm.isNull():
+            pw_, ph_ = pm.width(), pm.height(); sc = max(w / pw_, h / ph_); sw_, sh_ = w / sc, h / sc
+            p.drawPixmap(r, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+        else:
+            p.fillRect(r, QColor(o.get('fill', '#000000')))
+        # central play glyph
+        p.setPen(Qt.NoPen); p.setBrush(QColor(255, 255, 255, 220))
+        pr = min(w, h) * 0.17; p.drawEllipse(QPointF(w / 2, h / 2), pr, pr)
+        p.setBrush(QColor(0, 0, 0, 180))
+        p.drawPolygon(QPolygonF([QPointF(w / 2 - pr * 0.3, h / 2 - pr * 0.45), QPointF(w / 2 - pr * 0.3, h / 2 + pr * 0.45),
+                                 QPointF(w / 2 + pr * 0.5, h / 2)]))
+        has = bool((o.get('src') and o['src'] in site.get('assets', {})) or (o.get('url') or '').strip())
+        if not has and edit:
+            p.setPen(QColor('#cfd6da')); f = QFont(); f.setPixelSize(12); p.setFont(f)
+            p.drawText(QRectF(0, h - 28, w, 20), Qt.AlignCenter, 'Double-click to choose a video')
+        p.restore()
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '▶ video')
+    elif t == 'portfolio':
+        if o.get('fill'): p.fillRect(r, QColor(o['fill']))
+        items = o.get('items') or []; acc = QColor(o.get('accent', '#2a7d6b'))
+        cats = []
+        for it in items:
+            c = (it.get('cat') or '').strip()
+            if c and c not in cats: cats.append(c)
+        f = qfont(o); fb = QFont(f); fb.setBold(True); p.setFont(fb); fm = QFontMetrics(fb)
+        # filter bar
+        bx = 0.0; barh = fm.height() + 12
+        for i, lab in enumerate([o.get('alllabel', 'All')] + cats):
+            bw = fm.horizontalAdvance(lab) + 22
+            if bx + bw > w: break
+            br = QRectF(bx, 0, bw, barh - 4)
+            p.setPen(Qt.NoPen); p.setBrush(acc if i == 0 else QColor('#eef1f4'))
+            p.drawRoundedRect(br, (barh - 4) / 2, (barh - 4) / 2)
+            p.setPen(QColor('#ffffff') if i == 0 else QColor(o.get('color', '#2b2b2b')))
+            p.drawText(br, Qt.AlignCenter, lab); bx += bw + 6
+        # grid
+        cols = max(1, int(o.get('cols', 3))); gap = int(o.get('gap', 10)); cover = o.get('fit', 'cover') == 'cover'
+        gy = barh + 6; cw = (w - gap * (cols - 1)) / cols if cols else w; ch = cw * 0.72
+        keys = [it for it in items if it.get('image') in site.get('assets', {})]
+        for n, it in enumerate(keys):
+            cell = QRectF((n % cols) * (cw + gap), gy + (n // cols) * (ch + gap), cw, ch)
+            if cell.top() > h: break
+            p.save(); cp = QPainterPath(); cp.addRoundedRect(cell, 4, 4); p.setClipPath(cp)
+            p.fillRect(cell, QColor('#dde2e5'))
+            pm = pixmap_for(site, it.get('image'))
+            if pm and not pm.isNull():
+                pw_, ph_ = pm.width(), pm.height()
+                if cover:
+                    sc = max(cell.width() / pw_, cell.height() / ph_); sw_, sh_ = cell.width() / sc, cell.height() / sc
+                    p.drawPixmap(cell, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+                else:
+                    sc = min(cell.width() / pw_, cell.height() / ph_); tw, th = pw_ * sc, ph_ * sc
+                    p.drawPixmap(QRectF(cell.x() + (cell.width() - tw) / 2, cell.y() + (cell.height() - th) / 2, tw, th), pm, QRectF(0, 0, pw_, ph_))
+            p.restore()
+        if not items and edit:
+            ff = QFont(); ff.setPixelSize(13); p.setFont(ff); p.setPen(QColor('#6b767c'))
+            p.drawText(QRectF(0, barh, w, h - barh), Qt.AlignCenter, 'Double-click to add portfolio items')
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '▦ portfolio · %d' % len(items))
 
 def _q_align(a):
     return {'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(a, Qt.AlignLeft)
@@ -2462,6 +2702,85 @@ background:rgba(0,0,0,.4);color:#fff;font-size:26px;line-height:1;cursor:pointer
 .obj-pageflip .pf-count{color:#dfe4e7;font:13px/1 Arial,sans-serif;min-width:4em;text-align:center}
 .obj-pageflip .pf-empty{color:#dfe4e7;font:14px/1.4 Arial,sans-serif;text-align:center;padding:1em}
 @media(prefers-reduced-motion:reduce){.obj-pageflip .pf-turn{transition:none}}
+/* Before / after — two stacked images; a draggable divider clips the top image. */
+.obj-beforeafter{position:absolute;overflow:hidden;touch-action:none;user-select:none}
+.obj-beforeafter .ba-img{position:absolute;inset:0;width:100%;height:100%;object-fit:var(--bafit,cover);display:block;-webkit-user-drag:none}
+.obj-beforeafter .ba-before-wrap{position:absolute;inset:0;overflow:hidden;width:var(--bapos,50%);height:100%}
+.obj-beforeafter.ba-vertical .ba-before-wrap{width:100%;height:var(--bapos,50%)}
+.obj-beforeafter .ba-before-wrap .ba-img{width:var(--bafull,100%)}
+.obj-beforeafter .ba-divider{position:absolute;top:0;bottom:0;left:var(--bapos,50%);width:2px;background:var(--baacc,#fff);transform:translateX(-1px);box-shadow:0 0 8px rgba(0,0,0,.4);pointer-events:none}
+.obj-beforeafter.ba-vertical .ba-divider{top:var(--bapos,50%);left:0;right:0;bottom:auto;width:auto;height:2px;transform:translateY(-1px)}
+.obj-beforeafter .ba-handle{position:absolute;left:var(--bapos,50%);top:50%;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;background:var(--baacc,#fff);box-shadow:0 2px 10px rgba(0,0,0,.4);cursor:ew-resize;z-index:3;display:flex;align-items:center;justify-content:center;color:#333;font:14px/1 Arial,sans-serif}
+.obj-beforeafter.ba-vertical .ba-handle{left:50%;top:var(--bapos,50%);cursor:ns-resize}
+.obj-beforeafter .ba-handle::before{content:"\\2039\\203A"}
+.obj-beforeafter.ba-vertical .ba-handle::before{content:"\\2039\\203A";transform:rotate(90deg)}
+.obj-beforeafter .ba-lbl{position:absolute;top:10px;padding:3px 9px;border-radius:4px;background:rgba(0,0,0,.55);color:#fff;font:700 12px/1.3 Arial,sans-serif;z-index:2;pointer-events:none}
+.obj-beforeafter .ba-lbl-before{left:10px}.obj-beforeafter .ba-lbl-after{right:10px}
+/* Lightbox gallery — a thumbnail grid opening a full-screen overlay. */
+.obj-lbgallery{position:absolute;overflow:auto}
+.obj-lbgallery .lg-grid{display:grid;grid-template-columns:repeat(var(--lgcols,3),1fr);gap:var(--lggap,8px)}
+.obj-lbgallery .lg-thumb{display:block;position:relative;overflow:hidden;border-radius:var(--lgrad,4px);aspect-ratio:4/3;background:#dde2e5;cursor:zoom-in}
+.obj-lbgallery .lg-thumb img{width:100%;height:100%;object-fit:var(--lgfit,cover);display:block;transition:transform .3s ease}
+.obj-lbgallery .lg-thumb:hover img{transform:scale(1.06)}
+.lg-overlay{position:fixed;inset:0;z-index:9998;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.9);flex-direction:column}
+.lg-overlay.on{display:flex}
+.lg-overlay .lg-stage{position:relative;display:flex;align-items:center;justify-content:center;max-width:94vw;max-height:80vh;flex:1 1 auto;width:100%}
+.lg-overlay .lg-big{max-width:92vw;max-height:78vh;box-shadow:0 10px 40px rgba(0,0,0,.5);border-radius:2px}
+.lg-overlay .lg-cap{color:#fff;font:15px/1.4 Arial,sans-serif;text-align:center;padding:10px 20px 0;min-height:1em}
+.lg-overlay .lg-nav{position:absolute;top:50%;transform:translateY(-50%);width:46px;height:46px;border:0;border-radius:50%;background:rgba(255,255,255,.14);color:#fff;font-size:26px;line-height:1;cursor:pointer}
+.lg-overlay .lg-nav:hover{background:rgba(255,255,255,.28)}
+.lg-overlay .lg-prev{left:2vw}.lg-overlay .lg-next{right:2vw}
+.lg-overlay .lg-close{position:absolute;top:14px;right:20px;width:40px;height:40px;border:0;background:transparent;color:#fff;font-size:34px;line-height:1;cursor:pointer;opacity:.85}
+.lg-overlay .lg-close:hover{opacity:1}
+.lg-overlay .lg-strip{display:flex;gap:6px;overflow-x:auto;padding:10px;max-width:94vw;flex:0 0 auto}
+.lg-overlay .lg-strip img{height:54px;width:auto;border-radius:3px;opacity:.5;cursor:pointer;flex:0 0 auto}
+.lg-overlay .lg-strip img.on{opacity:1;outline:2px solid #fff}
+/* Feature tabs — a row/column of tab buttons switching panes. */
+.obj-tabs{position:absolute;overflow:hidden;display:flex;flex-direction:column;--tbacc:#2a7d6b}
+.obj-tabs.tb-side{flex-direction:row}
+.obj-tabs .tb-list{display:flex;flex-wrap:wrap;gap:4px;flex:0 0 auto}
+.obj-tabs.tb-side .tb-list{flex-direction:column;flex-wrap:nowrap;min-width:33%;max-width:40%}
+.obj-tabs .tb-tab{font:inherit;font-weight:700;cursor:pointer;border:0;background:var(--tbcard,#fff);color:inherit;padding:11px 18px;border-radius:6px 6px 0 0;opacity:.75;text-align:left}
+.obj-tabs.tb-side .tb-tab{border-radius:6px 0 0 6px}
+.obj-tabs .tb-tab[aria-selected="true"]{background:var(--tbacc,#2a7d6b);color:#fff;opacity:1}
+.obj-tabs .tb-tab:focus-visible{outline:2px solid var(--tbacc,#2a7d6b);outline-offset:2px}
+.obj-tabs .tb-panels{flex:1 1 auto;border:1px solid var(--tbstroke,#d4dade);background:var(--tbcard,#fff);overflow:auto;border-radius:0 6px 6px 6px}
+.obj-tabs .tb-panel{padding:16px}
+.obj-tabs .tb-panel[hidden]{display:none}
+.obj-tabs .tb-panel h4{margin:0 0 .4em}
+.obj-tabs .tb-panel p{margin:0 0 .6em}
+.obj-tabs.tb-nojs .tb-list{display:none}
+.obj-tabs.tb-nojs .tb-panel{display:block!important}
+/* News ticker — a horizontal scrolling strip of headlines. */
+.obj-ticker{position:absolute;overflow:hidden;display:flex;align-items:stretch;--tkacc:#2a7d6b}
+.obj-ticker .tk-label{flex:0 0 auto;display:flex;align-items:center;padding:0 16px;background:var(--tkacc,#2a7d6b);color:#fff;font-weight:800;letter-spacing:.04em;z-index:2}
+.obj-ticker .tk-view{position:relative;flex:1 1 auto;overflow:hidden;display:flex;align-items:center}
+.obj-ticker .tk-move{display:flex;flex:none;white-space:nowrap;will-change:transform;animation:tk-scroll var(--tkdur,20s) linear infinite}
+.obj-ticker.tk-right .tk-move{animation-direction:reverse}
+.obj-ticker.tk-pause:hover .tk-move{animation-play-state:paused}
+.obj-ticker .tk-item{display:inline-flex;align-items:center;padding:0 26px;position:relative}
+.obj-ticker .tk-item::before{content:"\\2022";position:absolute;left:6px;opacity:.6}
+.obj-ticker .tk-item a{color:inherit;text-decoration:none}
+.obj-ticker .tk-item a:hover{text-decoration:underline}
+@keyframes tk-scroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+@media(prefers-reduced-motion:reduce){.obj-ticker .tk-move{animation:none;flex-wrap:wrap;white-space:normal}.obj-ticker .tk-move .tk-dup{display:none}}
+/* Video player — a native HTML5 <video>. */
+.obj-videoplayer{position:absolute;overflow:hidden;background:#000;display:flex}
+.obj-videoplayer video{width:100%;height:100%;display:block;object-fit:contain;background:#000}
+.obj-videoplayer.vp-responsive{position:relative;height:auto;aspect-ratio:16/9}
+/* Portfolio grid — a filterable image grid. */
+.obj-portfolio{position:absolute;overflow:auto;--pgacc:#2a7d6b}
+.obj-portfolio .pg-filters{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 12px}
+.obj-portfolio .pg-fbtn{font:inherit;font-weight:700;cursor:pointer;border:0;border-radius:999px;background:#eef1f4;color:inherit;padding:7px 16px}
+.obj-portfolio .pg-fbtn[aria-pressed="true"]{background:var(--pgacc,#2a7d6b);color:#fff}
+.obj-portfolio .pg-grid{display:grid;grid-template-columns:repeat(var(--pgcols,3),1fr);gap:var(--pggap,10px)}
+.obj-portfolio .pg-item{position:relative;overflow:hidden;border-radius:var(--pgrad,6px);background:#dde2e5;opacity:1;transform:scale(1);transition:opacity .35s ease,transform .35s ease}
+.obj-portfolio .pg-item.pg-hide{opacity:0;transform:scale(.85);display:none}
+.obj-portfolio .pg-item a,.obj-portfolio .pg-item .pg-wrap{display:block}
+.obj-portfolio .pg-item img{width:100%;aspect-ratio:4/3;object-fit:var(--pgfit,cover);display:block;transition:transform .3s ease}
+.obj-portfolio .pg-item:hover img{transform:scale(1.05)}
+.obj-portfolio .pg-title{padding:8px 4px 2px;font-weight:600}
+@media(prefers-reduced-motion:reduce){.obj-portfolio .pg-item,.obj-portfolio .pg-item img{transition:none}}
 /* PayPal buy / donate button — PayPal's own hosted-button form, posted to paypal.com. */
 .obj-paypal{display:flex;align-items:center;justify-content:center}
 .obj-paypal .pp-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:0;border-radius:6px;
@@ -3371,6 +3690,259 @@ def obj_html(o, site, page, img):
                   'window.addEventListener("resize",sizeTurn);sizeTurn();render();start()})();</script>')
         return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>'
                 f'<div class="pf-book">{stage}{hidden}</div>{nav}{script}</div>')
+    elif t == 'beforeafter':
+        # Two images stacked; a draggable divider wipes between them. Both images are real
+        # <img> in the markup (so no-JS and crawlers see them); a scoped script drags the seam.
+        # No-JS fallback: the 'after' image fills the frame (the before-wrap sits above it).
+        st += box_css(o) + 'overflow:hidden;position:absolute;'
+        vertical = o.get('orient', 'horizontal') == 'vertical'
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'cover'), 'cover')
+        start = max(0, min(100, int(o.get('start', 50))))
+        st += f"--bapos:{start}%;--baacc:{o.get('accent', '#ffffff')};--bafit:{fit};"
+        bsrc = img(o['before']) if (o.get('before') and o['before'] in site.get('assets', {})) else ''
+        asrc = img(o['after']) if (o.get('after') and o['after'] in site.get('assets', {})) else ''
+        cls = 'obj-beforeafter' + (' ba-vertical' if vertical else '')
+        if not (bsrc or asrc):
+            st += 'background:#1b2227;'
+            return f'<div class="obj {cls}" style="{st}"{anim_attr(o)}></div>'
+        labels = ''
+        if o.get('labels', True):
+            labels = (f'<span class="ba-lbl ba-lbl-before">{esc(o.get("beforelabel", "Before"))}</span>'
+                      f'<span class="ba-lbl ba-lbl-after">{esc(o.get("afterlabel", "After"))}</span>')
+        # The 'before' image inside the clipping wrapper must be as wide/tall as the whole
+        # frame (not the wrapper) so it does not squash — the script keeps --bafull synced.
+        afterimg = f'<img class="ba-img ba-after" src="{esc(asrc)}" alt="{esc(o.get("afterlabel", "After"))}">' if asrc else ''
+        beforeimg = f'<img class="ba-img ba-before" src="{esc(bsrc)}" alt="{esc(o.get("beforelabel", "Before"))}">' if bsrc else ''
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var V={1 if vertical else 0};'
+                  'var wrap=r.querySelector(".ba-before-wrap"),bi=wrap&&wrap.querySelector(".ba-img"),'
+                  'h=r.querySelector(".ba-handle");'
+                  'function full(){if(bi){if(V){bi.style.height=r.clientHeight+"px";bi.style.width="100%"}'
+                  'else{bi.style.width=r.clientWidth+"px";bi.style.height="100%"}}}'
+                  'function set(pc){pc=Math.max(0,Math.min(100,pc));r.style.setProperty("--bapos",pc+"%")}'
+                  'function at(e){var t=(e.touches&&e.touches[0])||e,b=r.getBoundingClientRect();'
+                  'set(V?((t.clientY-b.top)/b.height*100):((t.clientX-b.left)/b.width*100))}'
+                  'var drag=false;'
+                  'function down(e){drag=true;at(e);e.preventDefault()}'
+                  'function move(e){if(drag)at(e)}function up(){drag=false}'
+                  'r.addEventListener("mousedown",down);window.addEventListener("mousemove",move);window.addEventListener("mouseup",up);'
+                  'r.addEventListener("touchstart",down,{passive:false});r.addEventListener("touchmove",function(e){move(e);e.preventDefault()},{passive:false});window.addEventListener("touchend",up);'
+                  'if(h){h.tabIndex=0;h.addEventListener("keydown",function(e){var p=parseFloat(r.style.getPropertyValue("--bapos"))||50;'
+                  'if(e.key==="ArrowLeft"||e.key==="ArrowUp"){set(p-4);e.preventDefault()}else if(e.key==="ArrowRight"||e.key==="ArrowDown"){set(p+4);e.preventDefault()}})}'
+                  'window.addEventListener("resize",full);full()})();</script>')
+        return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>{afterimg}'
+                f'<div class="ba-before-wrap">{beforeimg}</div>'
+                f'<div class="ba-divider"></div><div class="ba-handle" role="slider" aria-label="Reveal before / after" '
+                f'aria-valuemin="0" aria-valuemax="100" aria-valuenow="{start}"></div>{labels}{script}</div>')
+    elif t == 'lbgallery':
+        # A thumbnail grid; clicking a thumb opens a shared full-screen overlay with prev/next,
+        # keyboard (left/right/Esc), caption and an optional thumbnail strip. No-JS fallback:
+        # each thumb is a plain <a> link to the full image, so it still opens.
+        st += box_css(o) + 'position:absolute;'
+        cols = max(1, int(o.get('cols', 3))); gap = int(o.get('gap', 8))
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'cover'), 'cover')
+        st += f"--lgcols:{cols};--lggap:{gap}px;--lgfit:{fit};--lgrad:{o.get('radius', 4)}px;--lgacc:{o.get('accent', '#2a7d6b')};"
+        keys = [k for k in (o.get('images') or []) if k in site.get('assets', {})]
+        if not keys:
+            return (f'<div class="obj obj-lbgallery" style="{st}"{anim_attr(o)}>'
+                    f'<div class="lg-grid"></div></div>')
+        caps = o.get('captions') or {}
+        srcs = [img(k) for k in keys]
+        capl = [str(caps.get(k, '') or '') for k in keys]
+        thumbs = ''.join(
+            f'<a class="lg-thumb" href="{esc(src)}" data-i="{i}"><img src="{esc(src)}" alt="{esc(capl[i])}" loading="lazy"></a>'
+            for i, src in enumerate(srcs))
+        data = json.dumps([dict(src=s, cap=capl[i]) for i, s in enumerate(srcs)], ensure_ascii=False)
+        oid = 'lg-' + (o.get('id') or uid())
+        showcaps = 1 if o.get('showcaps', o.get('showcaps', True)) else 0
+        strip = 1 if o.get('strip', True) else 0
+        overlay = (f'<div class="lg-overlay" id="{oid}" role="dialog" aria-modal="true" aria-label="Gallery">'
+                   '<button type="button" class="lg-close" aria-label="Close">&times;</button>'
+                   '<button type="button" class="lg-nav lg-prev" aria-label="Previous">&#8249;</button>'
+                   '<div class="lg-stage"><img class="lg-big" src="" alt=""></div>'
+                   '<button type="button" class="lg-nav lg-next" aria-label="Next">&#8250;</button>'
+                   '<div class="lg-cap"></div><div class="lg-strip"></div></div>')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var D={data},CAP={showcaps},STRIP={strip},ov=document.getElementById("{oid}");if(!ov)return;'
+                  'var big=ov.querySelector(".lg-big"),cap=ov.querySelector(".lg-cap"),strip=ov.querySelector(".lg-strip"),i=0;'
+                  'if(STRIP){D.forEach(function(d,k){var t=new Image();t.src=d.src;t.setAttribute("data-i",k);'
+                  't.addEventListener("click",function(){show(k)});strip.appendChild(t)})}else{strip.style.display="none"}'
+                  'function show(k){i=(k+D.length)%D.length;big.src=D[i].src;big.alt=D[i].cap||"";'
+                  'cap.textContent=CAP?(D[i].cap||""):"";cap.style.display=CAP?"":"none";'
+                  'if(STRIP){Array.prototype.forEach.call(strip.children,function(c,n){c.className=n===i?"on":""})}}'
+                  'function open(k){show(k);ov.classList.add("on");ov.querySelector(".lg-close").focus()}'
+                  'function close(){ov.classList.remove("on")}'
+                  'r.querySelectorAll(".lg-thumb").forEach(function(a){a.addEventListener("click",function(e){'
+                  'e.preventDefault();open(parseInt(a.getAttribute("data-i"),10)||0)})});'
+                  'ov.querySelector(".lg-prev").addEventListener("click",function(){show(i-1)});'
+                  'ov.querySelector(".lg-next").addEventListener("click",function(){show(i+1)});'
+                  'ov.querySelector(".lg-close").addEventListener("click",close);'
+                  'ov.addEventListener("click",function(e){if(e.target===ov)close()});'
+                  'document.addEventListener("keydown",function(e){if(!ov.classList.contains("on"))return;'
+                  'if(e.key==="Escape")close();else if(e.key==="ArrowLeft")show(i-1);else if(e.key==="ArrowRight")show(i+1)})})();</script>')
+        return (f'<div class="obj obj-lbgallery" style="{st}"{anim_attr(o)}>'
+                f'<div class="lg-grid">{thumbs}</div>{overlay}{script}</div>')
+    elif t == 'tabs':
+        # A tabbed panel. All panes are in the markup; the script wires role=tab/tabpanel and
+        # arrow-key navigation. A no-JS visitor gets every pane stacked with a heading (the
+        # .tb-nojs class is removed by the script once JS runs).
+        st += text_css(o) + box_css(o)
+        st += f"--tbacc:{o.get('accent', '#2a7d6b')};--tbcard:{o.get('cardbg', '#ffffff')};--tbstroke:{o.get('stroke', '#d4dade')};"
+        tabs = o.get('tabs') or []
+        side = o.get('orient', 'top') == 'side'
+        active = max(0, min(len(tabs) - 1, int(o.get('active', 0)))) if tabs else 0
+        oid = 'tb-' + (o.get('id') or uid())
+        cls = 'obj-tabs tb-nojs' + (' tb-side' if side else '')
+        btns = []; panels = []
+        for i, tb in enumerate(tabs):
+            sel = 'true' if i == active else 'false'
+            btns.append(f'<button type="button" role="tab" class="tb-tab" id="{oid}-t{i}" '
+                        f'aria-controls="{oid}-p{i}" aria-selected="{sel}" tabindex="{0 if i == active else -1}">'
+                        f'{esc(tb.get("title", "Tab"))}</button>')
+            panels.append(f'<div role="tabpanel" class="tb-panel" id="{oid}-p{i}" aria-labelledby="{oid}-t{i}"'
+                          f'{"" if i == active else " hidden"}>'
+                          f'<h4>{esc(tb.get("title", "Tab"))}</h4>{clean_html(tb.get("body", ""), site, img)}</div>')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  'r.classList.remove("tb-nojs");'
+                  'var tabs=[].slice.call(r.querySelectorAll(".tb-tab")),pans=[].slice.call(r.querySelectorAll(".tb-panel"));'
+                  'function sel(k){tabs.forEach(function(t,n){var on=n===k;t.setAttribute("aria-selected",on?"true":"false");'
+                  't.tabIndex=on?0:-1;pans[n].hidden=!on});tabs[k].focus()}'
+                  'tabs.forEach(function(t,n){t.addEventListener("click",function(){sel(n)});'
+                  't.addEventListener("keydown",function(e){var k=null;'
+                  'if(e.key==="ArrowRight"||e.key==="ArrowDown")k=(n+1)%tabs.length;'
+                  'else if(e.key==="ArrowLeft"||e.key==="ArrowUp")k=(n-1+tabs.length)%tabs.length;'
+                  'else if(e.key==="Home")k=0;else if(e.key==="End")k=tabs.length-1;'
+                  'if(k!==null){sel(k);e.preventDefault()}})})})();</script>')
+        return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>'
+                f'<div class="tb-list" role="tablist"{" aria-orientation=\"vertical\"" if side else ""}>{"".join(btns)}</div>'
+                f'<div class="tb-panels">{"".join(panels)}</div>{script}</div>')
+    elif t == 'ticker':
+        # A horizontal scrolling strip. The items are duplicated so the CSS marquee loops
+        # seamlessly (the duplicate is aria-hidden); prefers-reduced-motion drops the motion
+        # and the duplicate (static wrapped list). No <marquee>. Speed = px/second → duration.
+        st += box_css(o) + 'position:absolute;'
+        st += (f"font-family:{css_font(o.get('font', 'Noto Sans'))};font-size:{o.get('size', 15)}px;"
+               f"color:{o.get('color', '#ffffff')};--tkacc:{o.get('accent', '#2a7d6b')};")
+        items = o.get('items') or []
+        right = o.get('direction', 'left') == 'right'
+        cls = 'obj-ticker' + (' tk-right' if right else '') + (' tk-pause' if o.get('pause', True) else '')
+        if not items:
+            return f'<div class="obj {cls}" style="{st}"{anim_attr(o)}><div class="tk-view"></div></div>'
+        def _item(it, dup):
+            txt = it.get('text', '') if isinstance(it, dict) else str(it)
+            href = (it.get('href') or '').strip() if isinstance(it, dict) else ''
+            inner_ = f'<a href="{esc(href)}">{esc(txt)}</a>' if href else esc(txt)
+            return f'<span class="tk-item{" tk-dup" if dup else ""}">{inner_}</span>'
+        seq = ''.join(_item(it, False) for it in items)
+        dup = ''.join(_item(it, True) for it in items)
+        label = f'<div class="tk-label">{esc(o["label"])}</div>' if (o.get('label') or '').strip() else ''
+        # px/sec → seconds for one full loop (one copy width ~ items). We can't measure width
+        # at publish, so the script sets the duration from the real measured width.
+        speed = max(5, int(o.get('speed', 40)))
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var mv=r.querySelector(".tk-move"),SPD={speed};'
+                  'if(!mv)return;function dur(){var w=mv.scrollWidth/2;if(w>0)mv.style.setProperty("--tkdur",(w/SPD)+"s")}'
+                  'if(window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches)return;'
+                  'dur();window.addEventListener("resize",dur)})();</script>')
+        return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>{label}'
+                f'<div class="tk-view"><div class="tk-move">{seq}{dup}</div></div>{script}</div>')
+    elif t == 'videoplayer':
+        # A real HTML5 <video> with a poster + native controls. No Flash, no library. The
+        # source may be an embedded asset (data-URI → copied file) or a pasted URL. No-JS: the
+        # <video> element itself is the fallback (controls work without any script).
+        responsive = bool(o.get('responsive', True))
+        cls = 'obj-videoplayer' + (' vp-responsive' if responsive else '')
+        st += box_css(o) + ('position:absolute;' if not responsive else '')
+        vsrc = img(o['src']) if (o.get('src') and o['src'] in site.get('assets', {})) else (o.get('url') or '').strip()
+        poster = img(o['poster']) if (o.get('poster') and o['poster'] in site.get('assets', {})) else ''
+        if not vsrc:
+            st += 'background:#000;'
+            return f'<div class="obj {cls}" style="{st}"{anim_attr(o)}></div>'
+        vtype = ''
+        if o.get('src') and o['src'] in site.get('assets', {}):
+            _m = re.match(r'data:(video/[a-z0-9+.\-]+);base64,', site['assets'][o['src']])
+            if _m: vtype = f' type="{_m.group(1)}"'
+        else:
+            _ext = os.path.splitext(vsrc.split('?')[0])[1].lstrip('.').lower()
+            _mm = {'mp4': 'video/mp4', 'webm': 'video/webm', 'ogv': 'video/ogg', 'mov': 'video/quicktime'}.get(_ext)
+            if _mm: vtype = f' type="{_mm}"'
+        attrs2 = ' playsinline preload="metadata"'
+        if o.get('controls', True): attrs2 += ' controls'
+        if o.get('autoplay'): attrs2 += ' autoplay muted'
+        if o.get('loop'): attrs2 += ' loop'
+        posat = f' poster="{esc(poster)}"' if poster else ''
+        vid = (f'<video{attrs2}{posat}><source src="{esc(vsrc)}"{vtype}>'
+               'Your browser does not support the video tag.</video>')
+        return f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>{vid}</div>'
+    elif t == 'portfolio':
+        # A filterable image grid. Every item is in the markup (so no-JS shows them all); the
+        # script wires the filter buttons, toggling a .pg-hide class (CSS transition). Items may
+        # link out, or open in the shared lightbox overlay. No-JS fallback: all items shown.
+        st += text_css(o) + box_css(o) + 'position:absolute;'
+        cols = max(1, int(o.get('cols', 3))); gap = int(o.get('gap', 10))
+        fit = {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'cover'), 'cover')
+        st += f"--pgcols:{cols};--pggap:{gap}px;--pgfit:{fit};--pgrad:{o.get('radius', 6)}px;--pgacc:{o.get('accent', '#2a7d6b')};"
+        items = [it for it in (o.get('items') or []) if it.get('image') in site.get('assets', {})]
+        if not items:
+            return f'<div class="obj obj-portfolio" style="{st}"{anim_attr(o)}><div class="pg-grid"></div></div>'
+        cats = []
+        for it in items:
+            c = (it.get('cat') or '').strip()
+            if c and c not in cats: cats.append(c)
+        showtitles = bool(o.get('showtitles', True))
+        uselb = bool(o.get('lightbox', True))
+        oid = 'pf-' + (o.get('id') or uid())
+        fbtns = [f'<button type="button" class="pg-fbtn" data-cat="*" aria-pressed="true">{esc(o.get("alllabel", "All"))}</button>']
+        for c in cats:
+            fbtns.append(f'<button type="button" class="pg-fbtn" data-cat="{esc(c)}" aria-pressed="false">{esc(c)}</button>')
+        lb_overlay = ''
+        srcs = [img(it['image']) for it in items]
+        if uselb:
+            data = json.dumps([dict(src=srcs[i], cap=(it.get('title') or '')) for i, it in enumerate(items)], ensure_ascii=False)
+            lb_overlay = (f'<div class="lg-overlay" id="{oid}-lb" role="dialog" aria-modal="true" aria-label="Portfolio">'
+                          '<button type="button" class="lg-close" aria-label="Close">&times;</button>'
+                          '<button type="button" class="lg-nav lg-prev" aria-label="Previous">&#8249;</button>'
+                          '<div class="lg-stage"><img class="lg-big" src="" alt=""></div>'
+                          '<button type="button" class="lg-nav lg-next" aria-label="Next">&#8250;</button>'
+                          '<div class="lg-cap"></div></div>')
+        cells = []
+        for i, it in enumerate(items):
+            cat = esc((it.get('cat') or '').strip())
+            title = f'<div class="pg-title">{esc(it.get("title", ""))}</div>' if (showtitles and it.get('title')) else ''
+            imgtag = f'<img src="{esc(srcs[i])}" alt="{esc(it.get("title", ""))}" loading="lazy">'
+            if uselb:
+                inner_ = f'<div class="pg-wrap" data-i="{i}" role="button" tabindex="0">{imgtag}</div>'
+            elif (it.get('href') or '').strip():
+                inner_ = f'<a href="{esc((it.get("href") or "").strip())}" target="_blank" rel="noopener">{imgtag}</a>'
+            else:
+                inner_ = f'<div class="pg-wrap">{imgtag}</div>'
+            cells.append(f'<figure class="pg-item" data-cat="{cat}">{inner_}{title}</figure>')
+        lb_js = ''
+        if uselb:
+            lb_js = (f'var D={data},ov=document.getElementById("{oid}-lb");'
+                     'if(ov){var big=ov.querySelector(".lg-big"),cap=ov.querySelector(".lg-cap"),vi=0;'
+                     'function lshow(k){vi=(k+D.length)%D.length;big.src=D[vi].src;cap.textContent=D[vi].cap||""}'
+                     'function lopen(k){lshow(k);ov.classList.add("on");ov.querySelector(".lg-close").focus()}'
+                     'function lclose(){ov.classList.remove("on")}'
+                     'r.querySelectorAll(".pg-wrap").forEach(function(wn){wn.addEventListener("click",function(){lopen(parseInt(wn.getAttribute("data-i"),10)||0)});'
+                     'wn.addEventListener("keydown",function(e){if(e.key==="Enter"||e.key===" "){lopen(parseInt(wn.getAttribute("data-i"),10)||0);e.preventDefault()}})});'
+                     'ov.querySelector(".lg-prev").addEventListener("click",function(){lshow(vi-1)});'
+                     'ov.querySelector(".lg-next").addEventListener("click",function(){lshow(vi+1)});'
+                     'ov.querySelector(".lg-close").addEventListener("click",lclose);'
+                     'ov.addEventListener("click",function(e){if(e.target===ov)lclose()});'
+                     'document.addEventListener("keydown",function(e){if(!ov.classList.contains("on"))return;'
+                     'if(e.key==="Escape")lclose();else if(e.key==="ArrowLeft")lshow(vi-1);else if(e.key==="ArrowRight")lshow(vi+1)})}')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  'var btns=[].slice.call(r.querySelectorAll(".pg-fbtn")),items=[].slice.call(r.querySelectorAll(".pg-item"));'
+                  'function filter(cat){items.forEach(function(it){var m=(cat==="*"||it.getAttribute("data-cat")===cat);'
+                  'it.classList.toggle("pg-hide",!m)});'
+                  'btns.forEach(function(b){b.setAttribute("aria-pressed",b.getAttribute("data-cat")===cat?"true":"false")})}'
+                  'btns.forEach(function(b){b.addEventListener("click",function(){filter(b.getAttribute("data-cat"))})});'
+                  + lb_js +
+                  '})();</script>')
+        return (f'<div class="obj obj-portfolio" style="{st}"{anim_attr(o)}>'
+                f'<div class="pg-filters">{"".join(fbtns)}</div>'
+                f'<div class="pg-grid">{"".join(cells)}</div>{lb_overlay}{script}</div>')
     return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}{anim_attr(o)}>{inner}</{tag}>'
 
 def _page_text(page):
@@ -5524,6 +6096,12 @@ TOOLS = [
     ('popupform', 'Popup Form', ['view-form', 'mail-message-new', 'document-edit'], '✉', 'Drag to place a button that opens a contact form in a pop-up dialog. It uses the same submission options as the Form object (Netlify / Formspree / email).'),
     ('backtotop', 'Back to Top', ['go-top', 'go-up', 'arrow-up'], '⤒', 'Drag to place a floating “back to top” button that appears after the visitor scrolls down and glides back to the top. (You can also switch one on site-wide when you publish.)'),
     ('pageflip', 'Page Flip', ['book', 'x-office-address-book', 'view-pages-facing', 'view-presentation'], '📖', 'Drag to place a flip-book / page-turning viewer. Add an ordered set of page images (a magazine, brochure or booklet); visitors turn the pages with a 3D page-curl. Choose single pages or a two-page spread, and optional auto-play.'),
+    ('beforeafter', 'Before / After', ['image-x-generic', 'view-split-left-right', 'object-flip-horizontal'], '◨', 'Drag to place a before/after image comparison. Choose a "before" and an "after" picture; visitors drag a divider to wipe between them (mouse or touch). Horizontal or vertical, with optional labels.'),
+    ('lbgallery', 'Lightbox Gallery', ['view-presentation', 'folder-pictures', 'zoom-in'], '🖼', 'Drag to place a thumbnail gallery. Clicking a thumbnail opens the full picture in a full-screen overlay with prev/next arrows, keyboard control, captions and an optional thumbnail strip.'),
+    ('tabs', 'Feature Tabs', ['view-list-details', 'application-menu', 'tab-new'], '▭', 'Drag to place a tabbed content panel — a row (or column) of tab buttons switching between panes of text. Keyboard-accessible; a no-JS visitor sees every pane stacked.'),
+    ('ticker', 'News Ticker', ['application-rss+xml', 'media-seek-forward', 'view-list-details'], '≋', 'Drag to place a horizontal scrolling news ticker — a strip of headlines (each optionally linking somewhere) with an optional bold label on the left. Set the speed, direction and pause-on-hover.'),
+    ('videoplayer', 'Video Player', ['video-x-generic', 'applications-multimedia', 'media-playback-start'], '▶', 'Drag to place an HTML5 video player with a poster image and native controls. Choose an MP4/WebM file or paste a link; options for autoplay, loop and responsive 16:9. No Flash, no external player.'),
+    ('portfolio', 'Portfolio Grid', ['view-presentation', 'folder-pictures', 'view-filter'], '▦', 'Drag to place a filterable portfolio grid. Add items (picture + title + category); visitors use filter buttons to show only matching items, with a smooth transition. Items can open in a lightbox.'),
 ]
 
 class LinelessTree(QTreeWidget):
@@ -8169,6 +8747,12 @@ class MainWindow(QMainWindow):
         elif kind == 'popupform': self.popupform_dialog(o)
         elif kind == 'backtotop': self.backtotop_dialog(o)
         elif kind == 'pageflip': self.pageflip_dialog(o)
+        elif kind == 'beforeafter': self.beforeafter_dialog(o)
+        elif kind == 'lbgallery': self.lbgallery_dialog(o)
+        elif kind == 'tabs': self.tabs_dialog(o)
+        elif kind == 'ticker': self.ticker_dialog(o)
+        elif kind == 'videoplayer': self.videoplayer_dialog(o)
+        elif kind == 'portfolio': self.portfolio_dialog(o)
 
     def launch_app(self, cmd, label):
         """Launch a sibling 'just a...' app, or explain how to install it."""
@@ -8387,6 +8971,12 @@ class MainWindow(QMainWindow):
         elif t == 'popupform': self.popupform_dialog(o)
         elif t == 'backtotop': self.backtotop_dialog(o)
         elif t == 'pageflip': self.pageflip_dialog(o)
+        elif t == 'beforeafter': self.beforeafter_dialog(o)
+        elif t == 'lbgallery': self.lbgallery_dialog(o)
+        elif t == 'tabs': self.tabs_dialog(o)
+        elif t == 'ticker': self.ticker_dialog(o)
+        elif t == 'videoplayer': self.videoplayer_dialog(o)
+        elif t == 'portfolio': self.portfolio_dialog(o)
 
     def start_edit(self, o, select_all=False):
         it = self.items.get(o['id'])
@@ -9697,6 +10287,325 @@ class MainWindow(QMainWindow):
             o['pages'] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
             o['spread'] = spread.currentData(); o['fit'] = fit.currentData()
             o['auto'] = auto.isChecked(); o['speed'] = sp.value()
+            self.refresh()
+
+    # ----------------------------------------------- Interactive add-ons (v1.20)
+    def beforeafter_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox
+        before = [o.get('before')]; after = [o.get('after')]
+        bb = QPushButton(self.site.get('assetnames', {}).get(before[0], 'Before image set — change…') if before[0] else 'Choose BEFORE image…')
+        ab = QPushButton(self.site.get('assetnames', {}).get(after[0], 'After image set — change…') if after[0] else 'Choose AFTER image…')
+        def choose(slot, btn, label):
+            uri = self._load_image_uri(f'Choose the {label} image')
+            if uri:
+                slot[0] = add_asset(self.site, uri); btn.setText(f'{label} image set — change…')
+        bb.clicked.connect(lambda: choose(before, bb, 'Before'))
+        ab.clicked.connect(lambda: choose(after, ab, 'After'))
+        orient = QComboBox(); orient.addItem('Horizontal drag (vertical divider)', 'horizontal'); orient.addItem('Vertical drag (horizontal divider)', 'vertical')
+        orient.setCurrentIndex(0 if o.get('orient', 'horizontal') == 'horizontal' else 1)
+        fit = QComboBox()
+        for lbl_, val in (('Fill the frame (cover)', 'cover'), ('Fit whole image (contain)', 'contain'), ('Stretch', 'stretch')):
+            fit.addItem(lbl_, val)
+        fit.setCurrentIndex(['cover', 'contain', 'stretch'].index(o.get('fit', 'cover')) if o.get('fit', 'cover') in ('cover', 'contain', 'stretch') else 0)
+        start = QSpinBox(); start.setRange(0, 100); start.setSuffix(' %'); start.setValue(int(o.get('start', 50)))
+        labels = QCheckBox('Show Before / After labels'); labels.setChecked(bool(o.get('labels', True)))
+        blab = QLineEdit(o.get('beforelabel', 'Before')); alab = QLineEdit(o.get('afterlabel', 'After'))
+        acc = [o.get('accent', '#ffffff')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#ffffff'), 'Divider colour')
+        dlg = form_dialog(self, 'Before / After',
+                          [('Before image:', bb), ('After image:', ab), ('Drag direction:', orient),
+                           ('Image sizing:', fit), ('Start position:', start), ('', labels),
+                           ('Before label:', blab), ('After label:', alab), ('Divider colour:', accb)],
+                          QLabel('Two images stacked; visitors drag the divider to wipe between them. '
+                                 'Works with mouse and touch. Published fully self-contained; a no-JS '
+                                 'visitor sees the "after" image.'))
+        if dlg.exec():
+            self.commit()
+            o['before'] = before[0] if before[0] in self.site.get('assets', {}) else None
+            o['after'] = after[0] if after[0] in self.site.get('assets', {}) else None
+            o.update(orient=orient.currentData(), fit=fit.currentData(), start=start.value(),
+                     labels=labels.isChecked(), beforelabel=blab.text() or 'Before',
+                     afterlabel=alab.text() or 'After', accent=acc[0])
+            self.refresh()
+
+    def lbgallery_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox, QSpinBox
+        images = list(o.get('images') or []); caps = dict(o.get('captions') or {})
+        dlg = QDialog(self); dlg.setWindowTitle('Lightbox Gallery'); dlg.resize(600, 540); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('A thumbnail grid. Clicking a thumbnail opens the full picture in a '
+                             'full-screen overlay with prev/next arrows and keyboard support. Give '
+                             'each picture an optional caption. Published fully self-contained.'))
+        lst = QListWidget(); lst.setIconSize(QSize(80, 60)); lst.setDragDropMode(QAbstractItemView.InternalMove); lay.addWidget(lst)
+        def add_item(key):
+            pm = pixmap_for(self.site, key)
+            it = QListWidgetItem(QIcon(pm.scaled(80, 60, Qt.KeepAspectRatio, Qt.SmoothTransformation)) if pm else QIcon(),
+                                 caps.get(key, '') or self.site.get('assetnames', {}).get(key, 'Image'))
+            it.setData(Qt.UserRole, key); it.setFlags(it.flags() | Qt.ItemIsEditable); lst.addItem(it)
+        for k in images: add_item(k)
+        lay.addWidget(QLabel('Double-click a row to edit its caption.'))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def add():
+            paths, _ = QFileDialog.getOpenFileNames(dlg, 'Add images', os.path.expanduser('~/Pictures'),
+                                                    'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
+            for pth in paths:
+                uri = self.picture_uri(pth)
+                if uri:
+                    key = add_asset(self.site, uri); self.site.setdefault('assetnames', {})[key] = os.path.basename(pth); add_item(key)
+        def remove():
+            for it in lst.selectedItems(): lst.takeItem(lst.row(it))
+        for text, icon, fn in (('Add Images…', 'list-add', add), ('Remove', 'list-remove', remove)):
+            b = QPushButton(ticon([icon], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        cols = QSpinBox(); cols.setRange(1, 8); cols.setValue(int(o.get('cols', 3)))
+        gap = QSpinBox(); gap.setRange(0, 40); gap.setSuffix(' px'); gap.setValue(int(o.get('gap', 8)))
+        showcaps = QCheckBox('Show captions in the overlay'); showcaps.setChecked(bool(o.get('showcaps', True)))
+        strip = QCheckBox('Show a thumbnail strip in the overlay'); strip.setChecked(bool(o.get('strip', True)))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Accent colour')
+        opt.addRow('Columns:', cols); opt.addRow('Gap:', gap); opt.addRow('', showcaps); opt.addRow('', strip); opt.addRow('Accent colour:', accb)
+        bbx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bbx.accepted.connect(dlg.accept); bbx.rejected.connect(dlg.reject); lay.addWidget(bbx)
+        if lst.count() == 0: QTimer.singleShot(0, add)
+        if dlg.exec():
+            self.commit()
+            keys = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
+            newcaps = {}
+            for i in range(lst.count()):
+                it = lst.item(i); k = it.data(Qt.UserRole)
+                txt = it.text().strip()
+                if txt and txt != self.site.get('assetnames', {}).get(k, ''): newcaps[k] = txt
+            o['images'] = keys; o['captions'] = newcaps
+            o.update(cols=cols.value(), gap=gap.value(), showcaps=showcaps.isChecked(),
+                     strip=strip.isChecked(), accent=acc[0])
+            self.refresh()
+
+    def tabs_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QWidget
+        tabs = [dict(title=t.get('title', ''), body=t.get('body', '')) for t in (o.get('tabs') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('Feature Tabs'); dlg.resize(640, 540); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('A tabbed content panel. Each tab has a title and body text (basic HTML '
+                             'allowed, e.g. <b>…</b>, <p>…</p>). Published keyboard-accessible; a no-JS '
+                             'visitor sees every pane stacked with its heading.'))
+        body = QHBoxLayout(); lay.addLayout(body, 1)
+        lst = QListWidget(); lst.setMaximumWidth(200); body.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); body.addWidget(panel, 1)
+        title = QLineEdit(); text = QPlainTextEdit(); text.setMinimumHeight(180)
+        pform.addRow('Tab title:', title); pform.addRow('Body:', text); panel.setEnabled(False)
+        active_e = {'i': -1}
+        def save_active():
+            i = active_e['i']
+            if 0 <= i < len(tabs):
+                tabs[i] = dict(title=title.text(), body=text.toPlainText())
+                lst.item(i).setText(f'{i + 1}. ' + (tabs[i]['title'] or 'Tab'))
+        def load(i):
+            active_e['i'] = i
+            if not (0 <= i < len(tabs)): panel.setEnabled(False); return
+            panel.setEnabled(True); title.setText(tabs[i]['title']); text.setPlainText(tabs[i]['body'])
+        def on_row(nr):
+            if active_e['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for i, t in enumerate(tabs): lst.addItem(f'{i + 1}. ' + (t['title'] or 'Tab'))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()): lst.item(i).setText(f'{i + 1}. ' + (tabs[i]['title'] or 'Tab'))
+        def add_it():
+            save_active(); tabs.append(dict(title='New tab', body='')); lst.addItem(f'{lst.count() + 1}. New tab'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(tabs): tabs.pop(i); lst.takeItem(i); renumber(); active_e['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(tabs) and 0 <= j < len(tabs):
+                tabs[i], tabs[j] = tabs[j], tabs[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text_, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text_); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        orient = QComboBox(); orient.addItem('Tabs on top', 'top'); orient.addItem('Tabs on the side', 'side')
+        orient.setCurrentIndex(0 if o.get('orient', 'top') == 'top' else 1)
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Active-tab colour')
+        opt.addRow('Layout:', orient); opt.addRow('Active-tab colour:', accb)
+        bbx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bbx.accepted.connect(dlg.accept); bbx.rejected.connect(dlg.reject); lay.addWidget(bbx)
+        if tabs: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            o['tabs'] = tabs or [dict(title='Tab one', body='')]
+            o['active'] = min(o.get('active', 0), len(o['tabs']) - 1)
+            o.update(orient=orient.currentData(), accent=acc[0])
+            self.refresh()
+
+    def ticker_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox, QWidget
+        items = [dict(text=it.get('text', ''), href=it.get('href', '')) if isinstance(it, dict) else dict(text=str(it), href='')
+                 for it in (o.get('items') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('News Ticker'); dlg.resize(600, 500); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('A horizontal scrolling strip of headlines, each optionally linking somewhere. '
+                             'Published as a self-contained CSS/JS marquee; visitors who prefer reduced '
+                             'motion see a static list instead.'))
+        body = QHBoxLayout(); lay.addLayout(body, 1)
+        lst = QListWidget(); lst.setMaximumWidth(220); body.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); body.addWidget(panel, 1)
+        htext = QLineEdit(); href = QLineEdit(); href.setPlaceholderText('optional https://… or leave blank')
+        pform.addRow('Headline:', htext); pform.addRow('Link → URL:', href); panel.setEnabled(False)
+        active_e = {'i': -1}
+        def save_active():
+            i = active_e['i']
+            if 0 <= i < len(items):
+                items[i] = dict(text=htext.text(), href=href.text().strip())
+                lst.item(i).setText(f'{i + 1}. ' + (items[i]['text'] or 'Headline'))
+        def load(i):
+            active_e['i'] = i
+            if not (0 <= i < len(items)): panel.setEnabled(False); return
+            panel.setEnabled(True); htext.setText(items[i]['text']); href.setText(items[i].get('href', ''))
+        def on_row(nr):
+            if active_e['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for i, it in enumerate(items): lst.addItem(f'{i + 1}. ' + (it['text'] or 'Headline'))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()): lst.item(i).setText(f'{i + 1}. ' + (items[i]['text'] or 'Headline'))
+        def add_it():
+            save_active(); items.append(dict(text='New headline', href='')); lst.addItem(f'{lst.count() + 1}. New headline'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(items): items.pop(i); lst.takeItem(i); renumber(); active_e['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(items) and 0 <= j < len(items):
+                items[i], items[j] = items[j], items[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text_, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text_); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        label = QLineEdit(o.get('label', 'NEWS')); label.setPlaceholderText('leave blank for no label')
+        speed = QSpinBox(); speed.setRange(5, 300); speed.setSuffix(' px/s'); speed.setValue(int(o.get('speed', 40)))
+        direction = QComboBox(); direction.addItem('Scroll left', 'left'); direction.addItem('Scroll right', 'right')
+        direction.setCurrentIndex(0 if o.get('direction', 'left') == 'left' else 1)
+        pause = QCheckBox('Pause when the visitor hovers'); pause.setChecked(bool(o.get('pause', True)))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Label colour')
+        opt.addRow('Left label:', label); opt.addRow('Speed:', speed); opt.addRow('Direction:', direction); opt.addRow('', pause); opt.addRow('Label colour:', accb)
+        bbx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bbx.accepted.connect(dlg.accept); bbx.rejected.connect(dlg.reject); lay.addWidget(bbx)
+        if items: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            o['items'] = items or [dict(text='Headline', href='')]
+            o.update(label=label.text(), speed=speed.value(), direction=direction.currentData(),
+                     pause=pause.isChecked(), accent=acc[0])
+            self.refresh()
+
+    def videoplayer_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox
+        chosen = [o.get('src', '')]
+        pick = QPushButton(self.site.get('assetnames', {}).get(chosen[0], 'Choose video file…') if chosen[0] else 'Choose video file…')
+        url = QLineEdit(o.get('url', '')); url.setPlaceholderText('…or paste a video URL (mp4/webm)')
+        def choose():
+            path, _ = QFileDialog.getOpenFileName(self, 'Choose video', os.path.expanduser('~'),
+                                                  'Video (*.mp4 *.webm *.ogv *.mov);;All files (*)')
+            if not path: return
+            with open(path, 'rb') as fh: data = fh.read()
+            ext = os.path.splitext(path)[1].lower().lstrip('.')
+            mime = {'mp4': 'mp4', 'webm': 'webm', 'ogv': 'ogg', 'mov': 'quicktime'}.get(ext, ext)
+            key = add_asset(self.site, f'data:video/{mime};base64,' + base64.b64encode(data).decode())
+            self.site.setdefault('assetnames', {})[key] = os.path.basename(path)
+            chosen[0] = key; pick.setText(os.path.basename(path)); url.clear()
+        pick.clicked.connect(choose)
+        poster = [o.get('poster')]
+        pbtn = QPushButton('Choose poster image…' if not poster[0] else 'Poster set — change…')
+        def choose_poster():
+            uri = self._load_image_uri('Choose the poster / fallback image')
+            if uri: poster[0] = add_asset(self.site, uri); pbtn.setText('Poster set — change…')
+        pbtn.clicked.connect(choose_poster)
+        controls = QCheckBox('Show player controls'); controls.setChecked(bool(o.get('controls', True)))
+        autoplay = QCheckBox('Autoplay (muted)'); autoplay.setChecked(bool(o.get('autoplay')))
+        loop = QCheckBox('Loop'); loop.setChecked(bool(o.get('loop')))
+        responsive = QCheckBox('Responsive 16:9 (scales to fit width)'); responsive.setChecked(bool(o.get('responsive', True)))
+        dlg = form_dialog(self, 'Video Player',
+                          [('Video file:', pick), ('…or video URL:', url), ('Poster image:', pbtn),
+                           ('', controls), ('', autoplay), ('', loop), ('', responsive)],
+                          QLabel('A standard HTML5 video player with native controls — no Flash, no '
+                                 'external player library. The poster shows before play. Published fully '
+                                 'self-contained (embedded files are copied into the site).'))
+        if dlg.exec():
+            self.commit()
+            o['src'] = chosen[0] if chosen[0] in self.site.get('assets', {}) else ''
+            o['url'] = url.text().strip(); o['poster'] = poster[0]
+            o.update(controls=controls.isChecked(), autoplay=autoplay.isChecked(),
+                     loop=loop.isChecked(), responsive=responsive.isChecked())
+            self.refresh()
+
+    def portfolio_dialog(self, o):
+        from PySide6.QtWidgets import QComboBox, QSpinBox, QCheckBox, QWidget
+        items = [dict(image=it.get('image'), title=it.get('title', ''), cat=it.get('cat', '')) for it in (o.get('items') or [])]
+        dlg = QDialog(self); dlg.setWindowTitle('Portfolio Grid'); dlg.resize(660, 560); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('A responsive image grid with category filter buttons. Give each item a '
+                             'picture, a title and a category; the filters are built from the categories. '
+                             'Published fully self-contained; a no-JS visitor sees every item.'))
+        bodyl = QHBoxLayout(); lay.addLayout(bodyl, 1)
+        lst = QListWidget(); lst.setMaximumWidth(220); lst.setIconSize(QSize(60, 46)); bodyl.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); bodyl.addWidget(panel, 1)
+        cur = {'img': None}
+        imgname = QLabel('No picture chosen'); pickbtn = QPushButton('Choose Picture…')
+        def set_imgname():
+            k = cur['img']; imgname.setText(self.site.get('assetnames', {}).get(k, 'Picture set') if k else 'No picture chosen')
+        def pick_img():
+            uri = self._load_image_uri('Item picture')
+            if uri:
+                k = add_asset(self.site, uri); cur['img'] = k; set_imgname()
+        pickbtn.clicked.connect(pick_img)
+        imgrow = QHBoxLayout(); imgrow.addWidget(imgname, 1); imgrow.addWidget(pickbtn); imgw = QWidget(); imgw.setLayout(imgrow)
+        title = QLineEdit(); cat = QLineEdit(); cat.setPlaceholderText('e.g. Web, Print, Photography')
+        pform.addRow('Picture:', imgw); pform.addRow('Title:', title); pform.addRow('Category:', cat); panel.setEnabled(False)
+        active_e = {'i': -1}
+        def label_for(it): return (it.get('title') or '') + (f'  [{it.get("cat")}]' if it.get('cat') else '') or 'Item'
+        def save_active():
+            i = active_e['i']
+            if 0 <= i < len(items):
+                items[i] = dict(image=cur['img'], title=title.text(), cat=cat.text().strip())
+                lst.item(i).setText(f'{i + 1}. ' + label_for(items[i]))
+        def load(i):
+            active_e['i'] = i
+            if not (0 <= i < len(items)): panel.setEnabled(False); return
+            panel.setEnabled(True); cur['img'] = items[i].get('image'); set_imgname()
+            title.setText(items[i].get('title', '')); cat.setText(items[i].get('cat', ''))
+        def on_row(nr):
+            if active_e['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for i, it in enumerate(items): lst.addItem(f'{i + 1}. ' + label_for(it))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()): lst.item(i).setText(f'{i + 1}. ' + label_for(items[i]))
+        def add_it():
+            save_active(); items.append(dict(image=None, title='New item', cat='')); lst.addItem(f'{lst.count() + 1}. New item'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(items): items.pop(i); lst.takeItem(i); renumber(); active_e['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(items) and 0 <= j < len(items):
+                items[i], items[j] = items[j], items[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text_, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text_); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        cols = QSpinBox(); cols.setRange(1, 8); cols.setValue(int(o.get('cols', 3)))
+        gap = QSpinBox(); gap.setRange(0, 40); gap.setSuffix(' px'); gap.setValue(int(o.get('gap', 10)))
+        alllabel = QLineEdit(o.get('alllabel', 'All'))
+        showtitles = QCheckBox('Show item titles'); showtitles.setChecked(bool(o.get('showtitles', True)))
+        uselb = QCheckBox('Open items in a lightbox overlay (otherwise link out)'); uselb.setChecked(bool(o.get('lightbox', True)))
+        acc = [o.get('accent', '#2a7d6b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2a7d6b'), 'Accent colour')
+        opt.addRow('Columns:', cols); opt.addRow('Gap:', gap); opt.addRow('“All” button:', alllabel)
+        opt.addRow('', showtitles); opt.addRow('', uselb); opt.addRow('Accent colour:', accb)
+        bbx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bbx.accepted.connect(dlg.accept); bbx.rejected.connect(dlg.reject); lay.addWidget(bbx)
+        if items: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            o['items'] = [it for it in items if it.get('image')]
+            o.update(cols=cols.value(), gap=gap.value(), alllabel=alllabel.text() or 'All',
+                     showtitles=showtitles.isChecked(), lightbox=uselb.isChecked(), accent=acc[0])
             self.refresh()
 
     def bgvideo_dialog(self, o):

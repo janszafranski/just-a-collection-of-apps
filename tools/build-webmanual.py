@@ -214,6 +214,26 @@ ADDONS_DEMO = [
     ("text", 360, 672, 560, 40, dict(pad=0, size=13, color="#5c6b73", html="<p>A pop-up form and a floating “back to top” button — plus site-wide snow and custom scrollbars.</p>")),
 ]
 
+# A second add-ons showcase (v1.20): before/after, feature tabs, a news ticker,
+# a video player and a filterable portfolio grid.
+ADDONS2_DEMO = [
+    ("artistic", 40, 24, 820, 48, dict(html="<p>More interactive add-ons</p>", size=30, color="#1f2a30", bold=True)),
+    ("beforeafter", 40, 96, 400, 240, dict(fill="#1b2227", accent="#ffffff", start=50,
+                                           beforelabel="Before", afterlabel="After")),
+    ("tabs", 470, 96, 450, 240, dict(tabs=[dict(title="Overview", body="<p>A tabbed panel switches between panes of text.</p>"),
+                                           dict(title="Pricing", body="<p>Pane two.</p>"),
+                                           dict(title="Contact", body="<p>Pane three.</p>")],
+                                     accent="#2a7d6b", cardbg="#ffffff")),
+    ("ticker", 40, 360, 880, 48, dict(label="NEWS", fill="#1b2227", accent="#2a7d6b", color="#ffffff",
+                                      items=[dict(text="A horizontal strip of scrolling headlines", href=""),
+                                             dict(text="Each one can link somewhere", href="")])),
+    ("videoplayer", 40, 430, 400, 230, dict(fill="#000000", responsive=False)),
+    ("portfolio", 470, 430, 450, 230, dict(accent="#2a7d6b", cols=3, alllabel="All",
+                                           items=[dict(image="", title="One", cat="Web"),
+                                                  dict(image="", title="Two", cat="Print")])),
+    ("text", 40, 672, 880, 40, dict(pad=0, size=13, color="#5c6b73", html="<p>A before/after wipe, feature tabs, a news ticker, an HTML5 video player and a filterable portfolio grid — all self-contained.</p>")),
+]
+
 COLOUR_DEMO = [
     ("artistic", 40, 24, 700, 48, dict(html="<p>Colour, gradients &amp; transparency</p>", size=28, color="#1f2a30", bold=True)),
     ("shape", 40, 96, 240, 150, dict(shape="rect", fill="#2a7d6b", strokeW=0)),
@@ -246,6 +266,7 @@ def capture(full=True):
     IM["build3"] = render_page(HOME[:12], w=960, h=720, px=840)
     IM["webobj"] = render_page(WEBOBJ, w=960, h=880, px=900)
     IM["addons"] = render_page(ADDONS_DEMO, w=960, h=740, px=900)
+    IM["addons2"] = render_page(ADDONS2_DEMO, w=960, h=740, px=900)
     IM["shapes"] = render_page(SHAPES_DEMO, w=960, h=600, px=880)
     IM["textpage"] = render_page(TEXT_DEMO, w=960, h=580, px=880)
     IM["colourpage"] = render_page(COLOUR_DEMO, w=960, h=620, px=880)
@@ -443,6 +464,27 @@ def capture(full=True):
     if hasattr(w2, "pageflip_dialog"):
         # seed a page so the editor opens without the 0ms "Add pages" file dialog.
         drive(w2.pageflip_dialog, seed(mk("pageflip", 60, 60, 560, 360, pages=["_placeholder"])))
+    # Interactive add-ons (v1.20)
+    if hasattr(w2, "beforeafter_dialog"):
+        drive(w2.beforeafter_dialog, seed(mk("beforeafter", 60, 60, 480, 320,
+              before="_placeholder", after="_placeholder")))
+    if hasattr(w2, "lbgallery_dialog"):
+        # seed an image so the editor opens without the 0ms "Add images" file dialog.
+        drive(w2.lbgallery_dialog, seed(mk("lbgallery", 60, 60, 560, 320, images=["_placeholder"])))
+    if hasattr(w2, "tabs_dialog"):
+        drive(w2.tabs_dialog, seed(mk("tabs", 60, 60, 560, 320,
+              tabs=[dict(title="Overview", body="<p>What we do.</p>"),
+                    dict(title="Pricing", body="<p>How much it costs.</p>")])))
+    if hasattr(w2, "ticker_dialog"):
+        drive(w2.ticker_dialog, seed(mk("ticker", 60, 60, 640, 48,
+              items=[dict(text="Latest headline", href=""), dict(text="Another story", href="")])))
+    if hasattr(w2, "videoplayer_dialog"):
+        drive(w2.videoplayer_dialog, seed(mk("videoplayer", 60, 60, 640, 360)))
+    if hasattr(w2, "portfolio_dialog"):
+        # seed an item so the editor opens without the 0ms add-item flow.
+        drive(w2.portfolio_dialog, seed(mk("portfolio", 60, 60, 640, 420,
+              items=[dict(image="_placeholder", title="Project one", cat="Web"),
+                     dict(image="_placeholder", title="Project two", cat="Print")])))
     if hasattr(w2, "anim_dialog"):
         seed(mk("text", 60, 60, 300, 120))   # anim_dialog acts on the current selection
         drive(w2.anim_dialog)
@@ -1190,7 +1232,13 @@ on the page, then double-click it to open its editor.</p>
 <li><b>Background Video</b> &mdash; a looping video behind your content;</li>
 <li><b>Popup Form</b> &mdash; a button that opens a contact form in a dialog;</li>
 <li><b>Back to Top</b> &mdash; a floating button that glides the page to the top;</li>
-<li><b>Page Flip</b> &mdash; a flip-book that turns pages with a 3D page-curl.</li>
+<li><b>Page Flip</b> &mdash; a flip-book that turns pages with a 3D page-curl;</li>
+<li><b>Before / After</b> &mdash; two images with a draggable divider that wipes between them;</li>
+<li><b>Lightbox Gallery</b> &mdash; a thumbnail grid that opens pictures in a full-screen overlay;</li>
+<li><b>Feature Tabs</b> &mdash; a tabbed panel switching between panes of text;</li>
+<li><b>News Ticker</b> &mdash; a horizontal strip of scrolling headlines;</li>
+<li><b>Video Player</b> &mdash; an HTML5 video with a poster and native controls;</li>
+<li><b>Portfolio Grid</b> &mdash; a filterable image grid with category buttons.</li>
 </ul>
 {note('Snow, a custom scrollbar and a site-wide “back to top” button are <i>site-level</i> options — you switch them on in the Publish dialog (see Part VI), not by dropping an object.')}"""),
       ("Text rotator", f"""
@@ -1276,7 +1324,76 @@ external reference, so it works offline like every other add-on.</p>
   'Optionally switch on <b>turn pages automatically</b> and set its speed, then click <b>OK</b>.')}
 {fig(dlg('Page Flip'), 'The Page Flip editor: the ordered list of pages on the left, with the spread / single-page layout, the page sizing and the auto-turn options below.')}
 {tip('Export the pages of a PDF booklet as images (one per page) at a consistent size, then add them in order. For a true book feel, the first page sits on the right on its own, like a cover.')}
-{note('Every page is also written into the published markup as a plain image, so search engines and visitors without JavaScript still see the whole booklet; the page-curl is layered on top when scripting is available, and switches off for visitors who ask for reduced motion.')}""")]))
+{note('Every page is also written into the published markup as a plain image, so search engines and visitors without JavaScript still see the whole booklet; the page-curl is layered on top when scripting is available, and switches off for visitors who ask for reduced motion.')}"""),
+      ("More add-ons at a glance", f"""
+<p>WEBcreator adds a further set of interactive objects for comparing images, presenting content and
+showing off media &mdash; all written as original, self-contained HTML, CSS and JavaScript, with no library
+and no external reference, exactly like the others.</p>
+{fig(IM.get('addons2'), 'A before/after image wipe, a feature-tabs panel, a news ticker, an HTML5 video player and a filterable portfolio grid.')}"""),
+      ("Before / After", f"""
+<p>A <b>Before / After</b> stacks two pictures and lets the visitor <b>drag a divider</b> to wipe between them
+&mdash; the classic way to show a renovation, a retouch or a makeover. It works with the mouse, with touch, and
+with the arrow keys.</p>
+{proc('add a before / after comparison',
+  'Choose the <b>Before / After</b> tool and drag out a frame.',
+  'Choose the <b>Before</b> image and the <b>After</b> image.',
+  'Pick the <b>drag direction</b> (a vertical divider you drag sideways, or a horizontal one you drag up and down), the <b>start position</b> and whether to show the <b>labels</b>.',
+  'Set the divider colour and click <b>OK</b>.')}
+{fig(dlg('Before / After'), 'The Before / After editor: the two images, the drag direction, the start position, the labels and the divider colour.')}
+{note('Both images are real pictures in the published page, so a visitor without JavaScript simply sees the “after” image; the draggable divider is layered on when scripting is available. Use two shots taken from the same position and cropped to the same size for a clean wipe.')}"""),
+      ("Lightbox gallery", f"""
+<p>A <b>Lightbox Gallery</b> is a <b>thumbnail grid</b>: click any thumbnail and the full picture opens in a
+<b>full-screen overlay</b> with previous / next arrows, keyboard control (the arrow keys and <b>Esc</b>), an
+optional caption and an optional strip of thumbnails along the bottom.</p>
+{proc('build a lightbox gallery',
+  'Choose the <b>Lightbox Gallery</b> tool and drag out a box.',
+  'Click <b>Add Images…</b> and choose your pictures. Double-click a row to give that picture a <b>caption</b>; drag to reorder.',
+  'Set the number of <b>columns</b> and the <b>gap</b>, and choose whether to show captions and a thumbnail strip in the overlay.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Lightbox Gallery'), 'The Lightbox Gallery editor: the list of images with editable captions, the column and gap settings, and the overlay options.')}
+{tip('Each thumbnail is published as a plain link to the full picture, so a no-JavaScript visitor can still open every image; the overlay takes over when scripting is available.')}"""),
+      ("Feature tabs", f"""
+<p><b>Feature Tabs</b> packs several panes of content behind a row (or column) of tab buttons &mdash; a tidy way
+to present features, pricing and contact details in one place without a long scroll.</p>
+{proc('add a tabbed panel',
+  'Choose the <b>Feature Tabs</b> tool and drag out a panel.',
+  'Click <b>Add</b> for each tab and give it a <b>title</b> and some <b>body</b> text (basic HTML such as <b>&lt;b&gt;</b> and <b>&lt;p&gt;</b> is allowed).',
+  'Choose whether the tabs sit <b>on top</b> or <b>on the side</b>, and set the active-tab colour.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Feature Tabs'), 'The Feature Tabs editor: the list of tabs on the left, the selected tab’s title and body on the right, and the layout and colour below.')}
+{note('The published tabs are fully keyboard-accessible — they use the proper tab / tabpanel roles and respond to the arrow keys. A visitor without JavaScript sees every pane stacked under its heading, so no content is ever hidden.')}"""),
+      ("News ticker", f"""
+<p>A <b>News Ticker</b> is a horizontal strip of <b>scrolling headlines</b>, each of which can link somewhere,
+with an optional bold label (such as <b>NEWS</b>) pinned to the left.</p>
+{proc('add a news ticker',
+  'Choose the <b>News Ticker</b> tool and drag out a wide, shallow strip.',
+  'Click <b>Add</b> for each headline and type its text and an optional <b>link</b>.',
+  'Set the <b>left label</b>, the <b>speed</b>, the <b>direction</b> and whether it <b>pauses when hovered</b>.',
+  'Click <b>OK</b>.')}
+{fig(dlg('News Ticker'), 'The News Ticker editor: the list of headlines with their links, and the label, speed, direction and pause options.')}
+{note('The scroll is WEBcreator’s own CSS/JavaScript marquee — not the old &lt;marquee&gt; tag. Visitors who ask for reduced motion see a plain, static list of the headlines instead of the scrolling strip.')}"""),
+      ("Video player", f"""
+<p>A <b>Video Player</b> places a real <b>HTML5 video</b> on the page &mdash; a poster image, a play button and
+native playback controls, with no Flash and no external player library. (This is different from the
+<b>Background Video</b>, which plays silently behind your content.)</p>
+{proc('add a video player',
+  'Choose the <b>Video Player</b> tool and drag out a frame.',
+  'Choose a <b>video file</b> (MP4 or WebM, embedded into the site) or paste a video <b>URL</b>, and pick a <b>poster image</b> shown before play.',
+  'Choose whether to show the <b>controls</b>, and switch on <b>autoplay</b> (muted), <b>loop</b> or the <b>responsive 16:9</b> option as needed.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Video Player'), 'The Video Player editor: the video file or URL, the poster image, and the controls, autoplay, loop and responsive options.')}
+{caution('An embedded video file is copied into your site, so a long clip makes the download large — keep it short and compressed, and always set a poster image. Browsers only autoplay a video that is muted, which is how WEBcreator publishes it.')}"""),
+      ("Portfolio grid", f"""
+<p>A <b>Portfolio Grid</b> is a responsive image grid with <b>filter buttons</b>: give each item a category, and
+visitors tap a category to show only the matching items, which glide into place. Items can open in a lightbox
+overlay or simply link out.</p>
+{proc('build a filterable portfolio',
+  'Choose the <b>Portfolio Grid</b> tool and drag out a box.',
+  'Click <b>Add</b> for each item and give it a <b>picture</b>, a <b>title</b> and a <b>category</b> (the filter buttons are built from the categories you use).',
+  'Set the number of <b>columns</b>, the <b>gap</b>, the <b>“All” button</b> text, and whether items open in a <b>lightbox</b>.',
+  'Click <b>OK</b>.')}
+{fig(dlg('Portfolio Grid'), 'The Portfolio Grid editor: the list of items with their pictures, titles and categories, and the column, gap, filter and lightbox options.')}
+{tip('Reuse the same category word exactly (capitalisation included) across items that belong together — the filter bar lists each distinct category once, in the order it first appears.')}""")]))
 
     ch.append(("Pages, Masters and Site Structure",
       "<p class='lede'>A website is a set of linked pages that share a look. This chapter covers adding and "
@@ -1942,7 +2059,9 @@ def build_index(numbered):
              "GitHub Pages", "spell check", "check links", "gradient", "transparency", "swatch",
              "colour scheme", "QuickShape", "drop shadow", "outer glow", "crop", "picture frame",
              "artistic text", "text frame", "table", "template", "Startup Assistant", "import",
-             "page flip", "flip-book", "360", "image zoom", "accordion", "skills chart", "back to top"]
+             "page flip", "flip-book", "360", "image zoom", "accordion", "skills chart", "back to top",
+             "before / after", "lightbox gallery", "feature tabs", "news ticker", "video player",
+             "portfolio grid", "smooth scrolling"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
             if _re.search(r"\b" + _re.escape(t) + r"\b", plain, _re.I):
