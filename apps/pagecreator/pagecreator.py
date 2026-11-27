@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.27-00"
+VERSION = "1.28-00"
 
 
 def _just_dir(kind):
@@ -6247,6 +6247,7 @@ class StartupAssistant(QDialog):
         top = QHBoxLayout(); root.addLayout(top, 1)
         self.nav = QListWidget(); self.nav.setFixedWidth(170); self.nav.setIconSize(QSize(28, 28)); self.nav.setSpacing(4)
         for icon, text in ((ticon(['bookmark-new', 'view-preview', 'document-new'], '✦'), 'Design Templates'),
+                           (ticon(['folder-templates', 'bookmarks', 'folder'], '★'), 'My Templates'),
                            (ticon(['document-new'], '+'), 'New Publication'),
                            (ticon(['document-open'], '↥'), 'Open')):
             self.nav.addItem(QListWidgetItem(icon, text))
@@ -6300,6 +6301,8 @@ class StartupAssistant(QDialog):
 
         # --- Design Templates: a gallery of ready-made layouts (put first) -----
         self.stack.insertWidget(0, self._templates_page(win))
+        # --- My Templates: the user's own imported library (e.g. purchased .ppp) -
+        self.stack.insertWidget(1, self._my_templates_page(win))
 
         bottom = QHBoxLayout(); root.addLayout(bottom)
         imp = QPushButton(ticon(['document-import', 'document-open'], ''), 'Import…')
@@ -6359,6 +6362,72 @@ class StartupAssistant(QDialog):
         p.drawRect(QRectF(0.5, 0.5, pw - 1, ph - 1))
         p.end()
         return QPixmap.fromImage(img)
+
+    def _templates_folder(self, win):
+        return win.settings.value('templatesFolder', '', type=str) or os.path.expanduser('~/Documents/pageplus-templates')
+
+    def _my_templates_page(self, win):
+        from PySide6.QtWidgets import QScrollArea
+        self._mytpl_win = win
+        self._mytpl_area = QScrollArea(); self._mytpl_area.setWidgetResizable(True); self._mytpl_area.setFrameShape(QFrame.NoFrame)
+        self._rebuild_my_templates()
+        return self._mytpl_area
+
+    def _rebuild_my_templates(self):
+        """(Re)build the My Templates grid from the user's chosen .ppp library folder."""
+        from PySide6.QtWidgets import QGridLayout, QToolButton
+        import collections
+        win = self._mytpl_win
+        folder = self._templates_folder(win)
+        inner = QWidget(); vl = QVBoxLayout(inner)
+        hdr = QHBoxLayout(); vl.addLayout(hdr)
+        hdr.addWidget(QLabel('<b>My Templates</b> — your own PagePlus library. Click one to start a new document from it.'))
+        hdr.addStretch()
+        chg = QPushButton(ticon(['folder-open', 'document-open-folder'], ''), 'Choose folder…')
+        chg.clicked.connect(self._choose_templates_folder); hdr.addWidget(chg)
+        vl.addWidget(QLabel(f'<span style="color:#78848c">{folder}</span>'))
+        ppps = []
+        if os.path.isdir(folder):
+            for dp, _dn, fns in os.walk(folder):
+                for f in fns:
+                    if f.lower().endswith('.ppp'):
+                        ppps.append(os.path.join(dp, f))
+        ppps.sort(key=lambda p: os.path.basename(p).lower())
+        if not ppps:
+            vl.addWidget(QLabel('No PagePlus (.ppp) templates found here.\n'
+                                'Click “Choose folder…” to point at your purchased template library.'))
+            vl.addStretch(); self._mytpl_area.setWidget(inner); return
+        vl.addWidget(QLabel(f'<span style="color:#78848c">{len(ppps)} templates</span>'))
+        groups = collections.OrderedDict()
+        for p in ppps:
+            base = os.path.splitext(os.path.basename(p))[0]
+            cat = base.split('__')[0] if '__' in base else (os.path.basename(os.path.dirname(p)) or 'Templates')
+            groups.setdefault(cat, []).append(p)
+        for cat, items in groups.items():
+            lab = QLabel(f'{cat}  ·  {len(items)}'); lab.setStyleSheet('font-weight:600;margin-top:12px'); vl.addWidget(lab)
+            grid = QGridLayout(); grid.setSpacing(8); vl.addLayout(grid)
+            for i, p in enumerate(items):
+                base = os.path.splitext(os.path.basename(p))[0]
+                name = base.split('__')[-1].replace('_', ' ')
+                b = QToolButton(); b.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+                b.setIcon(self._preset_icon(210, 297)); b.setIconSize(QSize(58, 58))
+                b.setText(name); b.setFixedSize(132, 112); b.setAutoRaise(True); b.setCursor(Qt.PointingHandCursor)
+                b.setToolTip(p)
+                b.clicked.connect(lambda _=0, path=p: self._open_my_template(path))
+                grid.addWidget(b, i // 4, i % 4)
+        vl.addStretch()
+        self._mytpl_area.setWidget(inner)
+
+    def _choose_templates_folder(self):
+        d = QFileDialog.getExistingDirectory(self, 'Choose your templates folder', self._templates_folder(self._mytpl_win))
+        if d:
+            self._mytpl_win.settings.setValue('templatesFolder', d)
+            self._rebuild_my_templates()
+
+    def _open_my_template(self, path):
+        # start a NEW document from the template (import, not open-in-place), reusing the
+        # existing .ppp import path so it never overwrites the original template file.
+        self.result_importfile = path; self.accept()
 
     def _templates_page(self, win):
         from PySide6.QtWidgets import QScrollArea, QGridLayout, QToolButton
