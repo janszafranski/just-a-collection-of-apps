@@ -33,7 +33,7 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.0-00"
+VERSION = "1.1-00"
 EXT = ".movp"
 FMT = "justamovie1"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -90,6 +90,50 @@ def atempo_chain(speed):
         stages.append(0.5); s /= 0.5
     stages.append(s)
     return ','.join(f'atempo={x:.4f}' for x in stages)
+
+
+# overlay blend modes (MoviePlus "Blend Modes")
+BLEND_MODES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
+               'addition', 'difference', 'hardlight', 'softlight']
+# title animations
+TEXT_ANIMS = [('none', 'None'), ('fade', 'Fade in & out'), ('slideL', 'Slide in from left'),
+              ('slideR', 'Slide in from right'), ('slideU', 'Rise up')]
+
+
+def _font_variant(bold, italic):
+    want = 'sans'
+    style = (('bold ' if bold else '') + ('italic' if italic else '')).strip() or 'regular'
+    try:
+        r = subprocess.run(['fc-match', '-f', '%{file}', f'{want}:style={style}'],
+                           capture_output=True, text=True, timeout=5)
+        if r.returncode == 0 and os.path.isfile(r.stdout.strip()):
+            return r.stdout.strip()
+    except Exception:
+        pass
+    return FONT_FILE
+
+
+def crop_vf(clip):
+    cr = clip.get('crop')
+    if not cr:
+        return None
+    x, y = float(cr.get('x', 0)), float(cr.get('y', 0))
+    w, h = float(cr.get('w', 1)), float(cr.get('h', 1))
+    w = max(0.05, min(1.0, w)); h = max(0.05, min(1.0, h))
+    return f"crop=iw*{w:.4f}:ih*{h:.4f}:iw*{x:.4f}:ih*{y:.4f}"
+
+
+def transform_vf(clip, W, H):
+    """Shrink + position a full-frame clip on black (2D transform scale/position)."""
+    tr = clip.get('transform')
+    if not tr:
+        return None
+    s = max(0.05, min(1.0, float(tr.get('scale', 1.0))))
+    if s >= 0.999 and float(tr.get('x', 0.5)) == 0.5 and float(tr.get('y', 0.5)) == 0.5:
+        return None
+    sw, sh = max(2, int(W * s) // 2 * 2), max(2, int(H * s) // 2 * 2)
+    px, py = float(tr.get('x', 0.5)), float(tr.get('y', 0.5))
+    return f"scale={sw}:{sh},pad={W}:{H}:(ow-iw)*{px:.4f}:(oh-ih)*{py:.4f}:color=black"
 
 
 def clip_extra_vf(clip):
@@ -230,17 +274,21 @@ def new_clip(src, kind, info=None):
         'start': 0.0, 'dur': float(dur), 'in': 0.0, 'src_dur': float(dur),
         'volume': 1.0, 'pan': 0.0, 'fade_in': 0.0, 'fade_out': 0.0,
         'transition': {'type': 'none', 'dur': 1.0},
-        'kenburns': None, 'chroma': None, 'opacity': 1.0, 'speed': 1.0,
+        'kenburns': None, 'chroma': None, 'opacity': 1.0, 'opacity_to': None, 'speed': 1.0,
         'adjust': None,   # {'brightness':0,'contrast':1,'saturation':1,'gamma':1}
         'effect': 'none', 'rotate': 0.0,
-        'pip': None,  # {'x':.., 'y':.., 'scale':..} for picture-in-picture overlays
+        'crop': None,       # {'x','y','w','h'} as fractions 0..1 (w/h = kept size)
+        'transform': None,  # {'scale','x','y'} shrink+position a clip on black
+        'blend': 'normal',  # overlay blend mode
+        'pip': None,  # {'x':.., 'y':.., 'scale':.., optional 'to':{x,y,scale}} picture-in-picture
         'color': '#3366cc',  # used when kind == 'color'
         'text': None,
     }
     if kind == 'text':
         c['dur'] = DEFAULT_TITLE_DUR; c['src_dur'] = DEFAULT_TITLE_DUR
         c['text'] = {'content': 'Your title here', 'size': 64, 'color': '#ffffff',
-                     'bg': '#000000', 'x': 'center', 'y': 'center', 'box': False}
+                     'bg': '#000000', 'x': 'center', 'y': 'center', 'box': False,
+                     'bold': False, 'italic': False, 'outline': 0, 'anim': 'none'}
     return c
 
 
@@ -340,7 +388,11 @@ class RenderWorker(QThread):
         dur = max(0.05, float(clip['dur']))
         speed = float(clip.get('speed', 1.0) or 1.0)
         extra = clip_extra_vf(clip)
-        vf = self._vf_fit(W, H)
+        crop = crop_vf(clip) if clip['kind'] in ('video', 'image') else None
+        tf = transform_vf(clip, W, H) if clip['kind'] != 'text' else None
+        vf = ((crop + ',') if crop else '') + self._vf_fit(W, H)
+        if tf:
+            vf += ',' + tf
         if extra:
             vf += ',' + ','.join(extra)
         if speed != 1.0 and clip['kind'] in ('video',):
@@ -358,13 +410,26 @@ class RenderWorker(QThread):
         elif kind == 'image':
             kb = clip.get('kenburns')
             if kb:
-                # Ken Burns: zoompan over the clip duration
+                # Ken Burns: zoompan over the clip duration, with an optional pan direction
                 z = float(kb.get('zoom', 1.3))
                 frames = max(1, int(dur * FPS))
                 zexpr = f"min(zoom+{(z-1)/frames:.6f},{z})"
-                vf = (f"scale={W*4}:{H*4}:force_original_aspect_ratio=increase,"
+                pan = kb.get('pan', 'in')
+                # x/y expressions pan across the over-scanned frame as it zooms
+                xmid, ymid = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
+                xexpr, yexpr = xmid, ymid
+                if pan == 'left':
+                    xexpr = f"(iw-iw/zoom)*(1-on/{frames})"
+                elif pan == 'right':
+                    xexpr = f"(iw-iw/zoom)*(on/{frames})"
+                elif pan == 'up':
+                    yexpr = f"(ih-ih/zoom)*(1-on/{frames})"
+                elif pan == 'down':
+                    yexpr = f"(ih-ih/zoom)*(on/{frames})"
+                cpre = (crop + ',') if crop else ''
+                vf = (f"{cpre}scale={W*4}:{H*4}:force_original_aspect_ratio=increase,"
                       f"crop={W*4}:{H*4},"
-                      f"zoompan=z='{zexpr}':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                      f"zoompan=z='{zexpr}':d={frames}:x='{xexpr}':y='{yexpr}':"
                       f"s={W}x{H}:fps={FPS}")
                 if extra:
                     vf += ',' + ','.join(extra)
@@ -378,7 +443,7 @@ class RenderWorker(QThread):
             txt = clip['text']
             bg = txt.get('bg') or '#000000'
             args = ['-f', 'lavfi', '-t', f'{dur:.3f}', '-i', f"color=c={bg}:s={W}x{H}:r={FPS}",
-                    '-vf', self._drawtext_vf(txt, W, H)]
+                    '-vf', self._drawtext_vf(txt, W, H, t0=0.0, dur=dur)]
         else:  # video
             ss = float(clip.get('in', 0))
             src_t = dur * speed  # at 2× speed we consume twice the source for the same output
@@ -388,17 +453,36 @@ class RenderWorker(QThread):
                              '-r', str(FPS), out])
         return out, dur
 
-    def _drawtext_vf(self, txt, W, H):
+    def _drawtext_vf(self, txt, W, H, t0=0.0, dur=4.0):
         content = _dt_escape(txt.get('content', ''))
         size = int(txt.get('size', 64))
         col = txt.get('color', '#ffffff').lstrip('#')
-        x = {'left': 'w*0.06', 'center': '(w-text_w)/2', 'right': 'w*0.94-text_w'}.get(txt.get('x'), '(w-text_w)/2')
-        y = {'top': 'h*0.08', 'center': '(h-text_h)/2', 'bottom': 'h*0.88-text_h'}.get(txt.get('y'), '(h-text_h)/2')
-        parts = [f"drawtext=fontfile='{FONT_FILE}'", f"text='{content}'", f"fontsize={size}",
-                 f"fontcolor=#{col}", f"x={x}", f"y={y}"]
+        font = _font_variant(txt.get('bold'), txt.get('italic'))
+        xbase = {'left': 'w*0.06', 'center': '(w-text_w)/2', 'right': 'w*0.94-text_w'}.get(txt.get('x'), '(w-text_w)/2')
+        ybase = {'top': 'h*0.08', 'center': '(h-text_h)/2', 'bottom': 'h*0.88-text_h'}.get(txt.get('y'), '(h-text_h)/2')
+        anim = txt.get('anim', 'none')
+        d = max(0.4, float(dur)); AD = min(0.6, d / 2)
+        T = f"(t-{t0:.3f})"
+        x_expr, y_expr, alpha_expr = xbase, ybase, None
+        if anim == 'fade':
+            alpha_expr = (f"if(lt({T},{AD}),{T}/{AD},"
+                          f"if(gt({T},{d-AD:.3f}),max(0,({d:.3f}-{T})/{AD}),1))")
+        elif anim == 'slideL':
+            x_expr = f"if(lt({T},{AD}),(0-text_w)+(({xbase})+text_w)*({T}/{AD}),{xbase})"
+        elif anim == 'slideR':
+            x_expr = f"if(lt({T},{AD}),w+(({xbase})-w)*({T}/{AD}),{xbase})"
+        elif anim == 'slideU':
+            y_expr = f"if(lt({T},{AD}),h+(({ybase})-h)*({T}/{AD}),{ybase})"
+        parts = [f"drawtext=fontfile='{font}'", f"text='{content}'", f"fontsize={size}",
+                 f"fontcolor=#{col}", f"x='{x_expr}'", f"y='{y_expr}'"]
+        if alpha_expr:
+            parts.append(f"alpha='{alpha_expr}'")
+        ow = int(txt.get('outline', 0) or 0)
+        if ow > 0:
+            parts.append(f"borderw={ow}:bordercolor=black")
         if txt.get('box'):
             parts.append("box=1:boxcolor=black@0.5:boxborderw=18")
-        else:
+        elif not ow:
             parts.append("shadowcolor=black@0.6:shadowx=2:shadowy=2")
         return ":".join(parts)
 
@@ -520,7 +604,7 @@ class RenderWorker(QThread):
             enable = f"enable='between(t,{s:.3f},{e:.3f})'"
             if c['kind'] == 'text':
                 lbl = f'[o{idx}]'
-                fc.append(f"{cur}{self._drawtext_vf(c['text'], W, H)}:{enable}{lbl}")
+                fc.append(f"{cur}{self._drawtext_vf(c['text'], W, H, t0=s, dur=c['dur'])}:{enable}{lbl}")
                 cur = lbl
                 continue
             # image / video / colour PiP overlay
@@ -536,7 +620,11 @@ class RenderWorker(QThread):
             else:
                 inputs += ['-ss', f'{c.get("in",0):.3f}', '-t', f'{c["dur"]*speed:.3f}',
                            '-itsoffset', f'{s:.3f}', '-i', c['src']]
-            pre = f"[{idx}:v]scale={ow}:{oh}:force_original_aspect_ratio=decrease,setsar=1"
+            blend = c.get('blend', 'normal')
+            full = blend != 'normal'   # blend modes composite full-frame
+            sw, sh = (W, H) if full else (ow, oh)
+            cpre = (crop_vf(c) + ',') if (c['kind'] in ('video', 'image') and c.get('crop')) else ''
+            pre = f"[{idx}:v]{cpre}scale={sw}:{sh}:force_original_aspect_ratio={'disable' if full else 'decrease'},setsar=1"
             if speed != 1.0 and c['kind'] == 'video':
                 pre += f",setpts=PTS/{speed:.4f}"
             for frag in clip_extra_vf(c):
@@ -546,15 +634,35 @@ class RenderWorker(QThread):
                 col = ck.get('color', '#00ff00').lstrip('#')
                 sim = float(ck.get('similarity', 0.25))
                 pre += f",chromakey=0x{col}:{sim}:0.1"
+            # alpha: constant opacity and/or fade in/out (real overlay opacity animation)
             op = float(c.get('opacity', 1.0) or 1.0)
-            if op < 1.0:
-                pre += f",format=yuva420p,colorchannelmixer=aa={op:.3f}"
+            fi, fo = float(c.get('fade_in', 0)), float(c.get('fade_out', 0))
+            if op < 1.0 or fi > 0 or fo > 0:
+                pre += ",format=yuva420p"
+                if op < 1.0:
+                    pre += f",colorchannelmixer=aa={op:.3f}"
+                if fi > 0:
+                    pre += f",fade=t=in:alpha=1:st={s:.3f}:d={fi:.3f}"
+                if fo > 0:
+                    pre += f",fade=t=out:alpha=1:st={max(s,e-fo):.3f}:d={fo:.3f}"
             plbl = f'[p{idx}]'
             fc.append(pre + plbl)
-            x = f"(W-w)*{float(pip.get('x',0.5)):.3f}" if 'x' in pip else '(W-w)/2'
-            y = f"(H-h)*{float(pip.get('y',0.5)):.3f}" if 'y' in pip else '(H-h)/2'
             lbl = f'[o{idx}]'
-            fc.append(f"{cur}{plbl}overlay=x={x}:y={y}:{enable}{lbl}")
+            if full:
+                fc.append(f"{cur}{plbl}blend=all_mode={blend}:{enable}{lbl}")
+            else:
+                # position, optionally animated start -> end across the clip ('to')
+                to = pip.get('to')
+                px0, py0 = float(pip.get('x', 0.5)), float(pip.get('y', 0.5))
+                if to:
+                    px1, py1 = float(to.get('x', px0)), float(to.get('y', py0))
+                    frac = f"clip((t-{s:.3f})/{max(0.05,c['dur']):.3f},0,1)"
+                    x = f"(W-w)*({px0:.4f}+({px1-px0:.4f})*{frac})"
+                    y = f"(H-h)*({py0:.4f}+({py1-py0:.4f})*{frac})"
+                else:
+                    x = f"(W-w)*{px0:.4f}"
+                    y = f"(H-h)*{py0:.4f}"
+                fc.append(f"{cur}{plbl}overlay=x='{x}':y='{y}':{enable}{lbl}")
             cur = lbl
             idx += 1
         out = os.path.join(tmp, 'comp.mp4')
@@ -723,6 +831,18 @@ class Timeline(QWidget):
         p.setBrush(QBrush(grad))
         p.setPen(QPen(QColor('#ffd166' if sel else '#11141a'), 2 if sel else 1))
         p.drawRoundedRect(r, 5, 5)
+        # audio waveform (the portion of the source this clip plays)
+        if c['kind'] == 'audio':
+            img = self.main.waves.get(c['src'])
+            if img:
+                sd = max(0.01, float(c.get('src_dur') or c['dur']))
+                sx0 = int(img.width() * min(1, c.get('in', 0) / sd))
+                sx1 = int(img.width() * min(1, (c.get('in', 0) + c['dur']) / sd))
+                if sx1 > sx0:
+                    src = QRect(sx0, 0, sx1 - sx0, img.height())
+                    p.setOpacity(0.55)
+                    p.drawImage(r.adjusted(2, 2, -2, -2), img, src)
+                    p.setOpacity(1.0)
         # transition marker (left edge)
         tr = c.get('transition') or {}
         if tr.get('type', 'none') != 'none':
@@ -880,8 +1000,11 @@ class ClipDialog(QDialog):
         self.clip = clip
         self.main = main
         self.setWindowTitle(f"Clip — {clip['name']}")
-        self.setMinimumWidth(380)
-        form = QFormLayout(self)
+        self.setMinimumWidth(400)
+        outer = QVBoxLayout(self)
+        scroll = QScrollArea(); scroll.setWidgetResizable(True); scroll.setFrameShape(QScrollArea.NoFrame)
+        inner = QWidget(); form = QFormLayout(inner); scroll.setWidget(inner)
+        outer.addWidget(scroll, 1)
 
         if clip['kind'] == 'text':
             t = clip['text']
@@ -899,8 +1022,21 @@ class ClipDialog(QDialog):
             self.valign = QComboBox(); self.valign.addItems(['top', 'center', 'bottom'])
             self.valign.setCurrentText(t.get('y', 'center'))
             form.addRow('Vertical', self.valign)
+            srow = QHBoxLayout()
+            self.bold = QCheckBox('Bold'); self.bold.setChecked(bool(t.get('bold')))
+            self.italic = QCheckBox('Italic'); self.italic.setChecked(bool(t.get('italic')))
+            srow.addWidget(self.bold); srow.addWidget(self.italic); srow.addStretch(1)
+            sw = QWidget(); sw.setLayout(srow); form.addRow('Style', sw)
+            self.outline = QSpinBox(); self.outline.setRange(0, 12); self.outline.setValue(int(t.get('outline', 0)))
+            self.outline.setSuffix(' px'); form.addRow('Outline', self.outline)
             self.box = QCheckBox('Draw a box behind the text'); self.box.setChecked(bool(t.get('box')))
             form.addRow('', self.box)
+            self.tanim = QComboBox()
+            for k, lbl in TEXT_ANIMS:
+                self.tanim.addItem(lbl, k)
+            ta = t.get('anim', 'none')
+            self.tanim.setCurrentIndex(max(0, [k for k, _ in TEXT_ANIMS].index(ta) if ta in dict(TEXT_ANIMS) else 0))
+            form.addRow('Animation', self.tanim)
 
         self.dur = QDoubleSpinBox(); self.dur.setRange(0.1, 3600); self.dur.setDecimals(2)
         self.dur.setValue(clip['dur']); self.dur.setSuffix(' s')
@@ -942,6 +1078,32 @@ class ClipDialog(QDialog):
             self.rotate = QDoubleSpinBox(); self.rotate.setRange(-180, 180); self.rotate.setValue(clip.get('rotate', 0.0)); self.rotate.setSuffix('°')
             form.addRow('Rotate', self.rotate)
 
+        if clip['kind'] in ('video', 'image'):
+            self.crop_on = QCheckBox('Crop this clip'); self.crop_on.setChecked(bool(clip.get('crop')))
+            form.addRow('', self.crop_on)
+            cr = clip.get('crop') or {'x': 0.0, 'y': 0.0, 'w': 1.0, 'h': 1.0}
+            self.crop_x = QDoubleSpinBox(); self.crop_x.setRange(0, 0.95); self.crop_x.setSingleStep(0.05); self.crop_x.setValue(cr.get('x', 0))
+            self.crop_y = QDoubleSpinBox(); self.crop_y.setRange(0, 0.95); self.crop_y.setSingleStep(0.05); self.crop_y.setValue(cr.get('y', 0))
+            self.crop_w = QDoubleSpinBox(); self.crop_w.setRange(0.05, 1.0); self.crop_w.setSingleStep(0.05); self.crop_w.setValue(cr.get('w', 1))
+            self.crop_h = QDoubleSpinBox(); self.crop_h.setRange(0.05, 1.0); self.crop_h.setSingleStep(0.05); self.crop_h.setValue(cr.get('h', 1))
+            form.addRow('Crop left / top', self._pair(self.crop_x, self.crop_y))
+            form.addRow('Crop width / height', self._pair(self.crop_w, self.crop_h))
+            tf = clip.get('transform') or {'scale': 1.0, 'x': 0.5, 'y': 0.5}
+            self.tf_scale = QDoubleSpinBox(); self.tf_scale.setRange(0.1, 1.0); self.tf_scale.setSingleStep(0.05); self.tf_scale.setValue(tf.get('scale', 1.0))
+            self.tf_x = QDoubleSpinBox(); self.tf_x.setRange(0, 1); self.tf_x.setSingleStep(0.1); self.tf_x.setValue(tf.get('x', 0.5))
+            self.tf_y = QDoubleSpinBox(); self.tf_y.setRange(0, 1); self.tf_y.setSingleStep(0.1); self.tf_y.setValue(tf.get('y', 0.5))
+            form.addRow('Shrink & place (size)', self.tf_scale)
+            form.addRow('…position x / y', self._pair(self.tf_x, self.tf_y))
+
+        if clip['kind'] == 'image':
+            self.kb_on = QCheckBox('Pan & zoom (Ken Burns)'); self.kb_on.setChecked(bool(clip.get('kenburns')))
+            form.addRow('', self.kb_on)
+            self.kb_pan = QComboBox()
+            for v in ('in', 'left', 'right', 'up', 'down'):
+                self.kb_pan.addItem(v.capitalize(), v)
+            self.kb_pan.setCurrentText((clip.get('kenburns') or {}).get('pan', 'in').capitalize())
+            form.addRow('Pan direction', self.kb_pan)
+
         self.fi = QDoubleSpinBox(); self.fi.setRange(0, 30); self.fi.setSingleStep(0.25); self.fi.setValue(clip.get('fade_in', 0)); self.fi.setSuffix(' s')
         self.fo = QDoubleSpinBox(); self.fo.setRange(0, 30); self.fo.setSingleStep(0.25); self.fo.setValue(clip.get('fade_out', 0)); self.fo.setSuffix(' s')
         form.addRow('Fade in', self.fi)
@@ -966,10 +1128,27 @@ class ClipDialog(QDialog):
             self.opacity = QDoubleSpinBox(); self.opacity.setRange(0.0, 1.0); self.opacity.setSingleStep(0.05)
             self.opacity.setValue(clip.get('opacity', 1.0))
             form.addRow('Opacity (overlay)', self.opacity)
+            self.pipmove_on = QCheckBox('Animate PiP across the screen (move to…)')
+            self.pipmove_on.setChecked(bool((clip.get('pip') or {}).get('to')))
+            form.addRow('', self.pipmove_on)
+            to = (clip.get('pip') or {}).get('to') or {'x': 0.5, 'y': 0.5}
+            self.pip_tx = QDoubleSpinBox(); self.pip_tx.setRange(0, 1); self.pip_tx.setSingleStep(0.1); self.pip_tx.setValue(to.get('x', 0.5))
+            self.pip_ty = QDoubleSpinBox(); self.pip_ty.setRange(0, 1); self.pip_ty.setSingleStep(0.1); self.pip_ty.setValue(to.get('y', 0.5))
+            form.addRow('…end x / y', self._pair(self.pip_tx, self.pip_ty))
+            self.blend = QComboBox()
+            for m in BLEND_MODES:
+                self.blend.addItem(m.capitalize(), m)
+            self.blend.setCurrentText(clip.get('blend', 'normal').capitalize())
+            form.addRow('Blend mode (overlay)', self.blend)
 
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
-        form.addRow(bb)
+        outer.addWidget(bb)
+        self.resize(430, min(680, 120 + form.rowCount() * 34))
+
+    def _pair(self, a, b):
+        w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
+        h.addWidget(a); h.addWidget(b); return w
 
     def _color_btn(self, initial):
         b = QPushButton(initial)
@@ -996,15 +1175,28 @@ class ClipDialog(QDialog):
             c['adjust'] = {'brightness': self.bright.value(), 'contrast': self.contrast.value(),
                            'saturation': self.satur.value(), 'gamma': 1.0}
             c['rotate'] = self.rotate.value()
+        if c['kind'] in ('video', 'image'):
+            c['crop'] = ({'x': self.crop_x.value(), 'y': self.crop_y.value(),
+                          'w': self.crop_w.value(), 'h': self.crop_h.value()}
+                         if self.crop_on.isChecked() else None)
+            c['transform'] = ({'scale': self.tf_scale.value(), 'x': self.tf_x.value(), 'y': self.tf_y.value()}
+                              if (self.tf_scale.value() < 0.999 or self.tf_x.value() != 0.5 or self.tf_y.value() != 0.5)
+                              else None)
+        if c['kind'] == 'image':
+            c['kenburns'] = {'zoom': 1.3, 'pan': self.kb_pan.currentData()} if self.kb_on.isChecked() else None
         if c['kind'] == 'text':
             t = c['text']
             t['content'] = self.content.toPlainText()
             t['size'] = self.size.value(); t['color'] = self.color._color; t['bg'] = self.bg._color
             t['x'] = self.halign.currentText(); t['y'] = self.valign.currentText(); t['box'] = self.box.isChecked()
+            t['bold'] = self.bold.isChecked(); t['italic'] = self.italic.isChecked()
+            t['outline'] = self.outline.value(); t['anim'] = self.tanim.currentData()
             c['name'] = t['content'][:24] or 'Title'
         if c['kind'] in ('video', 'image'):
             if self.pip_on.isChecked():
                 c['pip'] = {'scale': self.pip_scale.value(), 'x': self.pip_x.value(), 'y': self.pip_y.value()}
+                if self.pipmove_on.isChecked():
+                    c['pip']['to'] = {'x': self.pip_tx.value(), 'y': self.pip_ty.value()}
             else:
                 c['pip'] = None
             if self.chroma_on.isChecked():
@@ -1012,6 +1204,7 @@ class ClipDialog(QDialog):
             else:
                 c['chroma'] = None
             c['opacity'] = self.opacity.value()
+            c['blend'] = self.blend.currentData()
 
 
 # ===================================================================== main window
@@ -1024,6 +1217,7 @@ class Main(QMainWindow):
         self._undo = []
         self._redo = []
         self.render_worker = None
+        self.waves = {}   # src path -> QImage waveform (or False if none)
         self.setWindowTitle(APP)
         self.resize(1200, 760)
 
@@ -1137,6 +1331,7 @@ class Main(QMainWindow):
         tm = mb.addMenu('&Timeline')
         self._act(tm, 'Add title…', self.add_title)
         self._act(tm, 'Add colour clip…', self.add_color_clip)
+        self._act(tm, 'Record narration…', self.record_narration)
         self._act(tm, 'Add video/audio track', self.add_track)
         tm.addSeparator()
         self._act(tm, 'Add marker at playhead', self.add_marker, QKeySequence('M'))
@@ -1234,6 +1429,63 @@ class Main(QMainWindow):
         track['clips'].append(c)
         self.timeline.sel = (ti, c['id'])
         self._clips_changed(); self.push_undo()
+
+    def record_narration(self):
+        """Record a voice-over from the microphone (ffmpeg → PulseAudio/PipeWire) and
+        drop it on the audio track at the playhead."""
+        if not FFMPEG:
+            QMessageBox.warning(self, 'Narration', 'Recording needs ffmpeg, which was not found.')
+            return
+        import time as _t
+        outdir = os.path.join(_just_dir('pics'), 'narration'); os.makedirs(outdir, exist_ok=True)
+        out = os.path.join(outdir, 'narration-' + _t.strftime('%Y%m%d-%H%M%S') + '.wav')
+        try:
+            proc = subprocess.Popen([FFMPEG, '-y', '-hide_banner', '-loglevel', 'error',
+                                     '-f', 'pulse', '-i', 'default', '-ac', '2', '-ar', '48000', out],
+                                    stdin=subprocess.PIPE)
+        except Exception as e:
+            QMessageBox.warning(self, 'Microphone', f'Could not start recording:\n{e}')
+            return
+        dlg = QDialog(self); dlg.setWindowTitle('Record narration'); dlg.setMinimumWidth(300)
+        v = QVBoxLayout(dlg)
+        lbl = QLabel('●  Recording — speak now.'); lbl.setStyleSheet('color:#e04b4b;font-weight:bold')
+        elapsed = QLabel('0.0 s')
+        btn = QPushButton('Stop && add to timeline')
+        v.addWidget(lbl); v.addWidget(elapsed); v.addWidget(btn)
+        self._rec_secs = 0.0
+        timer = QTimer(dlg)
+        timer.timeout.connect(lambda: (setattr(self, '_rec_secs', self._rec_secs + 0.1),
+                                       elapsed.setText(f'{self._rec_secs:.1f} s')))
+        timer.start(100)
+
+        def stop():
+            timer.stop()
+            try:
+                proc.stdin.write(b'q'); proc.stdin.flush()
+            except Exception:
+                pass
+            try:
+                proc.wait(timeout=5)
+            except Exception:
+                proc.terminate()
+            dlg.accept()
+        btn.clicked.connect(stop)
+        dlg.finished.connect(lambda _: stop() if proc.poll() is None else None)
+        dlg.exec()
+        if os.path.isfile(out) and os.path.getsize(out) > 2000:
+            info = ffprobe_info(out)
+            c = new_clip(out, 'audio', info); c['start'] = round(self.timeline.playhead, 2)
+            ti = self._track_index('A1')
+            ti = self._first_audio_track() if ti is None else ti
+            self.proj['tracks'][ti]['clips'].append(c)
+            self._add_media_paths([out])
+            _justapps_recent('movie', out)
+            self._clips_changed(); self.push_undo()
+            self.statusBar().showMessage(f'Narration recorded ({info["duration"]:.1f}s) and added.', 5000)
+        else:
+            QMessageBox.warning(self, 'Narration',
+                                'No audio was captured. Check that a microphone is connected and '
+                                'that PulseAudio/PipeWire is running.')
 
     def add_marker(self):
         self.proj.setdefault('markers', [])
@@ -1436,6 +1688,32 @@ class Main(QMainWindow):
         d = project_duration(self.proj)
         self.dur_lbl.setText(f'Movie length {int(d)//60}:{int(d)%60:02d}')
         self.refresh_still()
+        QTimer.singleShot(0, self._gen_waves)
+
+    def _gen_waves(self):
+        """Lazily render a waveform image per audio source for the timeline to paint."""
+        if not FFMPEG:
+            return
+        made = False
+        cache = os.path.join(tempfile.gettempdir(), 'justmovie_waves'); os.makedirs(cache, exist_ok=True)
+        for tr in self.proj['tracks']:
+            for c in tr['clips']:
+                if c['kind'] != 'audio' or c['src'] in self.waves:
+                    continue
+                dst = os.path.join(cache, f"{abs(hash(c['src']))%999999}.png")
+                try:
+                    if not os.path.isfile(dst):
+                        subprocess.run([FFMPEG, '-y', '-hide_banner', '-loglevel', 'error', '-i', c['src'],
+                                        '-filter_complex',
+                                        'showwavespic=s=1400x120:colors=0x8fe3c8|0x8fe3c8',
+                                        '-frames:v', '1', dst], capture_output=True, timeout=30)
+                    img = QImage(dst)
+                    self.waves[c['src']] = img if not img.isNull() else False
+                    made = made or not img.isNull()
+                except Exception:
+                    self.waves[c['src']] = False
+        if made:
+            self.timeline.update()
 
     def zoom(self, factor):
         self.timeline.pps = max(8, min(400, self.timeline.pps * factor))
