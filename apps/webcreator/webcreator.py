@@ -18,7 +18,7 @@ try:
                                QDesktopServices, QPolygonF, QCursor, QLinearGradient, QRadialGradient)
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QGraphicsView, QGraphicsScene,
                                    QGraphicsItem, QGraphicsTextItem, QToolBar, QDockWidget,
-                                   QLabel, QComboBox, QFontComboBox, QSpinBox, QDoubleSpinBox,
+                                   QLabel, QComboBox, QSpinBox, QDoubleSpinBox,
                                    QToolButton, QPushButton, QVBoxLayout, QHBoxLayout, QGridLayout,
                                    QFormLayout, QDialog, QDialogButtonBox, QLineEdit, QCheckBox,
                                    QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
@@ -38,7 +38,116 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.21-00"
+VERSION = "1.22-00"
+
+
+# ===================================================================== font grouping
+# FontManager-style grouping of the system fonts by broad style, shared with the rest
+# of the just a... CREATORsuite (classifier copied verbatim from PAGEdesigner).
+from PySide6.QtWidgets import QComboBox as _QComboBox
+from PySide6.QtGui import QStandardItem as _QStandardItem
+from PySide6.QtCore import Signal as _Signal
+FONT_CATEGORY_ORDER = ['Sans serif', 'Serif', 'Slab serif', 'Display',
+                       'Script', 'Handwriting', 'Monospace']
+
+
+def font_category(name):
+    """Classify a font family into a broad style group by its name (heuristic)."""
+    n = (name or '').lower()
+    def has(*ks): return any(k in n for k in ks)
+    if has('mono', 'consol', 'courier', ' code', 'cousine', 'inconsolata', 'fira code', 'jetbrains', 'source code'):
+        return 'Monospace'
+    if has('script', 'brush', 'pacifico', 'lobster', 'dancing', 'satisfy', 'sacramento', 'allura',
+           'alex brush', 'great vibes', 'tangerine', 'kaushan', 'cookie', 'parisienne', 'yellowtail',
+           'pinyon', 'niconne', 'cursive', 'calligraph', 'vibes', 'pacific'):
+        return 'Script'
+    if has('hand', 'marker', 'permanent', 'indie', 'shadows into', 'gochi', 'patrick', 'architects',
+           'reenie', 'nanum pen', 'just another', 'caveat', 'amatic', 'kalam', 'gloria', 'neucha'):
+        return 'Handwriting'
+    if has('slab', 'rockwell', 'zilla', 'josefin slab'):
+        return 'Slab serif'
+    if has('black', 'ultra', 'heavy', 'poster', 'display', 'titan', 'anton', 'bungee', 'bangers',
+           'fredoka', 'righteous', 'alfa', 'abril', 'archivo black', 'bebas', 'oswald', 'passion',
+           'staatliches', 'teko', 'fjalla', 'monoton', 'bowlby', 'creepster', 'faster', 'bowlby',
+           'graduate', 'luckiest', 'bagel', 'bungee', 'rubik mono', 'squada', 'orbitron', 'press start'):
+        return 'Display'
+    if has('serif', 'times', 'georgia', 'garamond', ' roman', 'playfair', 'merriweather', 'lora',
+           'pt serif', 'noto serif', 'crimson', 'cormorant', 'baskerville', 'eb garamond', 'vollkorn',
+           'spectral', 'bitter', 'source serif', 'domine', 'frank ruhl', 'cardo', 'gentium', 'alegreya',
+           'arvo', 'tinos', 'liberation serif'):
+        return 'Serif'
+    return 'Sans serif'
+
+
+def group_fonts_by_style(families):
+    """Return an OrderedDict {category: [families]} for the given font families,
+    sorted within each group, categories in a fixed order, empty groups dropped."""
+    import collections as _c
+    cats = _c.OrderedDict((c, []) for c in FONT_CATEGORY_ORDER)
+    for fam in families:
+        cats[font_category(fam)].append(fam)
+    return _c.OrderedDict((c, sorted(f, key=str.lower)) for c, f in cats.items() if f)
+
+
+class GroupedFontCombo(_QComboBox):
+    """A drop-in replacement for QFontComboBox that lists the system font families
+    grouped by broad STYLE (Sans serif / Serif / Slab serif / Display / Script /
+    Handwriting / Monospace), each under a disabled, non-selectable header. Every
+    family item previews in its own typeface and carries the family string as its
+    Qt.UserRole data. Emits familyChanged(str) when the selected family changes."""
+    familyChanged = _Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+        self.currentIndexChanged.connect(self._on_index)
+
+    def _build(self):
+        from PySide6.QtGui import QFontDatabase, QFont, QBrush, QColor
+        from PySide6.QtCore import Qt
+        fams = [f for f in QFontDatabase.families() if not f.startswith('.')]
+        model = self.model()
+        for cat, group in group_fonts_by_style(fams).items():
+            hdr = _QStandardItem(cat)
+            hf = QFont(); hf.setBold(True); hf.setPointSize(8)
+            hdr.setFont(hf)
+            hdr.setForeground(QBrush(QColor('#888888')))
+            hdr.setFlags(Qt.NoItemFlags)   # disabled + non-selectable header
+            model.appendRow(hdr)
+            for fam in group:
+                it = _QStandardItem(fam)
+                pf = QFont(fam); pf.setPointSize(11)
+                it.setFont(pf)
+                it.setData(fam, Qt.UserRole)
+                model.appendRow(it)
+        # start on the first real family, never on a header row
+        for i in range(self.count()):
+            if self.itemData(i, Qt.UserRole):
+                self.setCurrentIndex(i)
+                break
+
+    def _on_index(self, idx):
+        fam = self.currentFamily()
+        if fam:
+            self.familyChanged.emit(fam)
+
+    def currentFamily(self):
+        return self.currentData(Qt.UserRole) or self.currentText()
+
+    def setCurrentFamily(self, fam):
+        if not fam:
+            return
+        target = str(fam).lower()
+        for i in range(self.count()):
+            d = self.itemData(i, Qt.UserRole)
+            if d and str(d).lower() == target:
+                self.setCurrentIndex(i)
+                return
+        # fall back to an exact text match if no data item lines up
+        i = self.findText(str(fam))
+        if i >= 0:
+            self.setCurrentIndex(i)
+# =====================================================================
 
 
 def _just_dir(kind):
@@ -8379,8 +8488,8 @@ class MainWindow(QMainWindow):
         label(TYPE_NAMES[o['type']] if len(objs) == 1 else f'{len(objs)} objects'); tb.addSeparator()
         textish = types & {'text', 'artistic', 'button', 'table', 'nav', 'form'}
         if textish and len(types) == 1 or (types <= {'text', 'artistic', 'button'}):
-            fc = QFontComboBox(); fc.setCurrentFont(QFont(o.get('font', SANS))); fc.setMaximumWidth(190)
-            fc.currentFontChanged.connect(lambda f: self.set_prop('font', f.family())); add(fc)
+            fc = GroupedFontCombo(); fc.setCurrentFamily(o.get('font', SANS)); fc.setMaximumWidth(190)
+            fc.familyChanged.connect(lambda fam: self.set_prop('font', fam)); add(fc)
             sz = QSpinBox(); sz.setRange(4, 400); sz.setValue(int(o.get('size', 16))); sz.setSuffix(' px'); sz.setToolTip('Font size')
             sz.editingFinished.connect(lambda: self.set_prop('size', sz.value())); add(sz)
             for k in ('bold', 'italic', 'underline'):

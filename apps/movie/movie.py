@@ -16,7 +16,7 @@ try:
         QLabel, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox, QScrollArea,
         QDockWidget, QListWidget, QListWidgetItem, QLineEdit, QDialog, QFormLayout,
         QSpinBox, QDoubleSpinBox, QDialogButtonBox, QColorDialog, QMenu, QSlider,
-        QStyle, QProgressDialog, QFontComboBox, QCheckBox, QTextEdit, QSizePolicy,
+        QStyle, QProgressDialog, QCheckBox, QTextEdit, QSizePolicy,
         QAbstractItemView, QToolButton)
     from PySide6.QtGui import (
         QAction, QIcon, QColor, QPainter, QPen, QBrush, QPixmap, QImage, QFont,
@@ -33,7 +33,116 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.1-00"
+VERSION = "1.2-00"
+
+
+# ===================================================================== font grouping
+# FontManager-style grouping of the system fonts by broad style, shared with the rest
+# of the just a... CREATORsuite (classifier copied verbatim from PAGEdesigner).
+from PySide6.QtWidgets import QComboBox as _QComboBox
+from PySide6.QtGui import QStandardItem as _QStandardItem
+from PySide6.QtCore import Signal as _Signal
+FONT_CATEGORY_ORDER = ['Sans serif', 'Serif', 'Slab serif', 'Display',
+                       'Script', 'Handwriting', 'Monospace']
+
+
+def font_category(name):
+    """Classify a font family into a broad style group by its name (heuristic)."""
+    n = (name or '').lower()
+    def has(*ks): return any(k in n for k in ks)
+    if has('mono', 'consol', 'courier', ' code', 'cousine', 'inconsolata', 'fira code', 'jetbrains', 'source code'):
+        return 'Monospace'
+    if has('script', 'brush', 'pacifico', 'lobster', 'dancing', 'satisfy', 'sacramento', 'allura',
+           'alex brush', 'great vibes', 'tangerine', 'kaushan', 'cookie', 'parisienne', 'yellowtail',
+           'pinyon', 'niconne', 'cursive', 'calligraph', 'vibes', 'pacific'):
+        return 'Script'
+    if has('hand', 'marker', 'permanent', 'indie', 'shadows into', 'gochi', 'patrick', 'architects',
+           'reenie', 'nanum pen', 'just another', 'caveat', 'amatic', 'kalam', 'gloria', 'neucha'):
+        return 'Handwriting'
+    if has('slab', 'rockwell', 'zilla', 'josefin slab'):
+        return 'Slab serif'
+    if has('black', 'ultra', 'heavy', 'poster', 'display', 'titan', 'anton', 'bungee', 'bangers',
+           'fredoka', 'righteous', 'alfa', 'abril', 'archivo black', 'bebas', 'oswald', 'passion',
+           'staatliches', 'teko', 'fjalla', 'monoton', 'bowlby', 'creepster', 'faster', 'bowlby',
+           'graduate', 'luckiest', 'bagel', 'bungee', 'rubik mono', 'squada', 'orbitron', 'press start'):
+        return 'Display'
+    if has('serif', 'times', 'georgia', 'garamond', ' roman', 'playfair', 'merriweather', 'lora',
+           'pt serif', 'noto serif', 'crimson', 'cormorant', 'baskerville', 'eb garamond', 'vollkorn',
+           'spectral', 'bitter', 'source serif', 'domine', 'frank ruhl', 'cardo', 'gentium', 'alegreya',
+           'arvo', 'tinos', 'liberation serif'):
+        return 'Serif'
+    return 'Sans serif'
+
+
+def group_fonts_by_style(families):
+    """Return an OrderedDict {category: [families]} for the given font families,
+    sorted within each group, categories in a fixed order, empty groups dropped."""
+    import collections as _c
+    cats = _c.OrderedDict((c, []) for c in FONT_CATEGORY_ORDER)
+    for fam in families:
+        cats[font_category(fam)].append(fam)
+    return _c.OrderedDict((c, sorted(f, key=str.lower)) for c, f in cats.items() if f)
+
+
+class GroupedFontCombo(_QComboBox):
+    """A drop-in replacement for QFontComboBox that lists the system font families
+    grouped by broad STYLE (Sans serif / Serif / Slab serif / Display / Script /
+    Handwriting / Monospace), each under a disabled, non-selectable header. Every
+    family item previews in its own typeface and carries the family string as its
+    Qt.UserRole data. Emits familyChanged(str) when the selected family changes."""
+    familyChanged = _Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+        self.currentIndexChanged.connect(self._on_index)
+
+    def _build(self):
+        from PySide6.QtGui import QFontDatabase, QFont, QBrush, QColor
+        from PySide6.QtCore import Qt
+        fams = [f for f in QFontDatabase.families() if not f.startswith('.')]
+        model = self.model()
+        for cat, group in group_fonts_by_style(fams).items():
+            hdr = _QStandardItem(cat)
+            hf = QFont(); hf.setBold(True); hf.setPointSize(8)
+            hdr.setFont(hf)
+            hdr.setForeground(QBrush(QColor('#888888')))
+            hdr.setFlags(Qt.NoItemFlags)   # disabled + non-selectable header
+            model.appendRow(hdr)
+            for fam in group:
+                it = _QStandardItem(fam)
+                pf = QFont(fam); pf.setPointSize(11)
+                it.setFont(pf)
+                it.setData(fam, Qt.UserRole)
+                model.appendRow(it)
+        # start on the first real family, never on a header row
+        for i in range(self.count()):
+            if self.itemData(i, Qt.UserRole):
+                self.setCurrentIndex(i)
+                break
+
+    def _on_index(self, idx):
+        fam = self.currentFamily()
+        if fam:
+            self.familyChanged.emit(fam)
+
+    def currentFamily(self):
+        return self.currentData(Qt.UserRole) or self.currentText()
+
+    def setCurrentFamily(self, fam):
+        if not fam:
+            return
+        target = str(fam).lower()
+        for i in range(self.count()):
+            d = self.itemData(i, Qt.UserRole)
+            if d and str(d).lower() == target:
+                self.setCurrentIndex(i)
+                return
+        # fall back to an exact text match if no data item lines up
+        i = self.findText(str(fam))
+        if i >= 0:
+            self.setCurrentIndex(i)
+# =====================================================================
 EXT = ".movp"
 FMT = "justamovie1"
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,8 +228,10 @@ def _ff_path(p):
     return p.replace('\\', '/').replace(':', '\\:')
 
 
-def _font_variant(bold, italic):
-    want = 'sans'
+def _font_variant(bold, italic, family=None):
+    # resolve the chosen family (falling back to the generic sans) to a file ffmpeg
+    # can draw with, honouring the bold/italic style request.
+    want = family.strip() if (family and family.strip()) else 'sans'
     style = (('bold ' if bold else '') + ('italic' if italic else '')).strip() or 'regular'
     try:
         r = subprocess.run(['fc-match', '-f', '%{file}', f'{want}:style={style}'],
@@ -489,7 +600,7 @@ class RenderWorker(QThread):
         content = _dt_escape(txt.get('content', ''))
         size = int(txt.get('size', 64))
         col = txt.get('color', '#ffffff').lstrip('#')
-        font = _font_variant(txt.get('bold'), txt.get('italic'))
+        font = _font_variant(txt.get('bold'), txt.get('italic'), txt.get('font'))
         xbase = {'left': 'w*0.06', 'center': '(w-text_w)/2', 'right': 'w*0.94-text_w'}.get(txt.get('x'), '(w-text_w)/2')
         ybase = {'top': 'h*0.08', 'center': '(h-text_h)/2', 'bottom': 'h*0.88-text_h'}.get(txt.get('y'), '(h-text_h)/2')
         anim = txt.get('anim', 'none')
@@ -1042,6 +1153,8 @@ class ClipDialog(QDialog):
             t = clip['text']
             self.content = QTextEdit(); self.content.setPlainText(t.get('content', '')); self.content.setFixedHeight(70)
             form.addRow('Text', self.content)
+            self.font = GroupedFontCombo(); self.font.setCurrentFamily(t.get('font', 'Noto Sans'))
+            form.addRow('Font', self.font)
             self.size = QSpinBox(); self.size.setRange(8, 400); self.size.setValue(int(t.get('size', 64)))
             form.addRow('Font size', self.size)
             self.color = self._color_btn(t.get('color', '#ffffff'))
@@ -1218,7 +1331,7 @@ class ClipDialog(QDialog):
             c['kenburns'] = {'zoom': 1.3, 'pan': self.kb_pan.currentData()} if self.kb_on.isChecked() else None
         if c['kind'] == 'text':
             t = c['text']
-            t['content'] = self.content.toPlainText()
+            t['content'] = self.content.toPlainText(); t['font'] = self.font.currentFamily()
             t['size'] = self.size.value(); t['color'] = self.color._color; t['bg'] = self.bg._color
             t['x'] = self.halign.currentText(); t['y'] = self.valign.currentText(); t['box'] = self.box.isChecked()
             t['bold'] = self.bold.isChecked(); t['italic'] = self.italic.isChecked()
@@ -1809,8 +1922,11 @@ class Main(QMainWindow):
         return None
 
     def _paint_title(self, p, txt, W, H):
-        f = QFont(); f.setPixelSize(max(8, int(txt.get('size', 64) * H / self.proj['height'])))
-        f.setBold(True); p.setFont(f)
+        fam = txt.get('font')
+        f = QFont(fam) if fam else QFont()
+        f.setPixelSize(max(8, int(txt.get('size', 64) * H / self.proj['height'])))
+        f.setBold(bool(txt.get('bold', True))); f.setItalic(bool(txt.get('italic')))
+        p.setFont(f)
         p.setPen(QColor(txt.get('color', '#ffffff')))
         flags = {'left': Qt.AlignLeft, 'center': Qt.AlignHCenter, 'right': Qt.AlignRight}.get(txt.get('x'), Qt.AlignHCenter)
         flags |= {'top': Qt.AlignTop, 'center': Qt.AlignVCenter, 'bottom': Qt.AlignBottom}.get(txt.get('y'), Qt.AlignVCenter)

@@ -22,7 +22,116 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.17-00"
+VERSION = "1.18-00"
+
+
+# ===================================================================== font grouping
+# FontManager-style grouping of the system fonts by broad style, shared with the rest
+# of the just a... CREATORsuite (classifier copied verbatim from PAGEdesigner).
+from PySide6.QtWidgets import QComboBox as _QComboBox
+from PySide6.QtGui import QStandardItem as _QStandardItem
+from PySide6.QtCore import Signal as _Signal
+FONT_CATEGORY_ORDER = ['Sans serif', 'Serif', 'Slab serif', 'Display',
+                       'Script', 'Handwriting', 'Monospace']
+
+
+def font_category(name):
+    """Classify a font family into a broad style group by its name (heuristic)."""
+    n = (name or '').lower()
+    def has(*ks): return any(k in n for k in ks)
+    if has('mono', 'consol', 'courier', ' code', 'cousine', 'inconsolata', 'fira code', 'jetbrains', 'source code'):
+        return 'Monospace'
+    if has('script', 'brush', 'pacifico', 'lobster', 'dancing', 'satisfy', 'sacramento', 'allura',
+           'alex brush', 'great vibes', 'tangerine', 'kaushan', 'cookie', 'parisienne', 'yellowtail',
+           'pinyon', 'niconne', 'cursive', 'calligraph', 'vibes', 'pacific'):
+        return 'Script'
+    if has('hand', 'marker', 'permanent', 'indie', 'shadows into', 'gochi', 'patrick', 'architects',
+           'reenie', 'nanum pen', 'just another', 'caveat', 'amatic', 'kalam', 'gloria', 'neucha'):
+        return 'Handwriting'
+    if has('slab', 'rockwell', 'zilla', 'josefin slab'):
+        return 'Slab serif'
+    if has('black', 'ultra', 'heavy', 'poster', 'display', 'titan', 'anton', 'bungee', 'bangers',
+           'fredoka', 'righteous', 'alfa', 'abril', 'archivo black', 'bebas', 'oswald', 'passion',
+           'staatliches', 'teko', 'fjalla', 'monoton', 'bowlby', 'creepster', 'faster', 'bowlby',
+           'graduate', 'luckiest', 'bagel', 'bungee', 'rubik mono', 'squada', 'orbitron', 'press start'):
+        return 'Display'
+    if has('serif', 'times', 'georgia', 'garamond', ' roman', 'playfair', 'merriweather', 'lora',
+           'pt serif', 'noto serif', 'crimson', 'cormorant', 'baskerville', 'eb garamond', 'vollkorn',
+           'spectral', 'bitter', 'source serif', 'domine', 'frank ruhl', 'cardo', 'gentium', 'alegreya',
+           'arvo', 'tinos', 'liberation serif'):
+        return 'Serif'
+    return 'Sans serif'
+
+
+def group_fonts_by_style(families):
+    """Return an OrderedDict {category: [families]} for the given font families,
+    sorted within each group, categories in a fixed order, empty groups dropped."""
+    import collections as _c
+    cats = _c.OrderedDict((c, []) for c in FONT_CATEGORY_ORDER)
+    for fam in families:
+        cats[font_category(fam)].append(fam)
+    return _c.OrderedDict((c, sorted(f, key=str.lower)) for c, f in cats.items() if f)
+
+
+class GroupedFontCombo(_QComboBox):
+    """A drop-in replacement for QFontComboBox that lists the system font families
+    grouped by broad STYLE (Sans serif / Serif / Slab serif / Display / Script /
+    Handwriting / Monospace), each under a disabled, non-selectable header. Every
+    family item previews in its own typeface and carries the family string as its
+    Qt.UserRole data. Emits familyChanged(str) when the selected family changes."""
+    familyChanged = _Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._build()
+        self.currentIndexChanged.connect(self._on_index)
+
+    def _build(self):
+        from PySide6.QtGui import QFontDatabase, QFont, QBrush, QColor
+        from PySide6.QtCore import Qt
+        fams = [f for f in QFontDatabase.families() if not f.startswith('.')]
+        model = self.model()
+        for cat, group in group_fonts_by_style(fams).items():
+            hdr = _QStandardItem(cat)
+            hf = QFont(); hf.setBold(True); hf.setPointSize(8)
+            hdr.setFont(hf)
+            hdr.setForeground(QBrush(QColor('#888888')))
+            hdr.setFlags(Qt.NoItemFlags)   # disabled + non-selectable header
+            model.appendRow(hdr)
+            for fam in group:
+                it = _QStandardItem(fam)
+                pf = QFont(fam); pf.setPointSize(11)
+                it.setFont(pf)
+                it.setData(fam, Qt.UserRole)
+                model.appendRow(it)
+        # start on the first real family, never on a header row
+        for i in range(self.count()):
+            if self.itemData(i, Qt.UserRole):
+                self.setCurrentIndex(i)
+                break
+
+    def _on_index(self, idx):
+        fam = self.currentFamily()
+        if fam:
+            self.familyChanged.emit(fam)
+
+    def currentFamily(self):
+        return self.currentData(Qt.UserRole) or self.currentText()
+
+    def setCurrentFamily(self, fam):
+        if not fam:
+            return
+        target = str(fam).lower()
+        for i in range(self.count()):
+            d = self.itemData(i, Qt.UserRole)
+            if d and str(d).lower() == target:
+                self.setCurrentIndex(i)
+                return
+        # fall back to an exact text match if no data item lines up
+        i = self.findText(str(fam))
+        if i >= 0:
+            self.setCurrentIndex(i)
+# =====================================================================
 HERE = os.path.dirname(os.path.abspath(__file__))
 BANNER_IMG = os.path.join(HERE, 'banner.png')
 MANUAL = next((p for p in (os.path.join(HERE,'manual.pdf'), os.path.join(HERE,'manual.html')) if os.path.isfile(p)), os.path.join(HERE,'manual.pdf'))
@@ -4840,11 +4949,11 @@ class Main(QMainWindow):
     def ask_text(self):
         """Prompt for text, font and size before stamping it onto the canvas."""
         from PySide6.QtWidgets import (QDialog, QVBoxLayout, QFormLayout, QLineEdit,
-                                       QSpinBox, QFontComboBox, QDialogButtonBox)
+                                       QSpinBox, QDialogButtonBox)
         dlg = QDialog(self); dlg.setWindowTitle('Add Text'); dlg.resize(440, 180)
         v = QVBoxLayout(dlg)
         le = QLineEdit(); le.setPlaceholderText('Text to add…')
-        fc = QFontComboBox(); fc.setCurrentFont(QFont(getattr(self, '_text_font', 'Noto Sans')))
+        fc = GroupedFontCombo(); fc.setCurrentFamily(getattr(self, '_text_font', 'Noto Sans'))
         sp = QSpinBox(); sp.setRange(6, 400); sp.setSuffix(' px'); sp.setValue(getattr(self, '_text_px', max(16, self.canvas.size * 4)))
         form = QFormLayout(); form.addRow('Text:', le); form.addRow('Font:', fc); form.addRow('Size:', sp)
         v.addLayout(form)
@@ -4853,7 +4962,7 @@ class Main(QMainWindow):
         le.setFocus()
         if dlg.exec() != QDialog.Accepted or not le.text().strip():
             return None
-        self._text_font = fc.currentFont().family(); self._text_px = sp.value()
+        self._text_font = fc.currentFamily(); self._text_px = sp.value()
         return (le.text(), self._text_font, self._text_px)
 
     def cutout_studio(self):
