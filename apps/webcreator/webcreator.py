@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.18-01"
+VERSION = "1.19-00"
 
 
 def _just_dir(kind):
@@ -397,6 +397,9 @@ DEF = {
     # Back to Top — a floating button that appears after scrolling (droppable object variant).
     'backtotop': dict(w=52, h=52, accent='#2a7d6b', ink='#ffffff', pos='right', radius=50,
                       after=400, label=''),
+    # Page Flip — a flip-book / page-turning viewer over an ordered set of page images.
+    'pageflip': dict(w=560, h=360, pages=[], spread='double', auto=False, speed=5.0,
+                     fit='contain', radius=4, strokeW=1, stroke='#d4dade', fill='#2b2b2b', accent='#2a7d6b'),
 }
 # A SLIDE in a slider object: heading / caption text over an image, with an optional button.
 SLIDE_DEF = dict(image=None, heading='', caption='', btn='', link='')
@@ -423,7 +426,7 @@ NET = {n[0]: n for n in SHARE_NETS}
 
 TYPE_NAMES = dict(text='Text frame', artistic='Artistic text', shape='QuickShape', line='Line', picture='Picture',
                   nav='Navigation bar', button='Button', table='Table', html='HTML fragment', form='Form', gallery='Photo gallery', share='Share buttons', search='Search box', youtube='YouTube video', map='Google Map', audio='Audio', vimeo='Vimeo video', lightbox='Lightbox image', newsfeed='News feed', slider='Slider / carousel', paypal='PayPal button',
-                  rotator='Text rotator', accordion='Accordion (FAQs)', skills='Skills chart', imgzoom='Image zoom', spin360='360° viewer', bgvideo='Background video', popupform='Popup form', backtotop='Back to top')
+                  rotator='Text rotator', accordion='Accordion (FAQs)', skills='Skills chart', imgzoom='Image zoom', spin360='360° viewer', bgvideo='Background video', popupform='Popup form', backtotop='Back to top', pageflip='Page flip')
 
 def mk(t, x, y, w=None, h=None, **p):
     o = dict(id=uid(), type=t, x=x, y=y, rot=0, opacity=1.0, hidden=False, locked=False, link=None)
@@ -2185,6 +2188,51 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         p.setPen(QColor(o.get('ink', '#ffffff')))
         lbl = o.get('label') or '↑'; f = QFont(o.get('font', 'Noto Sans')); f.setPixelSize(max(14, int(h * 0.42))); f.setBold(True); p.setFont(f)
         p.drawText(r, Qt.AlignCenter, lbl)
+    elif t == 'pageflip':
+        # A flip-book preview: a bound spread (one or two pages) centred on a dark mat,
+        # with a spine line down the middle and a corner-curl hint.
+        pages = [k for k in (o.get('pages') or []) if k in site.get('assets', {})]
+        double = o.get('spread', 'double') == 'double'
+        p.fillRect(r, QColor(o.get('fill', '#2b2b2b')))
+        # the book area with a small margin inside the mat
+        mx = max(8, w * 0.05); my = max(8, h * 0.08)
+        book = QRectF(mx, my, w - 2 * mx, h - 2 * my)
+        p.save(); path = QPainterPath(); path.addRoundedRect(book, 3, 3); p.setClipPath(path)
+        def _draw_page(dst, key):
+            pm = pixmap_for(site, key) if key else None
+            p.fillRect(dst, QColor('#ffffff'))
+            if pm and not pm.isNull():
+                pw_, ph_ = pm.width(), pm.height()
+                if o.get('fit', 'contain') == 'cover':
+                    sc = max(dst.width() / pw_, dst.height() / ph_); sw_, sh_ = dst.width() / sc, dst.height() / sc
+                    p.drawPixmap(dst, pm, QRectF((pw_ - sw_) / 2, (ph_ - sh_) / 2, sw_, sh_))
+                else:
+                    sc = min(dst.width() / pw_, dst.height() / ph_); tw, th = pw_ * sc, ph_ * sc
+                    p.drawPixmap(QRectF(dst.x() + (dst.width() - tw) / 2, dst.y() + (dst.height() - th) / 2, tw, th),
+                                 pm, QRectF(0, 0, pw_, ph_))
+        if double:
+            half = book.width() / 2
+            _draw_page(QRectF(book.x(), book.y(), half, book.height()), pages[0] if pages else None)
+            _draw_page(QRectF(book.x() + half, book.y(), half, book.height()), pages[1] if len(pages) > 1 else None)
+            # spine shading
+            grad = QColor(0, 0, 0, 60)
+            p.fillRect(QRectF(book.center().x() - 8, book.y(), 16, book.height()), grad)
+            p.setPen(QPen(QColor(0, 0, 0, 110), 1)); p.drawLine(QPointF(book.center().x(), book.y()), QPointF(book.center().x(), book.bottom()))
+        else:
+            _draw_page(book, pages[0] if pages else None)
+        # corner curl hint (bottom-right)
+        cs = min(book.width(), book.height()) * 0.18
+        p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 40))
+        p.drawPolygon(QPolygonF([QPointF(book.right() - cs, book.bottom()), QPointF(book.right(), book.bottom()),
+                                 QPointF(book.right(), book.bottom() - cs)]))
+        p.restore()
+        if not pages and edit:
+            f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#dfe4e7'))
+            p.drawText(r, Qt.AlignCenter, 'Double-click to add pages')
+        if o.get('strokeW', 0) > 0:
+            rad = o.get('radius', 4); p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        if edit:
+            _badge(p, w, '📖 page flip · %d' % len(pages))
 
 def _q_align(a):
     return {'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(a, Qt.AlignLeft)
@@ -2392,6 +2440,28 @@ background:rgba(0,0,0,.4);color:#fff;font-size:26px;line-height:1;cursor:pointer
 .obj-backtotop.bt-left .bt-btn{left:24px}
 .obj-backtotop.bt-show .bt-btn{opacity:1;visibility:visible;transform:none}
 @media(prefers-reduced-motion:reduce){.obj-backtotop .bt-btn{transition:none}}
+/* --- Page Flip — a flip-book / page-turning viewer (own CSS 3D transforms) --- */
+.obj-pageflip{position:absolute;overflow:hidden;background:var(--pffill,#2b2b2b);display:flex;flex-direction:column;align-items:center;justify-content:center}
+.obj-pageflip .pf-book{position:relative;flex:1 1 auto;width:100%;display:flex;align-items:center;justify-content:center;min-height:0}
+.obj-pageflip .pf-stage{position:relative;height:90%;perspective:2000px}
+.obj-pageflip .pf-leaf{position:relative;height:100%;background:#fff;box-shadow:0 10px 30px rgba(0,0,0,.4);display:flex;overflow:hidden}
+.obj-pageflip .pf-half{position:relative;height:100%;overflow:hidden;background:#fff}
+.obj-pageflip.pf-double .pf-half{box-shadow:inset 0 0 18px -8px rgba(0,0,0,.5)}
+.obj-pageflip .pf-half img{width:100%;height:100%;display:block;object-fit:var(--pffit,contain);background:#fff;-webkit-user-drag:none;user-select:none}
+.obj-pageflip .pf-spine{position:absolute;top:0;bottom:0;left:50%;width:2px;transform:translateX(-1px);background:rgba(0,0,0,.35);z-index:3;pointer-events:none}
+/* the turning leaf sits above and rotates in 3D around the spine */
+.obj-pageflip .pf-turn{position:absolute;top:0;height:100%;transform-style:preserve-3d;transition:transform .6s ease;z-index:4;pointer-events:none}
+.obj-pageflip .pf-turn.pf-instant{transition:none}
+.obj-pageflip .pf-turn .pf-face{position:absolute;inset:0;overflow:hidden;background:#fff;backface-visibility:hidden;box-shadow:0 0 24px -6px rgba(0,0,0,.45)}
+.obj-pageflip .pf-turn .pf-face img{width:100%;height:100%;object-fit:var(--pffit,contain);background:#fff}
+.obj-pageflip .pf-turn .pf-back{transform:rotateY(180deg)}
+.obj-pageflip .pf-nav{display:flex;gap:10px;align-items:center;justify-content:center;padding:8px 0 2px;flex:0 0 auto}
+.obj-pageflip .pf-btn{font:inherit;cursor:pointer;border:0;border-radius:6px;background:var(--pfacc,#2a7d6b);color:#fff;font-weight:700;width:34px;height:30px;line-height:1;opacity:.95}
+.obj-pageflip .pf-btn:hover{filter:brightness(1.08)}
+.obj-pageflip .pf-btn:disabled{opacity:.35;cursor:default}
+.obj-pageflip .pf-count{color:#dfe4e7;font:13px/1 Arial,sans-serif;min-width:4em;text-align:center}
+.obj-pageflip .pf-empty{color:#dfe4e7;font:14px/1.4 Arial,sans-serif;text-align:center;padding:1em}
+@media(prefers-reduced-motion:reduce){.obj-pageflip .pf-turn{transition:none}}
 /* PayPal buy / donate button — PayPal's own hosted-button form, posted to paypal.com. */
 .obj-paypal{display:flex;align-items:center;justify-content:center}
 .obj-paypal .pp-btn{display:inline-flex;align-items:center;gap:7px;cursor:pointer;border:0;border-radius:6px;
@@ -3232,6 +3302,75 @@ def obj_html(o, site, page, img):
                   'window.scrollTo({top:0,behavior:rm?"auto":"smooth"})})})();</script>')
         return (f'<div class="obj obj-backtotop bt-{pos}" style="{st}"{anim_attr(o)}>'
                 f'<button type="button" class="bt-btn" aria-label="Back to top">{arrow}</button>{script}</div>')
+    elif t == 'pageflip':
+        # A flip-book / page-turning viewer. All pages are in the markup as plain <img> (so a
+        # no-JS visitor and search engines see every page); a scoped script shows the current
+        # leaf and animates a CSS-3D rotateY turn around the spine. Single or double spread,
+        # optional auto-play. Fully self-contained — no library, no external references.
+        st += box_css(o) + 'overflow:hidden;position:absolute;'
+        st += (f"--pffill:{o.get('fill', '#2b2b2b')};--pfacc:{o.get('accent', '#2a7d6b')};"
+               f"--pffit:{ {'cover': 'cover', 'contain': 'contain', 'stretch': 'fill'}.get(o.get('fit', 'contain'), 'contain') };")
+        pages = [k for k in (o.get('pages') or []) if k in site.get('assets', {})]
+        double = o.get('spread', 'double') == 'double'
+        cls = 'obj-pageflip' + (' pf-double' if double else ' pf-single')
+        if not pages:
+            return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>'
+                    f'<span class="pf-empty">Page flip — add the book pages</span></div>')
+        srcs = [img(k) for k in pages]
+        data = json.dumps(srcs, ensure_ascii=False)
+        per = 2 if double else 1          # pages shown per spread
+        auto = int(max(1.0, float(o.get('speed', 5.0)) or 5.0) * 1000) if o.get('auto') else 0
+        # Hidden source list (all pages, real content for no-JS + crawlers). The script lifts
+        # these into the live leaf/turn layers.
+        hidden = ''.join(f'<img class="pf-src" src="{esc(s)}" alt="Page {i + 1}" hidden>' for i, s in enumerate(srcs))
+        stage = ('<div class="pf-stage"><div class="pf-leaf">'
+                 + ('<div class="pf-half pf-left"></div><div class="pf-half pf-right"></div>' if double
+                    else '<div class="pf-half pf-right"></div>')
+                 + ('<div class="pf-spine"></div>' if double else '')
+                 + '<div class="pf-turn" aria-hidden="true"><div class="pf-face pf-front"><img alt=""></div>'
+                   '<div class="pf-face pf-back"><img alt=""></div></div>'
+                 + '</div>')
+        nav = ('<div class="pf-nav">'
+               '<button type="button" class="pf-prev pf-btn" aria-label="Previous page">&#8249;</button>'
+               '<span class="pf-count" aria-live="polite"></span>'
+               '<button type="button" class="pf-next pf-btn" aria-label="Next page">&#8250;</button></div>')
+        script = ('<script>(function(){var r=document.currentScript.parentNode;if(!r)return;'
+                  f'var P={data},PER={per},AUTO={auto},DBL={1 if double else 0},'
+                  'leaf=r.querySelector(".pf-leaf"),L=r.querySelector(".pf-left"),Rh=r.querySelector(".pf-right"),'
+                  'turn=r.querySelector(".pf-turn"),tf=turn.querySelector(".pf-front img"),tb=turn.querySelector(".pf-back img"),'
+                  'prev=r.querySelector(".pf-prev"),next=r.querySelector(".pf-next"),cnt=r.querySelector(".pf-count"),'
+                  'n=P.length,spreads=Math.ceil(n/PER),s=0,busy=false,timer=null;'
+                  'function pg(i){return (i>=0&&i<n)?P[i]:""}'
+                  'function setImg(el,src){if(src){el.src=src;el.parentNode.style.visibility="visible"}else{el.removeAttribute("src");el.parentNode.style.visibility="hidden"}}'
+                  'function render(){var base=s*PER;if(DBL){setImg(L.firstChild||L.appendChild(new Image()),pg(base));'
+                  'setImg(Rh.firstChild||Rh.appendChild(new Image()),pg(base+1))}'
+                  'else{setImg(Rh.firstChild||Rh.appendChild(new Image()),pg(base))}'
+                  'prev.disabled=(s<=0);next.disabled=(s>=spreads-1);'
+                  'cnt.textContent=DBL?((base+1)+(n>base+1?("-"+(base+2)):"")+" / "+n):((base+1)+" / "+n)}'
+                  'function sizeTurn(){var h=leaf.clientHeight,halfw=leaf.clientWidth/(DBL?2:1);'
+                  'turn.style.height=h+"px";turn.style.width=halfw+"px"}'
+                  'var rm=window.matchMedia&&window.matchMedia("(prefers-reduced-motion:reduce)").matches;'
+                  'function go(dir){if(busy)return;var ns=s+dir;if(ns<0||ns>=spreads)return;busy=true;sizeTurn();'
+                  'var halfw=leaf.clientWidth/(DBL?2:1);'
+                  'if(dir>0){turn.style.left=(DBL?halfw:0)+"px";turn.style.transformOrigin="left center";'
+                  'setImg(tf,pg(s*PER+(DBL?1:0)));setImg(tb,pg(ns*PER));}'
+                  'else{turn.style.left="0px";turn.style.transformOrigin="right center";'
+                  'setImg(tf,pg(s*PER));setImg(tb,pg(ns*PER+(DBL?1:0)));}'
+                  'turn.style.display="block";turn.classList.add("pf-instant");'
+                  'turn.style.transform="rotateY(0deg)";void turn.offsetWidth;turn.classList.remove("pf-instant");'
+                  'if(rm){finish()}else{turn.style.transform="rotateY("+(dir>0?-180:180)+"deg)";'
+                  'var done=false;function finish2(){if(done)return;done=true;finish()}'
+                  'turn.addEventListener("transitionend",finish2,{once:true});setTimeout(finish2,700)}'
+                  'function finish(){s=ns;turn.style.display="none";turn.style.transform="rotateY(0deg)";render();busy=false}}'
+                  'prev.addEventListener("click",function(){stop();go(-1)});'
+                  'next.addEventListener("click",function(){stop();go(1)});'
+                  'r.addEventListener("keydown",function(e){if(e.key==="ArrowLeft"){stop();go(-1)}else if(e.key==="ArrowRight"){stop();go(1)}});'
+                  'r.tabIndex=0;'
+                  'function start(){if(AUTO&&!rm&&spreads>1){timer=setInterval(function(){if(s>=spreads-1){s=-1;render();}go(1)},AUTO)}}'
+                  'function stop(){if(timer){clearInterval(timer);timer=null}}'
+                  'window.addEventListener("resize",sizeTurn);sizeTurn();render();start()})();</script>')
+        return (f'<div class="obj {cls}" style="{st}"{anim_attr(o)}>'
+                f'<div class="pf-book">{stage}{hidden}</div>{nav}{script}</div>')
     return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}{anim_attr(o)}>{inner}</{tag}>'
 
 def _page_text(page):
@@ -5384,6 +5523,7 @@ TOOLS = [
     ('bgvideo', 'Background Video', ['applications-multimedia', 'video-x-generic', 'media-playback-start'], '🎬', 'Drag to place a muted, looping background video with an overlay tint and a heading/caption/button on top. Choose a video file or link, plus a poster image.'),
     ('popupform', 'Popup Form', ['view-form', 'mail-message-new', 'document-edit'], '✉', 'Drag to place a button that opens a contact form in a pop-up dialog. It uses the same submission options as the Form object (Netlify / Formspree / email).'),
     ('backtotop', 'Back to Top', ['go-top', 'go-up', 'arrow-up'], '⤒', 'Drag to place a floating “back to top” button that appears after the visitor scrolls down and glides back to the top. (You can also switch one on site-wide when you publish.)'),
+    ('pageflip', 'Page Flip', ['book', 'x-office-address-book', 'view-pages-facing', 'view-presentation'], '📖', 'Drag to place a flip-book / page-turning viewer. Add an ordered set of page images (a magazine, brochure or booklet); visitors turn the pages with a 3D page-curl. Choose single pages or a two-page spread, and optional auto-play.'),
 ]
 
 class LinelessTree(QTreeWidget):
@@ -8028,6 +8168,7 @@ class MainWindow(QMainWindow):
         elif kind == 'bgvideo': self.bgvideo_dialog(o)
         elif kind == 'popupform': self.popupform_dialog(o)
         elif kind == 'backtotop': self.backtotop_dialog(o)
+        elif kind == 'pageflip': self.pageflip_dialog(o)
 
     def launch_app(self, cmd, label):
         """Launch a sibling 'just a...' app, or explain how to install it."""
@@ -8245,6 +8386,7 @@ class MainWindow(QMainWindow):
         elif t == 'bgvideo': self.bgvideo_dialog(o)
         elif t == 'popupform': self.popupform_dialog(o)
         elif t == 'backtotop': self.backtotop_dialog(o)
+        elif t == 'pageflip': self.pageflip_dialog(o)
 
     def start_edit(self, o, select_all=False):
         it = self.items.get(o['id'])
@@ -9508,6 +9650,52 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self.commit()
             o['frames'] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
+            o['auto'] = auto.isChecked(); o['speed'] = sp.value()
+            self.refresh()
+
+    def pageflip_dialog(self, o):
+        from PySide6.QtWidgets import QCheckBox, QComboBox, QDoubleSpinBox
+        pages = list(o.get('pages') or [])
+        dlg = QDialog(self); dlg.setWindowTitle('Page Flip'); dlg.resize(560, 500); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('Add the book / magazine pages in reading order. Visitors turn them with a '
+                             '3D page-curl; every page is also in the published markup, so search engines '
+                             'see them. Published fully self-contained — no library, no external links.'))
+        lst = QListWidget(); lst.setIconSize(QSize(60, 80)); lst.setDragDropMode(QAbstractItemView.InternalMove); lay.addWidget(lst)
+        def add_item(key):
+            pm = pixmap_for(self.site, key)
+            it = QListWidgetItem(QIcon(pm.scaled(60, 80, Qt.KeepAspectRatio, Qt.SmoothTransformation)) if pm else QIcon(),
+                                 self.site.get('assetnames', {}).get(key, 'Page'))
+            it.setData(Qt.UserRole, key); lst.addItem(it)
+        for k in pages: add_item(k)
+        row = QHBoxLayout(); lay.addLayout(row)
+        def add():
+            paths, _ = QFileDialog.getOpenFileNames(dlg, 'Add pages', os.path.expanduser('~/Pictures'),
+                                                    'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
+            for pth in paths:
+                uri = self.picture_uri(pth)
+                if uri:
+                    key = add_asset(self.site, uri); self.site.setdefault('assetnames', {})[key] = os.path.basename(pth); add_item(key)
+        def remove():
+            for it in lst.selectedItems(): lst.takeItem(lst.row(it))
+        for text, icon, fn in (('Add Pages…', 'list-add', add), ('Remove', 'list-remove', remove)):
+            b = QPushButton(ticon([icon], ''), text); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        opt = QFormLayout(); lay.addLayout(opt)
+        spread = QComboBox(); spread.addItem('Two-page spread (book)', 'double'); spread.addItem('Single page', 'single')
+        spread.setCurrentIndex(0 if o.get('spread', 'double') == 'double' else 1)
+        fit = QComboBox()
+        for lbl_, val in (('Fit whole page (contain)', 'contain'), ('Fill the frame (cover)', 'cover'), ('Stretch', 'stretch')):
+            fit.addItem(lbl_, val)
+        fit.setCurrentIndex(['contain', 'cover', 'stretch'].index(o.get('fit', 'contain')) if o.get('fit', 'contain') in ('contain', 'cover', 'stretch') else 0)
+        auto = QCheckBox('Turn pages automatically'); auto.setChecked(bool(o.get('auto')))
+        sp = QDoubleSpinBox(); sp.setRange(1.0, 30.0); sp.setSingleStep(0.5); sp.setSuffix(' s/turn'); sp.setValue(float(o.get('speed', 5.0)))
+        opt.addRow('Layout:', spread); opt.addRow('Page sizing:', fit); opt.addRow('', auto); opt.addRow('Auto-turn speed:', sp)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if lst.count() == 0: QTimer.singleShot(0, add)
+        if dlg.exec():
+            self.commit()
+            o['pages'] = [lst.item(i).data(Qt.UserRole) for i in range(lst.count())]
+            o['spread'] = spread.currentData(); o['fit'] = fit.currentData()
             o['auto'] = auto.isChecked(); o['speed'] = sp.value()
             self.refresh()
 

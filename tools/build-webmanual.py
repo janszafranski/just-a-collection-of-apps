@@ -440,6 +440,9 @@ def capture(full=True):
         drive(w2.popupform_dialog, seed(mk("popupform", 60, 60, 200, 48)))
     if hasattr(w2, "backtotop_dialog"):
         drive(w2.backtotop_dialog, seed(mk("backtotop", 60, 60, 52, 52)))
+    if hasattr(w2, "pageflip_dialog"):
+        # seed a page so the editor opens without the 0ms "Add pages" file dialog.
+        drive(w2.pageflip_dialog, seed(mk("pageflip", 60, 60, 560, 360, pages=["_placeholder"])))
     if hasattr(w2, "anim_dialog"):
         seed(mk("text", 60, 60, 300, 120))   # anim_dialog acts on the current selection
         drive(w2.anim_dialog)
@@ -1186,7 +1189,8 @@ on the page, then double-click it to open its editor.</p>
 <li><b>360° Viewer</b> &mdash; drag to rotate a product through a set of frames;</li>
 <li><b>Background Video</b> &mdash; a looping video behind your content;</li>
 <li><b>Popup Form</b> &mdash; a button that opens a contact form in a dialog;</li>
-<li><b>Back to Top</b> &mdash; a floating button that glides the page to the top.</li>
+<li><b>Back to Top</b> &mdash; a floating button that glides the page to the top;</li>
+<li><b>Page Flip</b> &mdash; a flip-book that turns pages with a 3D page-curl.</li>
 </ul>
 {note('Snow, a custom scrollbar and a site-wide “back to top” button are <i>site-level</i> options — you switch them on in the Publish dialog (see Part VI), not by dropping an object.')}"""),
       ("Text rotator", f"""
@@ -1258,7 +1262,21 @@ scrolls down, and glides the page back to the top.</p>
   'Choose the <b>Back to Top</b> tool and drop it anywhere (its position is fixed on screen, not on the page).',
   'Choose the <b>corner</b>, how far down it <b>appears</b>, an optional label and its colours, then click <b>OK</b>.')}
 {fig(dlg('Back to Top'), 'The Back to Top editor: the corner, the scroll distance before it appears, and the button colours.')}
-{note('Prefer one button for the whole site? Leave the object out and switch on the site-wide version in the Publish dialog instead — along with the snow effect and a custom scrollbar.')}""")]))
+{note('Prefer one button for the whole site? Leave the object out and switch on the site-wide version in the Publish dialog instead — along with the snow effect and a custom scrollbar.')}"""),
+      ("Page Flip (flip-book)", f"""
+<p>A <b>Page Flip</b> turns a set of images into a <b>flip-book</b> &mdash; a magazine, brochure or booklet that
+visitors leaf through with a <b>3D page-curl</b>. You can show one page at a time or a <b>two-page spread</b> like
+a real book, and let it <b>turn its own pages</b> for a hands-off display. The page-turn is drawn with
+WEBcreator&rsquo;s own CSS 3D transforms and a few lines of vanilla JavaScript &mdash; there is no library and no
+external reference, so it works offline like every other add-on.</p>
+{proc('build a flip-book',
+  'Choose the <b>Page Flip</b> tool and drag out a landscape frame (wide enough for two pages if you want a spread).',
+  'Click <b>Add Pages…</b> and choose the page images <i>in reading order</i>. Drag to reorder them in the list.',
+  'Pick the <b>layout</b> &mdash; a two-page spread or single pages &mdash; and how each page is <b>sized</b> in the frame.',
+  'Optionally switch on <b>turn pages automatically</b> and set its speed, then click <b>OK</b>.')}
+{fig(dlg('Page Flip'), 'The Page Flip editor: the ordered list of pages on the left, with the spread / single-page layout, the page sizing and the auto-turn options below.')}
+{tip('Export the pages of a PDF booklet as images (one per page) at a consistent size, then add them in order. For a true book feel, the first page sits on the right on its own, like a cover.')}
+{note('Every page is also written into the published markup as a plain image, so search engines and visitors without JavaScript still see the whole booklet; the page-curl is layered on top when scripting is available, and switches off for visitors who ask for reduced motion.')}""")]))
 
     ch.append(("Pages, Masters and Site Structure",
       "<p class='lede'>A website is a set of linked pages that share a look. This chapter covers adding and "
@@ -1923,7 +1941,8 @@ def build_index(numbered):
              "site index", "sitemap", "SEO", "responsive", "device preview", "publish", "Netlify",
              "GitHub Pages", "spell check", "check links", "gradient", "transparency", "swatch",
              "colour scheme", "QuickShape", "drop shadow", "outer glow", "crop", "picture frame",
-             "artistic text", "text frame", "table", "template", "Startup Assistant", "import"]
+             "artistic text", "text frame", "table", "template", "Startup Assistant", "import",
+             "page flip", "flip-book", "360", "image zoom", "accordion", "skills chart", "back to top"]
     for t in TERMS:
         for (n, anchor, plain) in secs:
             if _re.search(r"\b" + _re.escape(t) + r"\b", plain, _re.I):
