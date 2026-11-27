@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.28-00"
+VERSION = "1.29-00"
 
 
 def _just_dir(kind):
@@ -7224,7 +7224,9 @@ class MainWindow(QMainWindow):
                # dock tab bar overflows). We draw our own ◀ / ▶ TriangleButtons instead — one
                # before the first tab and one after the last — matching the left Assets bar.
                # (Those are QAbstractButtons, not QToolButtons, so this rule doesn't touch them.)
-               'QTabBar QToolButton{width:0px;height:0px;border:none;margin:0;padding:0;}')
+               'QTabBar QToolButton{width:0px;height:0px;border:none;margin:0;padding:0;}'
+               # the real lever: collapse the SCROLLER (the strip holding Qt's < > buttons) to 0.
+               'QTabBar::scroller{width:0px;}')
         docks = self.findChildren(QDockWidget)
         for tb in self.findChildren(QTabBar):
             tb.setStyleSheet(css)
