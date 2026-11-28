@@ -23,7 +23,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.22-00"
+VERSION = "1.23-00"
 
 
 # ===================================================================== font grouping
@@ -330,6 +330,62 @@ def pil2q(pil):
         pil = pil.convert('RGBA')
     data = pil.tobytes('raw', 'RGBA')
     return QImage(data, pil.width, pil.height, QImage.Format_RGBA8888).convertToFormat(QImage.Format_ARGB32).copy()
+
+
+def build_transform(bbox, sx, sy, angle, skew, anchor=None):
+    """Pure matrix helper for Free Transform. `bbox` is the content rect
+    (x, y, w, h) in image coords; `sx`/`sy` are scale factors, `angle` degrees,
+    `skew` = (kx, ky) horizontal/vertical shear factors. Transform order is
+    translate(anchor) -> rotate -> scale -> skew -> translate(-anchor), so the
+    box pivots about `anchor` (default = bbox centre). Returns a QTransform that
+    maps ORIGINAL image coords to transformed image coords."""
+    x, y, w, h = bbox
+    if anchor is None:
+        anchor = (x + w / 2.0, y + h / 2.0)
+    ax, ay = anchor
+    kx, ky = (skew if skew is not None else (0.0, 0.0))
+    t = QTransform()
+    t.translate(ax, ay)
+    t.rotate(angle)
+    t.scale(sx, sy)
+    t.shear(kx, ky)
+    t.translate(-ax, -ay)
+    return t
+
+
+def apply_transform(qimg, transform, out_size=None):
+    """Render `qimg` (a QImage) through `transform` into a new ARGB32 QImage.
+    If `out_size` (w, h) is given the result is that size with the transform
+    applied in image coords; otherwise Qt sizes the result to the transformed
+    bounds (and the mapping origin shifts — use mapRect to locate content)."""
+    src = qimg.convertToFormat(QImage.Format_ARGB32)
+    if out_size is None:
+        return src.transformed(transform, Qt.SmoothTransformation)
+    w, h = out_size
+    out = QImage(int(w), int(h), QImage.Format_ARGB32); out.fill(Qt.transparent)
+    p = QPainter(out)
+    p.setRenderHint(QPainter.SmoothPixmapTransform, True)
+    p.setRenderHint(QPainter.Antialiasing, True)
+    p.setTransform(transform)
+    p.drawImage(0, 0, src)
+    p.end()
+    return out
+
+
+def alpha_bbox(rgba, threshold=0):
+    """Bounding box of pixels whose alpha is > `threshold` in an HxWx4 uint8
+    array. Returns (x, y, w, h) or None if nothing passes the threshold."""
+    import numpy as np
+    if rgba is None or rgba.ndim != 3 or rgba.shape[2] < 4:
+        return None
+    mask = rgba[..., 3] > threshold
+    rows = np.where(mask.any(axis=1))[0]
+    cols = np.where(mask.any(axis=0))[0]
+    if rows.size == 0 or cols.size == 0:
+        return None
+    y0, y1 = int(rows[0]), int(rows[-1])
+    x0, x1 = int(cols[0]), int(cols[-1])
+    return (x0, y0, x1 - x0 + 1, y1 - y0 + 1)
 
 
 def _merge_a(src, rgb):
@@ -2444,6 +2500,10 @@ class Canvas(QWidget):
         self.clone_src = None          # clone-tool source anchor (Ctrl-click)
         self.clone_off = None          # clone offset once a stroke begins
         self.clone_base = None         # snapshot of the layer cloned FROM
+        # --- Free Transform (tool 'transform') live state. When active, tf holds
+        # a dict: base (cached original QImage of the active layer), bbox (content
+        # rect x,y,w,h), sx/sy scale, angle deg, skew (kx,ky), plus drag bookkeeping.
+        self.tf = None
         self.undo, self.redo = [], []
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
@@ -2466,8 +2526,9 @@ class Canvas(QWidget):
         """Flatten all visible layers to one QImage (for display and export)."""
         base = QImage(self.doc_w(), self.doc_h(), QImage.Format_ARGB32); base.fill(Qt.transparent)
         p = QPainter(base)
-        for l in self.layers:
+        for i, l in enumerate(self.layers):
             if not l.visible or l.opacity <= 0: continue
+            if self.tf is not None and i == self.active: continue   # hidden; shown transformed in paintEvent
             if HAS_PIL and l.blend in NP_BLENDS:
                 # NumPy blend: hand the accumulator + this layer to composite_np, then
                 # resume drawing onto the result. Qt-native modes keep the fast path.
@@ -2754,6 +2815,26 @@ class Canvas(QWidget):
             sov = self._sm_overlay()
             if sov is not None:
                 p.drawImage(r, sov, QRectF(0, 0, sov.width(), sov.height()))
+        if self.tool == 'transform' and self.tf is not None:
+            # live preview of the transformed active layer, then box + handles
+            prev = apply_transform(self.tf['base'], self.tf_matrix(),
+                                   (self.doc_w(), self.doc_h()))
+            p.drawImage(QRectF(0, 0, prev.width() * self.zoom, prev.height() * self.zoom),
+                        prev, QRectF(0, 0, prev.width(), prev.height()))
+            hs = self._tf_handles()
+            box = QPolygonF([hs['tl'] * self.zoom, hs['tr'] * self.zoom,
+                             hs['br'] * self.zoom, hs['bl'] * self.zoom])
+            pen = QPen(QColor('#2b9ff5'), 1); pen.setCosmetic(True)
+            p.setPen(pen); p.setBrush(Qt.NoBrush); p.drawPolygon(box)
+            # rotate stalk + handle
+            p.drawLine(hs['t'] * self.zoom, hs['rot'] * self.zoom)
+            p.setBrush(QColor('#ffffff'))
+            for name, pt in hs.items():
+                c = pt * self.zoom
+                if name == 'rot':
+                    p.drawEllipse(c, 4, 4)
+                else:
+                    p.drawRect(QRectF(c.x() - 3.5, c.y() - 3.5, 7, 7))
         p.end()
 
     def _mask_overlay(self):
@@ -2791,6 +2872,10 @@ class Canvas(QWidget):
             mode = 'remove' if e.button() == Qt.RightButton else self.sm_mode
             self._sm_active = mode
             self.last = pos; self._sm_paint(pos, pos, mode); return
+        if self.tool == 'transform':
+            if e.button() != Qt.LeftButton: return
+            if self.tf is None: self.tf_begin()
+            self._tf_press(self.img_pos(e), e.modifiers()); return
         if e.button() != Qt.LeftButton: return
         pos = self.img_pos(e)
         if self.tool == 'picker':
@@ -2851,6 +2936,10 @@ class Canvas(QWidget):
     def mouseMoveEvent(self, e):
         pos = self.img_pos(e)
         self.win.set_pos(pos)
+        if self.tool == 'transform':
+            if (e.buttons() & Qt.LeftButton) and self.tf is not None:
+                self._tf_drag(pos, e.modifiers())
+            return
         if self.tool == 'smartmask':
             if (e.buttons() & (Qt.LeftButton | Qt.RightButton)) and self.last is not None:
                 self._sm_paint(self.last, pos, getattr(self, '_sm_active', self.sm_mode))
@@ -2869,6 +2958,9 @@ class Canvas(QWidget):
             self.sel_drag = (self.start, pos); self.update()
 
     def mouseReleaseEvent(self, e):
+        if self.tool == 'transform':
+            if self.tf is not None: self.tf['grab'] = None
+            return
         if self.tool == 'smartmask':
             self.last = None; return
         if e.button() != Qt.LeftButton: return
@@ -2911,8 +3003,15 @@ class Canvas(QWidget):
     def mouseDoubleClickEvent(self, e):
         if self.tool == 'polyselect' and self.poly_pts:
             self._close_poly()
+        elif self.tool == 'transform' and self.tf is not None:
+            self.tf_commit()
 
     def keyPressEvent(self, e):
+        if self.tool == 'transform' and self.tf is not None:
+            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self.tf_commit(); return
+            if e.key() == Qt.Key_Escape:
+                self.tf_cancel(); return
         if self.tool == 'polyselect' and self.poly_pts:
             if e.key() in (Qt.Key_Return, Qt.Key_Enter):
                 self._close_poly(); return
@@ -2926,6 +3025,121 @@ class Canvas(QWidget):
         if len(pts) >= 3:
             self._pts_to_sel(pts)
         self.poly_pts = None; self.poly_cur = None; self.update()
+
+    # ---- Free Transform (tool 'transform') ----
+    def tf_begin(self):
+        """Enter Free Transform on the active layer: cache the original image and
+        its content bbox, reset the transform to identity. No-op if already live."""
+        if self.tf is not None: return
+        base = self.img.copy()
+        bbox = None
+        if HAS_PIL:
+            try:
+                bbox = alpha_bbox(_np.asarray(q2pil(base)))
+            except Exception:
+                bbox = None
+        if not bbox:
+            bbox = (0, 0, base.width(), base.height())
+        cx = bbox[0] + bbox[2] / 2.0; cy = bbox[1] + bbox[3] / 2.0
+        self.tf = {'base': base, 'bbox': bbox, 'sx': 1.0, 'sy': 1.0,
+                   'angle': 0.0, 'skew': (0.0, 0.0), 'anchor': (cx, cy),
+                   'grab': None, 'start': None, 'p0': None}
+        self.update()
+
+    def tf_matrix(self):
+        if self.tf is None: return QTransform()
+        t = self.tf
+        return build_transform(t['bbox'], t['sx'], t['sy'], t['angle'], t['skew'], t['anchor'])
+
+    def _tf_handles(self):
+        """Screen-space (image-coord) positions of the 8 scale handles + rotate
+        handle after the current matrix. Returns dict name -> QPointF. Corners:
+        tl,tr,br,bl; edges: t,r,b,l; plus 'rot' above the top edge midpoint."""
+        if self.tf is None: return {}
+        x, y, w, h = self.tf['bbox']
+        m = self.tf_matrix()
+        pts = {'tl': (x, y), 'tr': (x + w, y), 'br': (x + w, y + h), 'bl': (x, y + h),
+               't': (x + w / 2, y), 'r': (x + w, y + h / 2),
+               'b': (x + w / 2, y + h), 'l': (x, y + h / 2)}
+        out = {k: m.map(QPointF(px, py)) for k, (px, py) in pts.items()}
+        # rotate handle: 26px (image coords) above the top-edge midpoint, along the
+        # box's local up direction so it tracks rotation.
+        up = m.map(QPointF(x + w / 2, y)) - m.map(QPointF(x + w / 2, y + h / 2))
+        ln = math.hypot(up.x(), up.y()) or 1.0
+        out['rot'] = out['t'] + QPointF(up.x() / ln, up.y() / ln) * (26.0 / self.zoom)
+        return out
+
+    def tf_hit(self, pos):
+        """Which handle (name) is under `pos` (image coords), or None."""
+        tol = max(6.0, 9.0 / self.zoom)
+        for name, pt in self._tf_handles().items():
+            if math.hypot(pt.x() - pos.x(), pt.y() - pos.y()) <= tol:
+                return name
+        return None
+
+    def _tf_press(self, pos, mods):
+        grab = self.tf_hit(pos)
+        self.tf['grab'] = grab
+        self.tf['p0'] = QPointF(pos)
+        self.tf['start'] = dict(sx=self.tf['sx'], sy=self.tf['sy'],
+                                angle=self.tf['angle'], skew=self.tf['skew'])
+        # remember the pointer's angle/offset from the anchor for rotate/skew math
+        ax, ay = self.tf['anchor']
+        self.tf['a0'] = math.degrees(math.atan2(pos.y() - ay, pos.x() - ax))
+
+    def _tf_drag(self, pos, mods):
+        t = self.tf
+        if t['grab'] is None or t['start'] is None: return
+        x, y, w, h = t['bbox']; ax, ay = t['anchor']
+        g = t['grab']; st = t['start']
+        if g == 'rot':
+            a1 = math.degrees(math.atan2(pos.y() - ay, pos.x() - ax))
+            t['angle'] = st['angle'] + (a1 - t['a0'])
+            if mods & Qt.ShiftModifier:                      # snap to 15°
+                t['angle'] = round(t['angle'] / 15.0) * 15.0
+        elif (mods & Qt.ControlModifier) and g in ('t', 'b', 'l', 'r'):
+            # skew: drag an edge handle sideways with Ctrl held
+            if g in ('l', 'r'):
+                t['skew'] = (st['skew'][0], (pos.y() - t['p0'].y()) / max(1.0, w) + st['skew'][1])
+            else:
+                t['skew'] = ((pos.x() - t['p0'].x()) / max(1.0, h) + st['skew'][0], st['skew'][1])
+        else:
+            # scale about the anchor (box centre). Compare pointer distance to the
+            # grabbed handle's original distance along each axis.
+            hx = w / 2.0 or 1.0; hy = h / 2.0 or 1.0
+            dx = (pos.x() - ax); dy = (pos.y() - ay)
+            # NOTE: anchor is centre so a handle sits hx/hy from it at identity.
+            new_sx, new_sy = st['sx'], st['sy']
+            if g in ('tl', 'tr', 'br', 'bl', 'l', 'r'):
+                new_sx = dx / hx * (1 if g in ('tr', 'br', 'r') else -1)
+            if g in ('tl', 'tr', 'br', 'bl', 't', 'b'):
+                new_sy = dy / hy * (1 if g in ('bl', 'br', 'b') else -1)
+            if g in ('tl', 'tr', 'br', 'bl') and (mods & Qt.ShiftModifier):
+                s = max(abs(new_sx), abs(new_sy))            # keep aspect
+                new_sx = math.copysign(s, new_sx); new_sy = math.copysign(s, new_sy)
+            t['sx'], t['sy'] = new_sx, new_sy
+        self.update()
+
+    def tf_commit(self):
+        """Bake the live transform into the active layer (doc-sized output), push
+        undo. The layer stays doc-sized; content transformed past the canvas edge
+        is clipped (matches crop/canvas semantics). No-op if identity / inactive."""
+        if self.tf is None: return
+        t = self.tf
+        identity = (abs(t['sx'] - 1) < 1e-6 and abs(t['sy'] - 1) < 1e-6
+                    and abs(t['angle']) < 1e-6 and abs(t['skew'][0]) < 1e-6
+                    and abs(t['skew'][1]) < 1e-6)
+        if not identity:
+            self.snapshot()
+            out = apply_transform(t['base'], self.tf_matrix(),
+                                  (self.doc_w(), self.doc_h()))
+            self.img = out
+        self.tf = None
+        self.update(); self.win.refresh_layers()
+
+    def tf_cancel(self):
+        if self.tf is None: return
+        self.tf = None; self.update()
 
     def _grad_brush(self, a, b):
         """A QLinearGradient for the gradient tool: start colour at the drag start,
@@ -3290,6 +3504,25 @@ class Canvas(QWidget):
             r = QRect(int(xs.min()), int(ys.min()),
                       int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1))
             self._map_layers(lambda im: im.copy(r))
+
+    def trim_transparent(self, padding=0, threshold=0):
+        """Photo Trimming: crop the whole document to the bounding box of the
+        non-transparent pixels in the COMPOSITED image (+ optional padding),
+        clamped to the canvas. Returns (x,y,w,h) of the crop, or None if the
+        image is fully opaque / fully transparent (nothing to trim). Reuses the
+        _map_layers crop machinery so every layer and the doc shrink together."""
+        if not HAS_PIL: return None
+        bbox = alpha_bbox(_np.asarray(q2pil(self.composited())), threshold)
+        if bbox is None: return None
+        x, y, w, h = bbox
+        pad = max(0, int(padding))
+        x0 = max(0, x - pad); y0 = max(0, y - pad)
+        x1 = min(self.doc_w(), x + w + pad); y1 = min(self.doc_h(), y + h + pad)
+        if x0 == 0 and y0 == 0 and x1 == self.doc_w() and y1 == self.doc_h():
+            return None                                   # nothing to trim (fully opaque)
+        r = QRect(x0, y0, x1 - x0, y1 - y0)
+        self._map_layers(lambda im: im.copy(r))
+        return (x0, y0, r.width(), r.height())
 
     def resize_image(self, w, h):
         self._map_layers(lambda im: im.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation).convertToFormat(QImage.Format_ARGB32))
@@ -5231,6 +5464,7 @@ class Main(QMainWindow):
              ('sponge', 'Sponge — saturate / desaturate locally', '🧽'),
              ('oil', 'Oil brush — wet paint that blends (natural media)', '🎨'),
              ('smudge', 'Smudge / palette knife — drag and mix paint', '👆'),
+             ('transform', 'Free Transform — scale / rotate (Shift=aspect) / skew (Ctrl+edge); Enter or double-click to apply, Esc to cancel', '⤡'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
              ('lasso', 'Lasso — drag a freehand selection', '➰'),
              ('polyselect', 'Polygon select — click vertices, double-click / Enter to close', '△'),
@@ -5460,6 +5694,7 @@ class Main(QMainWindow):
         img.addAction(self.act('&Enlarge (smart upscale)…', self.dlg_enlarge))
         img.addAction(self.act('&Canvas Size…', self.canvas_size))
         img.addAction(self.act('Crop to &Selection', lambda: self.canvas.crop_to_sel()))
+        img.addAction(self.act('&Trim Transparent Border…', self.trim_photo))
         img.addAction(self.act('&Straighten…', self.dlg_straighten))
         img.addSeparator()
         img.addAction(self.act('Rotate 90° &Right', lambda: self.canvas.rotate(90)))
@@ -5664,6 +5899,8 @@ class Main(QMainWindow):
 
     # ---- state ----
     def set_tool(self, t):
+        if t != 'transform' and self.canvas.tf is not None:   # bake pending Free Transform
+            self.canvas.tf_commit()
         if t != 'polyselect':                         # abandon any half-built polygon
             self.canvas.poly_pts = None; self.canvas.poly_cur = None
         if t != 'lasso':
@@ -5687,6 +5924,8 @@ class Main(QMainWindow):
         if hasattr(self, 'sponge_mode_cb'):
             for wdg in (self.sponge_lbl, self.sponge_mode_cb, self.sponge_flow_spin):
                 wdg.setVisible(t == 'sponge')
+        if t == 'transform':
+            self.canvas.setFocus(); self.canvas.tf_begin()
     def set_pos(self, p): self.pos_lbl.setText(f'{p.x()}, {p.y()}   ')
 
     def _pick_fill_color(self):
@@ -5915,6 +6154,20 @@ class Main(QMainWindow):
         if not ok: return
         nh, ok = QInputDialog.getInt(self, 'Canvas Size', 'Canvas height (px):', h, 1, 20000)
         if ok: self.canvas.set_canvas_size(nw, nh)
+
+    def trim_photo(self):
+        """Image ▸ Trim Transparent Border — auto-crop the transparent margin."""
+        if not self._need_pil(): return
+        pad, ok = QInputDialog.getInt(self, 'Trim Transparent Border',
+                                      'Padding to keep around content (px):', 0, 0, 2000)
+        if not ok: return
+        res = self.canvas.trim_transparent(pad)
+        if res is None:
+            QMessageBox.information(self, APP,
+                'There is no transparent border to trim — the image is fully opaque.')
+        else:
+            x, y, w, h = res
+            self.status.showMessage(f'Trimmed to {w}×{h} px.', 4000)
 
     def update_title(self):
         self.setWindowTitle(f'{os.path.basename(self.path) if self.path else "Untitled"} — {APP}')
