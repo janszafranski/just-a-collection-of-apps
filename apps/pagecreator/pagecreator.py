@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.42-00"
+VERSION = "1.43-00"
 
 
 def _just_dir(kind):
@@ -1246,6 +1246,38 @@ PIC_ADJUST = [
     ('Blur', lambda p: p.filter(_PILFilt.GaussianBlur(2))),
 ]
 
+# ---- PhotoLab: live multi-slider image correction (PagePlus "Adjusting and
+# Correcting Images"). Pure function so it can be unit-tested headless. params are
+# percentages centred on 0: brightness/contrast/saturation/sharpness are enhance
+# factors 1 + v/100 (so +50 → 1.5×, -50 → 0.5×); temperature is a warm/cool tint
+# (+ warms: scale R up / B down; - cools: the reverse); hue rotates the HSV hue by
+# v degrees. Alpha is preserved. All adjustments are no-ops at 0.
+def apply_photolab(pil, params):
+    src = pil if pil.mode == 'RGBA' else pil.convert('RGBA')
+    a = src.split()[3]
+    rgb = src.convert('RGB')
+    def f(v): return max(0.05, 1.0 + v / 100.0)          # enhance factor from a ±% value
+    b = params.get('brightness', 0); c = params.get('contrast', 0)
+    s = params.get('saturation', 0); sh = params.get('sharpness', 0)
+    temp = params.get('temperature', 0); hue = params.get('hue', 0)
+    if b: rgb = _PILEnh.Brightness(rgb).enhance(f(b))
+    if c: rgb = _PILEnh.Contrast(rgb).enhance(f(c))
+    if s: rgb = _PILEnh.Color(rgb).enhance(f(s))
+    if sh: rgb = _PILEnh.Sharpness(rgb).enhance(f(sh))
+    if temp:
+        # warm/cool: at ±100 shift R/B channels by ±~0.3× around 1.0
+        rf = 1.0 + 0.3 * temp / 100.0; bf = 1.0 - 0.3 * temp / 100.0
+        R, G, B = rgb.split()
+        R = R.point(lambda px: min(255, int(px * rf)))
+        B = B.point(lambda px: min(255, int(px * bf)))
+        rgb = _PILImage.merge('RGB', (R, G, B))
+    if hue:
+        h, sv, vv = rgb.convert('HSV').split()
+        d = int(round(hue * 255 / 360.0)) % 256
+        h = h.point(lambda px: (px + d) % 256)
+        rgb = _PILImage.merge('HSV', (h, sv, vv)).convert('RGB')
+    return _PILImage.merge('RGBA', rgb.split() + (a,))
+
 # ---- Cutout Studio (adapted from DRAWmaster): remove a picture's background ----
 def qimage_to_rgba(qi):
     """QImage → contiguous (H, W, 4) uint8 RGBA numpy array."""
@@ -1502,6 +1534,78 @@ class CutoutStudio(QDialog):
         out[:, :, 3] = alpha.astype(np.uint8)
         self.result_rgba = out
         self.accept()
+
+
+class PhotoLabDialog(QDialog):
+    """PagePlus PhotoLab: live sliders (Brightness/Contrast/Saturation/Sharpness/
+    Warmth/Hue) over a before/after preview. OK → self.params holds the chosen
+    adjustment; the caller runs apply_photolab() once at full resolution."""
+    SLIDERS = [('brightness', 'Brightness', -100, 100), ('contrast', 'Contrast', -100, 100),
+               ('saturation', 'Saturation', -100, 100), ('sharpness', 'Sharpness', -100, 200),
+               ('temperature', 'Warmth', -100, 100), ('hue', 'Hue', -180, 180)]
+    PREV_MAX = 320  # preview working size (full-res is applied only on OK)
+
+    def __init__(self, parent, qimage):
+        super().__init__(parent)
+        self.setWindowTitle('PhotoLab — Adjust Picture')
+        self.params = {k: 0 for k, _, _, _ in self.SLIDERS}
+        # a small PIL copy for the live preview; the real image is adjusted on OK
+        w, h = qimage.width(), qimage.height()
+        s = min(1.0, self.PREV_MAX / max(1, max(w, h)))
+        if s < 1.0:
+            qimage = qimage.scaled(max(1, int(w * s)), max(1, int(h * s)),
+                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._before_q = qimage.convertToFormat(QImage.Format_ARGB32)
+        self._prev_pil = _q2pil(self._before_q) if _HAS_PIL else None
+
+        root = QVBoxLayout(self)
+        pics = QHBoxLayout(); root.addLayout(pics)
+        bcol = QVBoxLayout(); acol = QVBoxLayout(); pics.addLayout(bcol); pics.addLayout(acol)
+        self._before_lbl = QLabel(); self._before_lbl.setAlignment(Qt.AlignCenter)
+        self._after_lbl = QLabel(); self._after_lbl.setAlignment(Qt.AlignCenter)
+        self._before_lbl.setPixmap(QPixmap.fromImage(self._before_q))
+        bcol.addWidget(QLabel('<b>Before</b>', alignment=Qt.AlignCenter)); bcol.addWidget(self._before_lbl, 1)
+        acol.addWidget(QLabel('<b>After</b>', alignment=Qt.AlignCenter)); acol.addWidget(self._after_lbl, 1)
+
+        grid = QGridLayout(); root.addLayout(grid)
+        self._sl = {}; self._val = {}
+        for row, (key, name, lo, hi) in enumerate(self.SLIDERS):
+            grid.addWidget(QLabel(name), row, 0)
+            sl = QSlider(Qt.Horizontal); sl.setRange(lo, hi); sl.setValue(0); sl.setMinimumWidth(220)
+            vl = QLabel('0'); vl.setMinimumWidth(34); vl.setAlignment(Qt.AlignRight)
+            sl.valueChanged.connect(lambda v, k=key, l=vl: self._on_slide(k, v, l))
+            grid.addWidget(sl, row, 1); grid.addWidget(vl, row, 2)
+            self._sl[key] = sl; self._val[key] = vl
+
+        # debounce the preview so dragging stays smooth
+        self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(90)
+        self._timer.timeout.connect(self._render_preview)
+
+        br = QHBoxLayout(); root.addLayout(br)
+        reset = QPushButton('Reset'); reset.clicked.connect(self._reset); br.addWidget(reset); br.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); br.addWidget(bb)
+        if not _HAS_PIL:
+            bb.button(QDialogButtonBox.Ok).setEnabled(False)
+            self._after_lbl.setText('Pillow not available')
+        self._render_preview()
+
+    def _on_slide(self, key, v, lbl):
+        self.params[key] = v; lbl.setText(str(v)); self._timer.start()
+
+    def _reset(self):
+        for k, sl in self._sl.items(): sl.setValue(0)
+
+    def _render_preview(self):
+        if not _HAS_PIL or self._prev_pil is None: return
+        try:
+            out = apply_photolab(self._prev_pil, self.params)
+            self._after_lbl.setPixmap(QPixmap.fromImage(_pil2q(out)))
+        except Exception:
+            self._after_lbl.setText('—')
+
+    def is_identity(self):
+        return not any(self.params.values())
 
 
 ALIGN = {'left': Qt.AlignLeft, 'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}
@@ -2715,6 +2819,38 @@ def paint_qr(o, p):
                 p.drawRect(QRectF(ox + c * cell, oy + r * cell, cell + 0.5, cell + 0.5))
 
 
+def _draw_picture_content(p, o, pm, r, w, h, rad):
+    """Draw a picture's pixmap into rect r honouring fit + pan/zoom (Framed Picture
+    Positioning). Caller sets clipping/feathering. img_zoom scales the source, pan_x/pan_y
+    (-1..1) slide it within the slack; stretch ignores pan/zoom (it already fills exactly)."""
+    pw_, ph_ = pm.width(), pm.height(); fit = o.get('fit', 'cover')
+    z = max(0.1, float(o.get('img_zoom', 1.0))); px = float(o.get('pan_x', 0.0)); py = float(o.get('pan_y', 0.0))
+    if fit == 'stretch':
+        p.drawPixmap(r, pm, QRectF(0, 0, pw_, ph_))
+    elif fit == 'contain':
+        sc = min(w / pw_, h / ph_) * z; tw, th = pw_ * sc, ph_ * sc
+        if o.get('fill'): p.fillRect(r, QColor(o['fill']))
+        ox = (w - tw) / 2 + px * abs(w - tw) / 2
+        oy = (h - th) / 2 + py * abs(h - th) / 2
+        p.drawPixmap(QRectF(ox, oy, tw, th), pm, QRectF(0, 0, pw_, ph_))
+    else:
+        sc = max(w / pw_, h / ph_) * z; sw_, sh_ = w / sc, h / sc
+        sx = min(max(0.0, (pw_ - sw_) / 2 + px * (pw_ - sw_) / 2), max(0.0, pw_ - sw_))
+        sy = min(max(0.0, (ph_ - sh_) / 2 + py * (ph_ - sh_) / 2), max(0.0, ph_ - sh_))
+        p.drawPixmap(r, pm, QRectF(sx, sy, sw_, sh_))
+
+
+def _feather_grads(w, h, fe):
+    """Four edge linear gradients (black=keep, transparent=drop) whose intersection, applied
+    with DestinationIn, fades the alpha to 0 within `fe` px of each edge of a w×h rect."""
+    out = []
+    opq = QColor(0, 0, 0, 255); clr = QColor(0, 0, 0, 0)
+    for (x0, y0, x1, y1) in ((0, 0, fe, 0), (w, 0, w - fe, 0), (0, 0, 0, fe), (0, h, 0, h - fe)):
+        g = QLinearGradient(x0, y0, x1, y1); g.setColorAt(0, clr); g.setColorAt(1, opq)
+        out.append(g)
+    return out
+
+
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
     global BASELINE_PX
     BASELINE_PX = site.get('baseline', 0) if site else 0   # so make_doc can snap onto the grid
@@ -2781,38 +2917,39 @@ def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
                 p.drawPolygon(QPolygonF([QPointF(a, b) for a, b in _arrowhead_pts(x2, y2, x1, y1, pw)]))
             p.restore()
     elif t == 'picture':
-        path = QPainterPath(); path.addRoundedRect(r, rad, rad)
-        p.save(); p.setClipPath(path)
         pm = pixmap_for(site, o.get('src')) if o.get('src') else None
-        if pm and not pm.isNull():
-            pw_, ph_ = pm.width(), pm.height(); fit = o.get('fit', 'cover')
-            # Pan/zoom inside the frame (Framed Picture Positioning): img_zoom scales the
-            # source, pan_x/pan_y (-1..1) slide it within the slack. See obj_html for the
-            # matching CSS. stretch ignores pan/zoom (it already fills the frame exactly).
-            z = max(0.1, float(o.get('img_zoom', 1.0))); px = float(o.get('pan_x', 0.0)); py = float(o.get('pan_y', 0.0))
-            if fit == 'stretch':
-                p.drawPixmap(r, pm, QRectF(0, 0, pw_, ph_))
-            elif fit == 'contain':
-                sc = min(w / pw_, h / ph_) * z; tw, th = pw_ * sc, ph_ * sc
-                if o.get('fill'): p.fillRect(r, QColor(o['fill']))
-                # centre, then pan across whatever slack the (possibly zoomed) image has
-                ox = (w - tw) / 2 + px * abs(w - tw) / 2
-                oy = (h - th) / 2 + py * abs(h - th) / 2
-                p.drawPixmap(QRectF(ox, oy, tw, th), pm, QRectF(0, 0, pw_, ph_))
-            else:
-                sc = max(w / pw_, h / ph_) * z; sw_, sh_ = w / sc, h / sc
-                # pan the source crop; clamp so it never runs off the edge of the image
-                sx = min(max(0.0, (pw_ - sw_) / 2 + px * (pw_ - sw_) / 2), max(0.0, pw_ - sw_))
-                sy = min(max(0.0, (ph_ - sh_) / 2 + py * (ph_ - sh_) / 2), max(0.0, ph_ - sh_))
-                p.drawPixmap(r, pm, QRectF(sx, sy, sw_, sh_))
+        feather = float(o.get('crop_feather', 0) or 0)
+        # Feather: render the picture into an offscreen layer, then fade its alpha to 0
+        # within `feather` px of each edge (same DestinationIn masking as agrad). Only when
+        # there's an actual image — the placeholder keeps its hard edge.
+        if feather > 0 and pm and not pm.isNull():
+            sx = math.hypot(p.worldTransform().m11(), p.worldTransform().m12()) or 1
+            sx = max(0.5, min(sx, 8))
+            W, H = max(1, int(math.ceil(w * sx))), max(1, int(math.ceil(h * sx)))
+            layer = QImage(W, H, QImage.Format_ARGB32_Premultiplied); layer.fill(Qt.transparent)
+            lp = QPainter(layer); lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+            lp.scale(sx, sx)
+            _draw_picture_content(lp, o, pm, r, w, h, rad)
+            # inset feather mask: opaque interior, linear fade to 0 over `feather` px at each edge
+            fe = min(feather, min(w, h) / 2.0)
+            lp.setCompositionMode(QPainter.CompositionMode_DestinationIn); lp.setPen(Qt.NoPen)
+            for g in _feather_grads(w, h, fe):
+                lp.setBrush(QBrush(g)); lp.drawRect(QRectF(0, 0, w, h))
+            lp.end()
+            p.drawImage(QRectF(0, 0, w, h), layer)
         else:
-            p.fillRect(r, QColor('#dde2e5')); p.setPen(QPen(QColor('#b5bdc2'), 1))
-            p.drawLine(r.topLeft(), r.bottomRight()); p.drawLine(r.topRight(), r.bottomLeft())
-            if edit:
-                f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#4b555b'))
-                lbl = QRectF(0, h / 2 - 14, w, 28); p.fillRect(lbl.adjusted(w * .15, 0, -w * .15, 0), QColor('#dde2e5'))
-                p.drawText(lbl, Qt.AlignCenter, 'Double-click to add a picture')
-        p.restore()
+            path = QPainterPath(); path.addRoundedRect(r, rad, rad)
+            p.save(); p.setClipPath(path)
+            if pm and not pm.isNull():
+                _draw_picture_content(p, o, pm, r, w, h, rad)
+            else:
+                p.fillRect(r, QColor('#dde2e5')); p.setPen(QPen(QColor('#b5bdc2'), 1))
+                p.drawLine(r.topLeft(), r.bottomRight()); p.drawLine(r.topRight(), r.bottomLeft())
+                if edit:
+                    f = QFont(); f.setPixelSize(13); p.setFont(f); p.setPen(QColor('#4b555b'))
+                    lbl = QRectF(0, h / 2 - 14, w, 28); p.fillRect(lbl.adjusted(w * .15, 0, -w * .15, 0), QColor('#dde2e5'))
+                    p.drawText(lbl, Qt.AlignCenter, 'Double-click to add a picture')
+            p.restore()
         if o.get('strokeW', 0) > 0:
             p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
     elif t == 'gallery':
@@ -3917,6 +4054,13 @@ def obj_html(o, site, page, img):
             if o.get('fit', 'cover') != 'stretch' and (z != 1.0 or px or py):
                 X, Y = 50 + px * 50, 50 + py * 50
                 ist += f'object-position:{X:g}% {Y:g}%;transform:scale({z:g});transform-origin:{X:g}% {Y:g}%;'
+            # Feather the crop edges: two CSS mask gradients (H + V) fade the edges to transparent,
+            # matching the canvas/PDF. Prefixed for WebKit. (Published only; falls back to a hard edge.)
+            fe = float(o.get('crop_feather', 0) or 0)
+            if fe > 0:
+                g = (f"linear-gradient(to right,transparent,#000 {fe:g}px,#000 calc(100% - {fe:g}px),transparent),"
+                     f"linear-gradient(to bottom,transparent,#000 {fe:g}px,#000 calc(100% - {fe:g}px),transparent)")
+                st += f"-webkit-mask:{g};mask:{g};-webkit-mask-composite:source-in;mask-composite:intersect;"
             inner = f'<img src="{img(o["src"])}" alt="" style="{ist}">'
         else: st += 'background:#dde2e5;'
     elif t == 'nav':
@@ -8057,6 +8201,8 @@ class MainWindow(QMainWindow):
                          None,
                          self.act('&Cutout Studio…', lambda: self.cutout_studio(), None,
                                   ['edit-cut', 'tools-wizard', 'image-crop']),
+                         self.act('Photo&Lab…', lambda: self.open_photolab(), None,
+                                  ['adjustlevels', 'image-adjust', 'tools-wizard']),
                          None,
                          self.act('&Transparency Gradient…', lambda: self.transparency_gradient_dialog(), None,
                                   ['fill-gradient-linear', 'color-gradient', 'adjustcurves']),
@@ -9071,11 +9217,18 @@ class MainWindow(QMainWindow):
                 btn(['insert-image', 'document-open'], 'Replace Picture…', lambda: self.pick_picture(o))
                 btn(['edit-cut', 'tools-wizard', 'image-crop'], 'Cutout Studio — remove the background…',
                     lambda: self.cutout_studio(o), glyph='✂')
+                btn(['adjustlevels', 'image-adjust', 'tools-wizard'], 'PhotoLab — adjust brightness, colour, warmth…',
+                    lambda: self.open_photolab(o), glyph='◐')
                 cb = QComboBox(); cb.addItems(['Fill frame (crop)', 'Fit inside frame', 'Stretch'])
                 cb.setCurrentIndex(['cover', 'contain', 'stretch'].index(o.get('fit', 'cover')))
                 cb.activated.connect(lambda i: self.set_prop('fit', ['cover', 'contain', 'stretch'][i])); add(cb)
                 # Pan / zoom the picture inside its frame (Framed Picture Positioning).
                 self._pic_pos_sliders(add, label, o)
+                # Feather the crop edge: a soft alpha fade inset from the frame edge (px).
+                label('Feather'); ft = QSpinBox(); ft.setRange(0, 200); ft.setSuffix(' px')
+                ft.setValue(int(o.get('crop_feather', 0)))
+                ft.setToolTip('Softly fade the picture edges inward (0 = hard edge)')
+                ft.editingFinished.connect(lambda ft=ft: self.set_prop('crop_feather', ft.value())); add(ft)
             if t == 'line':
                 btn(['object-flip-vertical'], 'Flip line', lambda: self.set_prop('flip', not o.get('flip')), glyph='⇅')
                 acb = QComboBox(); acb.addItems(['No arrows', 'Arrow at end', 'Arrow at start', 'Arrows both ends'])
@@ -10101,6 +10254,35 @@ class MainWindow(QMainWindow):
         self.site.setdefault('assetnames', {})[o['src']] = 'Cutout'
         self.refresh()
         self.hint('Background removed. The cut-out picture replaces the original in this frame.')
+
+    def open_photolab(self, o=None):
+        """PhotoLab: live Brightness/Contrast/Saturation/Sharpness/Warmth/Hue sliders over the
+        selected picture. On OK, apply_photolab() runs once at full resolution and the result is
+        stored as a NEW asset (same store pattern as adjust_picture)."""
+        if not _HAS_PIL:
+            QMessageBox.information(self, APP, 'PhotoLab needs the Pillow library '
+                                   '(e.g. sudo pacman -S python-pillow). Or use Edit in PAINTcanvas.')
+            return
+        o = o or self._selected_picture()
+        if not o: return
+        key = o.get('src'); src = self.site.get('assets', {}).get(key)
+        if not src or not src.startswith('data:image'):
+            self.hint('That picture has no image to adjust yet.'); return
+        pm = pixmap_for(self.site, key)
+        dlg = PhotoLabDialog(self, pm.toImage())
+        if not dlg.exec() or dlg.is_identity(): return
+        try:
+            qi = QImage(); qi.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
+            if qi.isNull(): return
+            out = _pil2q(apply_photolab(_q2pil(qi), dlg.params))   # full-res, once
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); out.save(buf, 'PNG'); buf.close()
+            uri = 'data:image/png;base64,' + bytes(ba.toBase64()).decode()
+            self.commit()
+            o['src'] = add_asset(self.site, uri)               # NEW asset, keep the original
+            self.site.setdefault('assetnames', {})[o['src']] = 'PhotoLab'
+            self.dirty = True; self.refresh(); self.hint('PhotoLab adjustment applied.')
+        except Exception as ex:
+            QMessageBox.warning(self, APP, f'Could not apply PhotoLab:\n{ex}')
 
     def _apply_picture(self, o, uri):
         self.commit(); o['src'] = add_asset(self.site, uri)
@@ -12670,6 +12852,7 @@ class MainWindow(QMainWindow):
                 m.addAction('Replace Picture…', lambda: self.pick_picture(o))
                 if o.get('src'):
                     m.addAction(ticon(['edit-cut', 'tools-wizard', 'image-crop'], '✂'), 'Cutout Studio…', lambda: self.cutout_studio(o))
+                    m.addAction(ticon(['adjustlevels', 'image-adjust', 'tools-wizard'], '◐'), 'PhotoLab…', lambda: self.open_photolab(o))
                     m.addAction(ticon(['draw-brush', 'krita'], '🖌'), 'Edit in PAINTcanvas', lambda: self.edit_in_paint(o['src']))
                     self._pic_adjust_menu(m, o['src'])
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
