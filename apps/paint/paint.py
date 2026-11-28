@@ -23,7 +23,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.24-00"
+VERSION = "1.25-00"
 
 
 # ===================================================================== font grouping
@@ -1562,6 +1562,65 @@ def twirl(rgba, angle=120, radius=None, falloff=1.0, force_fallback=False):
     map_x = cx + (dx * ct + dy * st)
     map_y = cy + (-dx * st + dy * ct)
     out = _warp_remap(src, map_x, map_y, force_fallback=force_fallback)
+    return _ensure_rgba(out)
+
+
+def apply_liquify_dab(dx, dy, mode, cx, cy, radius, strength, drag=(0.0, 0.0)):
+    """Accumulate one Liquify brush dab into the displacement map (float32 HxW `dx`/`dy`,
+    the per-pixel SOURCE offset added to the base coord grid). A soft (cosine-feathered)
+    falloff `f` = 1 at the centre → 0 at `radius` weights every dab. Modes:
+      push    — shove pixels along the drag vector `drag` (+= drag * f * strength);
+      bloat   — push outward from (cx,cy)  (offset along +radial unit);
+      pinch   — pull inward toward (cx,cy) (offset along -radial unit);
+      twirlL  — rotate the local offset CCW about the centre by strength*f radians;
+      twirlr  — rotate CW;
+      reconstruct — relax the existing displacement toward zero (*= 1 - f*strength).
+    Returns the (mutated) dx, dy. Pure NumPy; the full warp reuses `_warp_remap`."""
+    h, w = dx.shape
+    r = max(1.0, float(radius))
+    y0 = max(0, int(cy - r)); y1 = min(h, int(cy + r) + 1)
+    x0 = max(0, int(cx - r)); x1 = min(w, int(cx + r) + 1)
+    if y0 >= y1 or x0 >= x1:
+        return dx, dy
+    yy, xx = _np.mgrid[y0:y1, x0:x1].astype(_np.float32)
+    ox = xx - cx; oy = yy - cy
+    dist = _np.sqrt(ox * ox + oy * oy)
+    f = _np.clip(0.5 + 0.5 * _np.cos(_np.pi * _np.clip(dist / r, 0.0, 1.0)), 0.0, 1.0)
+    f = (f * (dist <= r)).astype(_np.float32)
+    s = float(strength)
+    if mode == 'push':
+        ddx, ddy = drag
+        dx[y0:y1, x0:x1] += ddx * s * f
+        dy[y0:y1, x0:x1] += ddy * s * f
+    elif mode in ('bloat', 'pinch'):
+        sign = 1.0 if mode == 'bloat' else -1.0
+        inv = 1.0 / (dist + 1e-6)
+        amt = sign * s * r * 0.35 * f
+        dx[y0:y1, x0:x1] += ox * inv * amt
+        dy[y0:y1, x0:x1] += oy * inv * amt
+    elif mode in ('twirll', 'twirlr'):
+        sign = 1.0 if mode == 'twirll' else -1.0
+        ang = sign * s * f
+        ct = _np.cos(ang); st = _np.sin(ang)
+        cdx = dx[y0:y1, x0:x1]; cdy = dy[y0:y1, x0:x1]
+        # rotate the point's radial position: new offset = R*offset - offset, added in
+        nx = ox * ct - oy * st; ny = ox * st + oy * ct
+        dx[y0:y1, x0:x1] = cdx + (nx - ox)
+        dy[y0:y1, x0:x1] = cdy + (ny - oy)
+    elif mode == 'reconstruct':
+        keep = (1.0 - _np.clip(f * s, 0.0, 1.0)).astype(_np.float32)
+        dx[y0:y1, x0:x1] *= keep
+        dy[y0:y1, x0:x1] *= keep
+    return dx, dy
+
+
+def liquify_warp(rgba, dx, dy, force_fallback=False):
+    """Apply a displacement map (`dx`/`dy`, float32 HxW = per-pixel source offset) to an
+    HxWx(3/4) uint8 image by reusing `_warp_remap`: sample at (X+dx, Y+dy). Pure."""
+    src = _ensure_rgba(rgba)
+    h, w = src.shape[:2]
+    yy, xx = _np.mgrid[0:h, 0:w].astype(_np.float32)
+    out = _warp_remap(src, xx + dx, yy + dy, force_fallback=force_fallback)
     return _ensure_rgba(out)
 
 
@@ -5367,6 +5426,132 @@ class GradientMapDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class _LiquifyCanvas(QWidget):
+    """The paintable preview surface inside the Liquify Studio: shows the warped image
+    scaled to fit, and turns mouse drags into brush dabs on the owning dialog."""
+    def __init__(self, dlg):
+        super().__init__(); self.dlg = dlg; self.setMouseTracking(True)
+        self.setMinimumSize(360, 300); self._last = None
+
+    def paintEvent(self, _e):
+        qp = QPainter(self); qp.fillRect(self.rect(), QColor(40, 40, 40))
+        pm = self.dlg.preview_pm
+        if pm is None: return
+        scaled = pm.scaled(self.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._ox = (self.width() - scaled.width()) // 2
+        self._oy = (self.height() - scaled.height()) // 2
+        self._scale = scaled.width() / max(1, pm.width())
+        qp.drawPixmap(self._ox, self._oy, scaled)
+
+    def _to_map(self, pos):
+        # widget pixel -> working-resolution map coordinate
+        if getattr(self, '_scale', 0) <= 0: return None
+        mx = (pos.x() - self._ox) / self._scale; my = (pos.y() - self._oy) / self._scale
+        return mx, my
+
+    def mousePressEvent(self, e):
+        p = self._to_map(e.position()); self._last = p
+        if p: self.dlg.dab(p[0], p[1], 0.0, 0.0)
+
+    def mouseMoveEvent(self, e):
+        p = self._to_map(e.position())
+        if p is None: return
+        if e.buttons() & Qt.LeftButton:
+            ddx = ddy = 0.0
+            if self._last is not None:
+                ddx = p[0] - self._last[0]; ddy = p[1] - self._last[1]
+            self.dlg.dab(p[0], p[1], ddx, ddy); self._last = p
+
+    def mouseReleaseEvent(self, _e):
+        self._last = None; self.dlg.commit_preview()
+
+
+class LiquifyStudio(QDialog):
+    """Effects ▸ Distort ▸ Liquify… — an interactive warp studio. Maintains a float32
+    displacement map (dx, dy) at a capped working resolution; each brush dab mutates it
+    via the pure `apply_liquify_dab`; the live preview and the final OK apply it with
+    `liquify_warp`/`_warp_remap`. On OK the map is upscaled to full res and written back
+    to the active layer with an undo push."""
+    CAP = 1000
+    MODES = [('Push / Smudge', 'push'), ('Bloat / Expand', 'bloat'), ('Pinch / Shrink', 'pinch'),
+             ('Twirl Left', 'twirll'), ('Twirl Right', 'twirlr'), ('Reconstruct / Restore', 'reconstruct')]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Liquify Studio'); self.resize(720, 560)
+        self.active_idx = self.canvas.active
+        self.base_q = self.canvas.img.copy()           # full-res original QImage
+        full = _np.asarray(q2pil(self.base_q))         # HxWx4 uint8
+        self.full_h, self.full_w = full.shape[:2]
+        # working-resolution copy (cap the longest side for responsiveness)
+        scale = min(1.0, self.CAP / max(self.full_w, self.full_h))
+        self.wk_w = max(1, int(round(self.full_w * scale)))
+        self.wk_h = max(1, int(round(self.full_h * scale)))
+        if (self.wk_w, self.wk_h) != (self.full_w, self.full_h):
+            self.orig = _np.asarray(q2pil(self.base_q).resize((self.wk_w, self.wk_h), Image.BILINEAR))
+        else:
+            self.orig = full
+        self.orig = _ensure_rgba(self.orig)
+        self.dx = _np.zeros((self.wk_h, self.wk_w), _np.float32)
+        self.dy = _np.zeros((self.wk_h, self.wk_w), _np.float32)
+        self.preview_pm = None
+
+        from PySide6.QtWidgets import QSpinBox
+        root = QHBoxLayout(self)
+        self.view = _LiquifyCanvas(self); root.addWidget(self.view, 1)
+        side = QVBoxLayout(); root.addLayout(side)
+        side.addWidget(QLabel('<b>Liquify</b> — drag on the image to warp it.'))
+        side.addWidget(QLabel('Brush:'))
+        self.mode_cb = QComboBox(); self.mode_cb.addItems([n for n, _ in self.MODES]); side.addWidget(self.mode_cb)
+        side.addWidget(QLabel('Size:'))
+        self.size_s = QSlider(Qt.Horizontal); self.size_s.setRange(5, max(20, min(self.wk_w, self.wk_h)))
+        self.size_s.setValue(max(20, min(self.wk_w, self.wk_h) // 6)); side.addWidget(self.size_s)
+        side.addWidget(QLabel('Strength:'))
+        self.str_s = QSlider(Qt.Horizontal); self.str_s.setRange(1, 100); self.str_s.setValue(50); side.addWidget(self.str_s)
+        rbtn = QPushButton('Reset'); rbtn.clicked.connect(self.reset); side.addWidget(rbtn)
+        side.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); side.addWidget(bb)
+        self._render_preview()
+
+    def _mode(self):
+        return self.MODES[self.mode_cb.currentIndex()][1]
+
+    def _render_preview(self):
+        warped = liquify_warp(self.orig, self.dx, self.dy)
+        self.preview_pm = QPixmap.fromImage(pil2q(Image.fromarray(warped, 'RGBA')))
+        self.view.update()
+
+    def dab(self, cx, cy, ddx, ddy):
+        # strength scales per-mode; push drives the drag delta directly
+        s = self.str_s.value() / 100.0
+        mode = self._mode()
+        strength = s * (3.0 if mode == 'push' else 1.0)
+        apply_liquify_dab(self.dx, self.dy, mode, cx, cy, self.size_s.value(), strength, drag=(ddx, ddy))
+        self._render_preview()
+
+    def commit_preview(self):
+        self._render_preview()
+
+    def reset(self):
+        self.dx[:] = 0.0; self.dy[:] = 0.0; self._render_preview()
+
+    def accept(self):
+        # upscale the working displacement map to full resolution (offsets scale with size)
+        if (self.wk_w, self.wk_h) != (self.full_w, self.full_h):
+            sx = self.full_w / self.wk_w; sy = self.full_h / self.wk_h
+            fdx = _np.asarray(Image.fromarray(self.dx).resize((self.full_w, self.full_h), Image.BILINEAR)) * sx
+            fdy = _np.asarray(Image.fromarray(self.dy).resize((self.full_w, self.full_h), Image.BILINEAR)) * sy
+        else:
+            fdx, fdy = self.dx, self.dy
+        full = _ensure_rgba(_np.asarray(q2pil(self.base_q)))
+        warped = liquify_warp(full, fdx.astype(_np.float32), fdy.astype(_np.float32))
+        self.canvas.push_undo_layer(self.active_idx, self.base_q)
+        self.canvas.img = pil2q(Image.fromarray(warped, 'RGBA')); self.canvas._fit()
+        super().accept()
+
+
 class ExportDialog(QDialog):
     """File ▸ Export… — pick a format (PNG/JPEG/WEBP/GIF/BMP), a quality for the lossy
     ones with a live estimated file size, and (PNG) a transparency toggle. Writes via
@@ -5941,6 +6126,7 @@ class Main(QMainWindow):
         dist = fx.addMenu('&Distort')
         dist.addAction(self.act('&Motion Trail…', lambda: self._effect_dialog(MotionTrailDialog)))
         dist.addAction(self.act('&Twirl…', lambda: self._effect_dialog(TwirlDialog)))
+        dist.addAction(self.act('&Liquify Studio…', self.liquify_studio))
         tex = fx.addMenu('&Textures')
         tex.addAction(self.act('&Wood…', lambda: self._effect_dialog(WoodDialog)))
         tex.addAction(self.act('&Marble…', lambda: self._effect_dialog(MarbleDialog)))
@@ -6156,6 +6342,12 @@ class Main(QMainWindow):
         if not self._need_pil():
             return
         cls(self).exec()
+
+    def liquify_studio(self):
+        """Open the interactive Warp / Liquify Studio on the active layer."""
+        if not self._need_pil():
+            return
+        LiquifyStudio(self).exec()
 
     def dlg_lens_flare(self):
         """Open the Lens Flare studio (live preview over the composited image)."""
