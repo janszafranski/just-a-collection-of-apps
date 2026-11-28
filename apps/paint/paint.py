@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.20-00"
+VERSION = "1.21-00"
 
 
 # ===================================================================== font grouping
@@ -1860,6 +1860,84 @@ def adj_vibrance(amount):
     return f
 
 
+def _soft_disc(h, w, cx, cy, radius):
+    """A feathered circular alpha (HxW float 0..1) centred at (cx,cy): 1 in the core,
+    falling smoothly to 0 at `radius`. Used as the soft-dab weight for retouch brushes."""
+    yy, xx = _np.ogrid[0:h, 0:w]
+    d = _np.sqrt((xx - cx) ** 2 + (yy - cy) ** 2)
+    return _np.clip(1.0 - d / max(1.0, radius), 0.0, 1.0) ** 1.4
+
+
+def heal_patch(rgb, cx, cy, radius, strength=1.0):
+    """Spot-heal one dab, returning a NEW HxWx3 float/uint array (same dtype in → uint8-safe
+    float out). Unlike Clone it does NOT copy verbatim: it rebuilds the dab from the texture
+    JUST OUTSIDE the brush via frequency separation.
+      low  = heavy Gaussian blur of the neighbourhood (lighting / colour gradient)
+      high = neighbourhood − low (fine texture / grain)
+    healed = low + strength*high, sampled at the dab, blended over the original by a soft disc.
+    The 'clean surround' is the ring outside the circle: the low-freq there is extended across
+    the blemish by the blur (the blemish barely perturbs a heavily-blurred field), so a small
+    bright spot is replaced by the surrounding colour + a little preserved grain.
+    Pure NumPy+Pillow, no GUI; testable on any image array."""
+    a = _np.asarray(rgb).astype(_np.float32)
+    H, W = a.shape[:2]
+    r = max(1.0, float(radius))
+    pad = int(r * 1.6) + 2                                   # margin so the surround is real texture
+    x0, y0 = max(0, int(cx - r - pad)), max(0, int(cy - r - pad))
+    x1, y1 = min(W, int(cx + r + pad) + 1), min(H, int(cy + r + pad) + 1)
+    if x1 <= x0 or y1 <= y0: return a
+    box = a[y0:y1, x0:x1, :3].copy()
+    bh, bw = box.shape[:2]
+    lx, ly = cx - x0, cy - y0                                # dab centre in box coords
+    # mask the blemish OUT before estimating the field, so it can't bias low/high
+    disc = _soft_disc(bh, bw, lx, ly, r)
+    hole = disc > 0.02
+    blur_r = max(2.0, r * 0.9)
+    filled = box.copy()
+    if hole.any():
+        # seed the hole with the mean of the surrounding ring so the blur interpolates across it
+        ring = (~hole)
+        if ring.any():
+            surround_mean = box[ring].mean(axis=0)
+        else:
+            surround_mean = box.reshape(-1, 3).mean(axis=0)
+        filled[hole] = surround_mean
+    low_src = Image.fromarray(_np.clip(filled, 0, 255).astype('uint8'), 'RGB') \
+                   .filter(ImageFilter.GaussianBlur(blur_r))
+    low = _np.asarray(low_src).astype(_np.float32)           # smooth field, blemish removed
+    # high-freq texture taken from the ORIGINAL surround (blurred-field subtracted)
+    orig_low = _np.asarray(Image.fromarray(_np.clip(box, 0, 255).astype('uint8'), 'RGB')
+                           .filter(ImageFilter.GaussianBlur(blur_r))).astype(_np.float32)
+    high = box - orig_low
+    high *= (1.0 - disc[..., None])                          # drop the blemish's own high-freq spike
+    healed = low + float(strength) * high
+    wgt = disc[..., None]
+    box[:] = healed * wgt + box * (1.0 - wgt)
+    a[y0:y1, x0:x1, :3] = _np.clip(box, 0, 255)
+    return a
+
+
+def sponge_patch(rgb, cx, cy, radius, amount):
+    """Local saturation brush, returning a NEW HxWx3 array. amount>0 saturates, <0 desaturates
+    (-100..100-ish). Pushes each pixel's RGB toward (amount>0) or away from (amount<0) its own
+    luma — the same grey-axis scaling adj_vibrance/adj_saturation use — within a soft disc so
+    repeated dabs are seamless. Pixels outside `radius` are untouched. Pure NumPy."""
+    a = _np.asarray(rgb).astype(_np.float32)
+    H, W = a.shape[:2]
+    r = max(1.0, float(radius))
+    x0, y0 = max(0, int(cx - r)), max(0, int(cy - r))
+    x1, y1 = min(W, int(cx + r) + 1), min(H, int(cy + r) + 1)
+    if x1 <= x0 or y1 <= y0: return a
+    box = a[y0:y1, x0:x1, :3]
+    bh, bw = box.shape[:2]
+    disc = _soft_disc(bh, bw, cx - x0, cy - y0, r)
+    gain = 1.0 + (float(amount) / 100.0) * disc                    # >1 saturate, <1 desaturate
+    y = _luma(box)[..., None]
+    out = y + (box - y) * gain[..., None]
+    a[y0:y1, x0:x1, :3] = _np.clip(out, 0, 255)
+    return a
+
+
 def adj_curves(lut, channel='rgb'):
     """Apply a 256-entry LUT (a list/array of 0..255) via Pillow point(). channel is
     'rgb' (all channels / luma-style) or 'r'/'g'/'b' for a single channel."""
@@ -2198,6 +2276,9 @@ class Canvas(QWidget):
         self.color = QColor('#1f2a30')
         self.size = 6
         self.cutout_tol = 45
+        self.heal_strength = 0.6       # Heal brush: how much surround texture to add back (0..1)
+        self.sponge_mode = 'saturate'  # Sponge brush: 'saturate' | 'desaturate'
+        self.sponge_flow = 25          # Sponge strength per dab (0..100)
         self.wand_tol = 32             # magic-wand colour tolerance (0..255-ish)
         self.wand_contiguous = True    # wand selects a connected region vs. the whole image
         # Smart Mask (Fluid-Mask-style) scribbles: two bool HxW overlays painted over
@@ -2598,7 +2679,7 @@ class Canvas(QWidget):
             return
         # editing a mask changes layer.mask (not .img), so snapshot the whole stack
         self.snapshot_full() if (self.edit_mask and self.has_mask()) else self.snapshot()
-        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'oil', 'smudge'):
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'oil', 'smudge', 'heal', 'sponge'):
             if self.tool in ('oil', 'smudge'):
                 self._wet_begin(pos)
             self.last = pos; self._stroke(pos, pos)
@@ -2627,7 +2708,7 @@ class Canvas(QWidget):
         if not (e.buttons() & Qt.LeftButton): return
         if self.tool == 'lasso' and self.lasso_pts is not None:
             self.lasso_pts.append(pos); self.update(); return
-        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone', 'oil', 'smudge') and self.last is not None:
+        if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone', 'oil', 'smudge', 'heal', 'sponge') and self.last is not None:
             self._stroke(self.last, pos); self.last = pos; self.update()
         elif self.tool in ('line', 'rect', 'ellipse', 'gradient') and self.start is not None:
             self.preview = (self.tool, self.start, pos); self.update()
@@ -2755,6 +2836,8 @@ class Canvas(QWidget):
             self._clone_stroke(a, b); return
         if self.tool in ('oil', 'smudge'):
             self._wet_stroke(a, b, self.tool); return
+        if self.tool in ('heal', 'sponge'):
+            self._retouch_stroke(a, b, self.tool); return
         target = self.paint_target()
         if target is not self.img:          # painting into a greyscale mask
             p = QPainter(target); p.setRenderHint(QPainter.Antialiasing)
@@ -2856,6 +2939,28 @@ class Canvas(QWidget):
             path = QPainterPath(); path.addEllipse(QPointF(cx, cy), r, r)
             p.save(); p.setClipPath(path); p.drawImage(QPointF(ox, oy), self.clone_base); p.restore()
         p.end()
+
+    def _retouch_stroke(self, a, b, mode):
+        """Heal / Sponge: stamp soft dabs along the segment, editing the active layer's
+        RGB in NumPy via heal_patch / sponge_patch, then blit back. The snapshot is already
+        pushed at stroke start (mousePress), matching the other brushes. Alpha is preserved."""
+        if not HAS_PIL: return
+        im = q2pil(self.img)
+        a4 = _np.asarray(im).astype(_np.float32)          # HxWx4
+        rgb = a4[..., :3]
+        r = max(1.0, self.size / 2.0)
+        dx, dy = b.x() - a.x(), b.y() - a.y()
+        n = max(1, int((dx * dx + dy * dy) ** 0.5 / max(1.0, r * 0.4)))
+        for i in range(n + 1):
+            cx = a.x() + dx * i / n; cy = a.y() + dy * i / n
+            if mode == 'heal':
+                rgb = heal_patch(rgb, cx, cy, r, self.heal_strength)
+            else:
+                amt = self.sponge_flow if self.sponge_mode == 'saturate' else -self.sponge_flow
+                rgb = sponge_patch(rgb, cx, cy, r, amt)
+        a4[..., :3] = rgb
+        out = Image.fromarray(_np.clip(a4, 0, 255).astype('uint8'), 'RGBA')
+        self.img = pil2q(out)
 
     # ---- selection & the PhotoPlus image engine ----
     def sel_region(self):
@@ -4886,6 +4991,8 @@ class Main(QMainWindow):
              ('text', 'Text', 'A'), ('clone', 'Clone — Ctrl-click to set source', '❏'),
              ('redeye', 'Red-eye removal', '◉'), ('dodge', 'Dodge — lighten', '☀'),
              ('burn', 'Burn — darken', '◐'),
+             ('heal', 'Heal / Spot-heal — blend out blemishes with surrounding texture', '🩹'),
+             ('sponge', 'Sponge — saturate / desaturate locally', '🧽'),
              ('oil', 'Oil brush — wet paint that blends (natural media)', '🎨'),
              ('smudge', 'Smudge / palette knife — drag and mix paint', '👆'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
@@ -5071,6 +5178,24 @@ class Main(QMainWindow):
         self.grad_trans_cb.setToolTip('Fade the end colour to transparent instead of a second colour')
         self.grad_trans_cb.toggled.connect(self._grad_trans)
         for wdg in (self.grad_lbl, self.grad_a_btn, self.grad_b_btn, self.grad_trans_cb):
+            top.addWidget(wdg); wdg.setVisible(False)
+        # --- Heal controls ---
+        self.heal_lbl = QLabel(' Heal detail ')
+        self.heal_spin = QSpinBox(); self.heal_spin.setRange(0, 100); self.heal_spin.setValue(int(self.canvas.heal_strength * 100))
+        self.heal_spin.setSuffix(' %'); self.heal_spin.setToolTip('How much surrounding texture/grain to keep (0 = smooth, 100 = full)')
+        self.heal_spin.valueChanged.connect(lambda v: setattr(self.canvas, 'heal_strength', v / 100.0))
+        for wdg in (self.heal_lbl, self.heal_spin):
+            top.addWidget(wdg); wdg.setVisible(False)
+        # --- Sponge controls ---
+        self.sponge_lbl = QLabel(' Sponge ')
+        self.sponge_mode_cb = QComboBox(); self.sponge_mode_cb.addItems(['Saturate', 'Desaturate'])
+        self.sponge_mode_cb.setToolTip('Push saturation up or down')
+        self.sponge_mode_cb.currentIndexChanged.connect(
+            lambda i: setattr(self.canvas, 'sponge_mode', 'desaturate' if i else 'saturate'))
+        self.sponge_flow_spin = QSpinBox(); self.sponge_flow_spin.setRange(1, 100); self.sponge_flow_spin.setValue(int(self.canvas.sponge_flow))
+        self.sponge_flow_spin.setSuffix(' %'); self.sponge_flow_spin.setToolTip('Flow / strength per dab')
+        self.sponge_flow_spin.valueChanged.connect(lambda v: setattr(self.canvas, 'sponge_flow', v))
+        for wdg in (self.sponge_lbl, self.sponge_mode_cb, self.sponge_flow_spin):
             top.addWidget(wdg); wdg.setVisible(False)
         self._tint_grad_btns()
         top.addSeparator()
@@ -5319,6 +5444,12 @@ class Main(QMainWindow):
                 wdg.setVisible(t in ('rect', 'ellipse'))
             for wdg in (self.grad_lbl, self.grad_a_btn, self.grad_b_btn, self.grad_trans_cb):
                 wdg.setVisible(t == 'gradient')
+        if hasattr(self, 'heal_spin'):
+            for wdg in (self.heal_lbl, self.heal_spin):
+                wdg.setVisible(t == 'heal')
+        if hasattr(self, 'sponge_mode_cb'):
+            for wdg in (self.sponge_lbl, self.sponge_mode_cb, self.sponge_flow_spin):
+                wdg.setVisible(t == 'sponge')
     def set_pos(self, p): self.pos_lbl.setText(f'{p.x()}, {p.y()}   ')
 
     def _pick_fill_color(self):
