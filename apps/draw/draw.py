@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.9-00"
+VERSION = "1.10-00"
 
 
 # ===================================================================== font grouping
@@ -1327,6 +1327,7 @@ class Canvas(QWidget):
         self.fill = QColor('#cfe3ef'); self.stroke = QColor('#1f2a30'); self.sw = 2
         self.quick_shape = 'star5'
         self.start = None; self.cur = None; self.drag_off = None; self.poly_pts = None
+        self.pending_image = None  # dict(uri,w,h) awaiting a click/drag placement
         # Pen (Bézier) tool: nodes being laid down, and the live smooth-drag node
         self.pen_nodes = None; self.pen_dragging = False
         # Node tool: the path being reshaped and which node/handle is grabbed
@@ -1680,6 +1681,10 @@ class Canvas(QWidget):
         if self.start and self.cur and self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn'):
             tmp = self._shape_from(self.start, self.cur)
             if tmp: paint_object(p, tmp)
+        if self.tool == 'image' and self.pending_image and self.start and self.cur:
+            r = QRectF(QPointF(*self.start), QPointF(*self.cur)).normalized()
+            p.setPen(QPen(QColor('#2a7de1'), 0, Qt.DashLine)); p.setBrush(Qt.NoBrush)
+            p.drawRect(r)
         if self.poly_pts and len(self.poly_pts) >= 1:
             prev = {'type': 'poly', 'pts': self.poly_pts + ([self.cur] if self.cur else []),
                     'stroke': self.stroke.name(), 'sw': self.sw, 'fill': None, 'closed': False}
@@ -2031,7 +2036,11 @@ class Canvas(QWidget):
         if self.tool == 'text':
             self.win.place_text(pt); return
         if self.tool == 'image':
-            self.win.import_image(at=pt); return
+            if self.pending_image:
+                self.start = pt; self.cur = pt
+            else:
+                self.win.import_image(at=pt)
+            return
         if self.tool == 'brush':
             self.snapshot()
             self._brush_base = self.sw * 3 + 8
@@ -2071,7 +2080,7 @@ class Canvas(QWidget):
             self.rubber = (self.drag_start, pt); self.update(); return
         if self.tool == 'select' and self.sel is not None and (e.buttons() & Qt.LeftButton) and self.drag_off:
             self._move_sel(pt); self.update(); return
-        if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn') and self.start and (e.buttons() & Qt.LeftButton):
+        if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn', 'image') and self.start and (e.buttons() & Qt.LeftButton):
             self.cur = pt; self.update()
         elif self.tool == 'brush' and (e.buttons() & Qt.LeftButton) and self.objs and self.objs[-1].get('type') == 'brush':
             o = self.objs[-1]; lx, ly = o['pts'][-1]
@@ -2191,6 +2200,10 @@ class Canvas(QWidget):
             o['pts'] = [(nx + (x - ox) * sx, ny + (y - oy) * sy) for x, y in orig['pts']]
 
     def mouseReleaseEvent(self, e):
+        if self.tool == 'image' and self.pending_image and self.start:
+            end = self.cur or self.start
+            start = self.start; self.start = self.cur = None
+            self.win.place_pending_image(start, end); self.win.sync_props(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim') and self.start:
             if self.cur and (abs(self.cur[0] - self.start[0]) > 2 or abs(self.cur[1] - self.start[1]) > 2):
                 self.snapshot(); self.objs.append(self._shape_from(self.start, self.cur))
@@ -2361,6 +2374,271 @@ class Canvas(QWidget):
         img = QImage(self.W, self.H, QImage.Format_ARGB32); img.fill(QColor('#ffffff'))
         p = QPainter(img); p.setRenderHint(QPainter.Antialiasing); self.render_to(p); p.end()
         return img.save(path)
+
+
+# ================================================================ Cutout Studio
+def qimage_to_rgba(qi):
+    """QImage → contiguous (H, W, 4) uint8 RGBA numpy array."""
+    import numpy as np
+    qi = qi.convertToFormat(QImage.Format_RGBA8888)
+    w, h, bpl = qi.width(), qi.height(), qi.bytesPerLine()
+    buf = np.frombuffer(memoryview(qi.constBits()), np.uint8)
+    return buf.reshape((h, bpl))[:, :w * 4].reshape((h, w, 4)).copy()
+
+
+def rgba_to_qimage(arr):
+    """(H, W, 4) uint8 RGBA numpy array → a self-owning QImage."""
+    import numpy as np
+    arr = np.ascontiguousarray(arr, np.uint8)
+    h, w = arr.shape[:2]
+    return QImage(arr.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
+
+
+def _box_blur(a, r):
+    """Separable box blur of a float32 (H, W) array, radius r (no SciPy needed)."""
+    import numpy as np
+    if r <= 0:
+        return a
+    k = 2 * r + 1
+    for axis in (0, 1):
+        n = a.shape[axis]
+        pad = [(0, 0), (0, 0)]; pad[axis] = (r + 1, r)
+        c = np.cumsum(np.pad(a, pad, mode='edge'), axis=axis)
+        lo = np.take(c, range(0, n), axis=axis)
+        hi = np.take(c, range(k, k + n), axis=axis)
+        a = (hi - lo) / k
+    return a
+
+
+class _CutoutView(QWidget):
+    """The zoomable canvas inside Cutout Studio; forwards events to the dialog."""
+    def __init__(self, dlg):
+        super().__init__(); self.dlg = dlg
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CrossCursor)
+
+    def paintEvent(self, e): self.dlg._paint_view(self)
+    def mousePressEvent(self, e): self.dlg._view_press(e)
+    def mouseMoveEvent(self, e): self.dlg._view_move(e)
+    def mouseReleaseEvent(self, e): self.dlg._view_release(e)
+
+
+class CutoutStudio(QDialog):
+    """Extract the subject of a picture from its background — the DrawPlus Cutout Studio.
+
+    Paint with the Discard (magic-wand flood), Keep and Erase brushes to build an alpha
+    mask; the result is returned (OK) as a new RGBA image in ``self.result_rgba``."""
+    WORK_MAX = 1200  # cap the working resolution so the flood fill stays snappy
+
+    def __init__(self, parent, qimage):
+        super().__init__(parent)
+        import numpy as np
+        self.setWindowTitle('Cutout Studio')
+        self.result_rgba = None
+        # decode + cap the working resolution
+        w, h = qimage.width(), qimage.height()
+        s = min(1.0, self.WORK_MAX / max(w, h))
+        if s < 1.0:
+            qimage = qimage.scaled(max(1, int(w * s)), max(1, int(h * s)),
+                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.orig = qimage_to_rgba(qimage)                       # (H,W,4)
+        self.rgb = self.orig[:, :, :3].astype(np.int32)
+        H, W = self.orig.shape[:2]
+        self.mask = np.where(self.orig[:, :, 3] > 8, np.uint8(255), np.uint8(0))
+        self._undo = []
+        self.mode = 'discard'
+        self.brush = 24
+        self.tol = 18
+        self.feather = 1
+        self.show_outline = True
+        self.zoom = 1.0
+        self._last = None
+
+        root = QVBoxLayout(self)
+        bar = QHBoxLayout(); root.addLayout(bar)
+        self.mode_btns = {}
+        for mid, lbl, tip in (('discard', 'Discard', 'Flood-remove the background you click on'),
+                              ('keep', 'Keep', 'Paint back areas to keep'),
+                              ('erase', 'Erase', 'Hand-erase stray areas')):
+            b = QPushButton(lbl); b.setCheckable(True); b.setToolTip(tip)
+            b.clicked.connect(lambda _=0, m=mid: self._set_mode(m))
+            bar.addWidget(b); self.mode_btns[mid] = b
+        self.mode_btns['discard'].setChecked(True)
+        bar.addSpacing(12)
+        bar.addWidget(QLabel('Brush:'))
+        self.brush_sp = QSpinBox(); self.brush_sp.setRange(2, 200); self.brush_sp.setValue(self.brush)
+        self.brush_sp.setSuffix(' px'); self.brush_sp.valueChanged.connect(lambda v: setattr(self, 'brush', v))
+        bar.addWidget(self.brush_sp)
+        bar.addWidget(QLabel('Grow tolerance:'))
+        self.tol_sp = QSpinBox(); self.tol_sp.setRange(1, 100); self.tol_sp.setValue(self.tol)
+        self.tol_sp.valueChanged.connect(lambda v: setattr(self, 'tol', v))
+        bar.addWidget(self.tol_sp)
+        self.outline_cb = QCheckBox('Show outline'); self.outline_cb.setChecked(True)
+        self.outline_cb.toggled.connect(self._toggle_outline); bar.addWidget(self.outline_cb)
+        bar.addStretch(1)
+        undo_b = QPushButton('Undo'); undo_b.clicked.connect(self._undo_mask); bar.addWidget(undo_b)
+        reset_b = QPushButton('Reset'); reset_b.clicked.connect(self._reset); bar.addWidget(reset_b)
+
+        self.view = _CutoutView(self)
+        self.scroll = QScrollArea(); self.scroll.setWidget(self.view)
+        self.scroll.setAlignment(Qt.AlignCenter)
+        self.scroll.setStyleSheet('QScrollArea{background:#5a5a5a;border:1px solid #888}')
+        root.addWidget(self.scroll, 1)
+
+        foot = QHBoxLayout(); root.addLayout(foot)
+        foot.addWidget(QLabel('Zoom:'))
+        self.zoom_sl = QSlider(Qt.Horizontal); self.zoom_sl.setRange(20, 400)
+        self.zoom_sl.setFixedWidth(160); self.zoom_sl.valueChanged.connect(self._set_zoom_pct)
+        foot.addWidget(self.zoom_sl)
+        foot.addWidget(QLabel('Edge feather:'))
+        self.feather_sp = QSpinBox(); self.feather_sp.setRange(0, 12); self.feather_sp.setValue(self.feather)
+        self.feather_sp.valueChanged.connect(lambda v: setattr(self, 'feather', v))
+        foot.addWidget(self.feather_sp)
+        foot.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply cutout')
+        bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
+        foot.addWidget(bb)
+
+        self.resize(860, 640)
+        # fit to the available width once shown
+        fit = max(0.2, min(2.0, 760 / max(1, W)))
+        self.zoom_sl.setValue(int(round(fit * 100)))
+
+    # ---- state helpers
+    def _push_undo(self):
+        self._undo.append(self.mask.copy())
+        if len(self._undo) > 16: self._undo.pop(0)
+
+    def _undo_mask(self):
+        if self._undo:
+            self.mask = self._undo.pop(); self.view.update()
+
+    def _reset(self):
+        import numpy as np
+        self._push_undo()
+        self.mask = np.where(self.orig[:, :, 3] > 8, np.uint8(255), np.uint8(0))
+        self.view.update()
+
+    def _set_mode(self, m):
+        self.mode = m
+        for mid, b in self.mode_btns.items(): b.setChecked(mid == m)
+
+    def _toggle_outline(self, on):
+        self.show_outline = on; self.view.update()
+
+    def _set_zoom_pct(self, pct):
+        self.zoom = pct / 100.0
+        H, W = self.orig.shape[:2]
+        self.view.setFixedSize(max(1, int(W * self.zoom)), max(1, int(H * self.zoom)))
+        self.view.update()
+
+    # ---- painting
+    def _composite(self):
+        """Build the display RGBA: original pixels, dimmed+checker where discarded."""
+        import numpy as np
+        H, W = self.orig.shape[:2]
+        keep = self.mask > 0
+        out = self.orig.copy()
+        # checkerboard behind discarded pixels
+        yy, xx = np.mgrid[0:H, 0:W]
+        chk = (((xx // 8) + (yy // 8)) & 1).astype(np.uint8)
+        board = np.where(chk[..., None] == 1, np.uint8(200), np.uint8(235))
+        board = np.repeat(board, 3, axis=2)
+        disc = ~keep
+        out[disc, :3] = board[disc]
+        out[:, :, 3] = 255
+        if self.show_outline:
+            edge = keep & ~(np.roll(keep, 1, 0) & np.roll(keep, -1, 0)
+                            & np.roll(keep, 1, 1) & np.roll(keep, -1, 1))
+            out[edge] = (255, 40, 40, 255)
+        return out
+
+    def _paint_view(self, view):
+        qi = rgba_to_qimage(self._composite())
+        p = QPainter(view)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, self.zoom < 1.0)
+        p.drawImage(QRectF(0, 0, view.width(), view.height()), qi)
+        p.end()
+
+    def _view_xy(self, e):
+        x = int(e.position().x() / self.zoom); y = int(e.position().y() / self.zoom)
+        H, W = self.orig.shape[:2]
+        return max(0, min(W - 1, x)), max(0, min(H - 1, y))
+
+    def _view_press(self, e):
+        if e.button() != Qt.LeftButton: return
+        self._push_undo(); self._last = None
+        self._apply_at(*self._view_xy(e)); self.view.update()
+
+    def _view_move(self, e):
+        if not (e.buttons() & Qt.LeftButton): return
+        self._apply_at(*self._view_xy(e)); self.view.update()
+
+    def _view_release(self, e):
+        self._last = None
+
+    # ---- brush application
+    def _disc(self, cx, cy, value):
+        import numpy as np
+        r = max(1, self.brush // 2)
+        H, W = self.mask.shape
+        y0, y1 = max(0, cy - r), min(H, cy + r + 1)
+        x0, x1 = max(0, cx - r), min(W, cx + r + 1)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        m = (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r
+        self.mask[y0:y1, x0:x1][m] = value
+
+    def _apply_at(self, x, y):
+        if self.mode == 'keep':
+            self._disc(x, y, 255)
+        elif self.mode == 'erase':
+            self._disc(x, y, 0)
+        else:  # discard flood (magic wand) — only re-flood when crossing a new, still-kept pixel
+            if self.mask[y, x] == 0: return
+            if self._last is not None and self._last == (x, y): return
+            self._last = (x, y)
+            self._flood_discard(x, y)
+
+    def _flood_discard(self, sx, sy):
+        import numpy as np
+        H, W = self.rgb.shape[:2]
+        seed = self.rgb[sy, sx]
+        thr = (self.tol / 100.0) * 441.673  # sqrt(3*255^2)
+        d2 = ((self.rgb - seed) ** 2).sum(axis=2)
+        similar = d2 <= (thr * thr)
+        if not similar[sy, sx]: return
+        out = np.zeros((H, W), bool)
+        stack = [(sx, sy)]
+        while stack:
+            x, y = stack.pop()
+            free = similar[y] & ~out[y]
+            if not free[x]: continue
+            lf = np.nonzero(~free[:x])[0]
+            xl = lf[-1] + 1 if lf.size else 0
+            rf = np.nonzero(~free[x + 1:])[0]
+            xr = x + rf[0] if rf.size else W - 1
+            out[y, xl:xr + 1] = True
+            for yy in (y - 1, y + 1):
+                if 0 <= yy < H:
+                    cand = similar[yy, xl:xr + 1] & ~out[yy, xl:xr + 1]
+                    idx = np.nonzero(cand)[0]
+                    if idx.size:
+                        starts = idx[np.concatenate(([True], np.diff(idx) > 1))]
+                        for st in starts: stack.append((xl + int(st), yy))
+        self.mask[out] = 0
+
+    # ---- result
+    def _accept(self):
+        import numpy as np
+        keep = (self.mask > 0).astype(np.float32)
+        if self.feather > 0:
+            keep = _box_blur(keep, self.feather)
+        alpha = np.clip(keep * (self.orig[:, :, 3].astype(np.float32)), 0, 255)
+        out = self.orig.copy()
+        out[:, :, 3] = alpha.astype(np.uint8)
+        self.result_rgba = out
+        self.accept()
 
 
 class Main(QMainWindow):
@@ -2903,6 +3181,8 @@ class Main(QMainWindow):
         self.fx_btn.clicked.connect(self.effects_dialog); top.addWidget(self.fx_btn)
         self.grad_btn = QPushButton('Gradient…'); self.grad_btn.setToolTip('Linear or radial gradient fill for the selected shape')
         self.grad_btn.clicked.connect(self.gradient_dialog); top.addWidget(self.grad_btn)
+        self.cutout_btn = QPushButton('Cutout…'); self.cutout_btn.setToolTip('Cutout Studio — remove the background from the selected picture')
+        self.cutout_btn.clicked.connect(self.cutout_studio); top.addWidget(self.cutout_btn)
         top.addSeparator()
         for txt, slot in (('Zoom +', lambda: self.canvas.set_zoom(self.canvas.zoom * 1.25)),
                           ('Zoom −', lambda: self.canvas.set_zoom(self.canvas.zoom / 1.25)),
@@ -2916,12 +3196,16 @@ class Main(QMainWindow):
         if c.pen_nodes and t != 'pen':
             c.pen_nodes = None; c.pen_dragging = False; c.cur = None
         c.tool = t
+        if t != 'image':
+            c.pending_image = None  # leaving the image tool drops any un-placed picture
         if t == 'node':
             # start editing whatever is selected, if it is (or can become) a node path
             c.node_obj = c.sel if (c.sel and c.sel.get('type') == 'nodes') else None
         else:
             c.node_obj = None; c.node_grab = None
         c.update()
+        if t == 'image':
+            self.begin_image_insert()
 
     def pick_quickshape(self, i):
         self.canvas.quick_shape = self.shape_cb.itemData(i)
@@ -2999,33 +3283,113 @@ class Main(QMainWindow):
         self.canvas.update(); self.refresh_layers()
 
     # ---------------------------------------------------------------- image import
-    def import_image(self, at=None):
-        """Place a picture on the canvas as an image object. The file is embedded as a
-        data-URI so the drawing (and its SVG) stays self-contained."""
-        path, _ = QFileDialog.getOpenFileName(self, 'Import Image', _just_dir('pics'),
-                                              'Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp);;All files (*)')
+    def _pick_image_file(self):
+        """Prompt for a picture and return (data-URI, native_w, native_h) or None."""
+        path, _ = QFileDialog.getOpenFileName(self, 'Insert Picture', _just_dir('pics'),
+                                              'Images (*.png *.jpg *.jpeg *.gif *.bmp *.webp *.tif *.tiff);;All files (*)')
         if not path:
-            self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True); return
+            return None
         img = QImage(path)
         if img.isNull():
-            QMessageBox.warning(self, APP, 'Could not read that image file.'); return
+            QMessageBox.warning(self, APP, 'Could not read that image file.'); return None
         try:
             uri = image_data_uri(path)
         except OSError:
-            QMessageBox.warning(self, APP, 'Could not read that image file.'); return
-        w, h = img.width() or 1, img.height() or 1
-        # fit a large image sensibly onto the canvas, keeping its aspect ratio
+            QMessageBox.warning(self, APP, 'Could not read that image file.'); return None
+        return uri, img.width() or 1, img.height() or 1
+
+    def _add_image_obj(self, uri, nw, nh, x, y, dw, dh):
+        """Create and select an image object (shared by every insert path)."""
+        self.canvas.snapshot()
+        o = dict(type='image', x=x, y=y, w=dw, h=dh, src=uri, stroke=None, sw=0,
+                 fill=None, layer=self.canvas.active_layer)
+        self.canvas.objs.append(o); self.canvas.set_selection([o])
+        self.canvas.update(); self.refresh_layers()
+        return o
+
+    def import_image(self, at=None):
+        """Insert Picture from the menu — place it centred at a sensible fitted size.
+        The file is embedded as a data-URI so the drawing (and its SVG) stays self-contained."""
+        picked = self._pick_image_file()
+        if not picked:
+            self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True); return
+        uri, w, h = picked
         maxw, maxh = self.canvas.W * 0.8, self.canvas.H * 0.8
         s = min(1.0, maxw / w, maxh / h)
         dw, dh = w * s, h * s
         x = at[0] if at else (self.canvas.W - dw) / 2
         y = at[1] if at else (self.canvas.H - dh) / 2
-        self.canvas.snapshot()
-        o = dict(type='image', x=x, y=y, w=dw, h=dh, src=uri, stroke=None, sw=0,
-                 fill=None, layer=self.canvas.active_layer)
-        self.canvas.objs.append(o); self.canvas.set_selection([o])
+        self._add_image_obj(uri, w, h, x, y, dw, dh)
         self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True)
-        self.canvas.update(); self.refresh_layers()
+
+    def begin_image_insert(self):
+        """Image tool: pick the file first, then let the user click (native size) or
+        click-drag (custom size) on the canvas to place it — the DrawPlus flow."""
+        picked = self._pick_image_file()
+        if not picked:
+            self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True); return
+        uri, w, h = picked
+        self.canvas.pending_image = dict(uri=uri, w=w, h=h)
+        self.statusBar().showMessage('Click to place the picture, or drag to set its size.', 6000)
+
+    def place_pending_image(self, start, end):
+        """Drop the pending picture: a plain click = fitted native size centred on the
+        click; a drag = fit inside the dragged rectangle (aspect preserved)."""
+        pend = self.canvas.pending_image
+        if not pend: return
+        self.canvas.pending_image = None
+        uri, w, h = pend['uri'], pend['w'], pend['h']
+        dx, dy = abs(end[0] - start[0]), abs(end[1] - start[1])
+        if dx > 4 and dy > 4:
+            s = min(dx / w, dy / h)
+            dw, dh = w * s, h * s
+            x, y = min(start[0], end[0]), min(start[1], end[1])
+        else:
+            maxw, maxh = self.canvas.W * 0.8, self.canvas.H * 0.8
+            s = min(1.0, maxw / w, maxh / h)
+            dw, dh = w * s, h * s
+            x, y = start[0] - dw / 2, start[1] - dh / 2
+        self._add_image_obj(uri, w, h, x, y, dw, dh)
+        self.canvas.tool = 'select'; self.tool_acts['select'].setChecked(True)
+
+    def _selected_image(self, verb):
+        """Return the selected image object, or warn and return None."""
+        o = self.canvas.sel
+        if o is None or o.get('type') != 'image':
+            QMessageBox.information(self, APP, f'Select a picture first, then {verb}.')
+            return None
+        return o
+
+    def cutout_studio(self):
+        """Open Cutout Studio on the selected picture; apply the alpha cutout on OK."""
+        o = self._selected_image('open Cutout Studio')
+        if o is None: return
+        qi = obj_image(o)
+        if qi.isNull():
+            QMessageBox.warning(self, APP, 'Could not read that picture.'); return
+        dlg = CutoutStudio(self, qi)
+        if not dlg.exec() or dlg.result_rgba is None: return
+        import io, base64
+        from PIL import Image
+        buf = io.BytesIO()
+        Image.fromarray(dlg.result_rgba, 'RGBA').save(buf, 'PNG')
+        uri = 'data:image/png;base64,' + base64.b64encode(buf.getvalue()).decode()
+        self.canvas.snapshot()
+        _IMG_CACHE.pop(o.get('src', ''), None)
+        o['src'] = uri
+        self.canvas.update(); self.statusBar().showMessage('Cutout applied.', 4000)
+
+    def replace_image(self):
+        """Swap the selected picture's source for another file, keeping its frame."""
+        o = self._selected_image('Replace Picture')
+        if o is None: return
+        picked = self._pick_image_file()
+        if not picked: return
+        uri, _w, _h = picked
+        self.canvas.snapshot()
+        _IMG_CACHE.pop(o.get('src', ''), None)
+        o['src'] = uri
+        self.canvas.update()
 
     def edit_text(self):
         """Re-open the text dialog on the selected text object to change its words/font/size."""
@@ -3343,7 +3707,7 @@ class Main(QMainWindow):
         f.addAction(self.act('Export as &Picture…', self.export_picture_dialog, 'Ctrl+Shift+E'))
         f.addAction(self.act('&Export PNG (quick)…', self.export_png))
         f.addAction(self.act('Export P&DF…', self.export_pdf))
-        f.addAction(self.act('&Import Image…', self.import_image))
+        f.addAction(self.act('Insert &Picture…', self.import_image))
         f.addAction(self.act('&Print…', self.print_drawing, QKeySequence.Print))
         f.addAction(self.act('Edit in &PAINTcanvas…', self.edit_in_paint))
         f.addSeparator(); f.addAction(self.act('&Quit', self.close, QKeySequence.Quit))
@@ -3364,6 +3728,12 @@ class Main(QMainWindow):
         tm.addAction(self.act('Edit &Text…', self.edit_text))
         tm.addAction(self.act('&Fit Text to Path', self.fit_text_to_path))
         tm.addAction(self.act('&Detach Text from Path', self.detach_text_from_path))
+        pm = m.addMenu('&Picture')
+        pm.addAction(self.act('&Insert Picture…', self.import_image))
+        pm.addAction(self.act('&Cutout Studio…', self.cutout_studio))
+        pm.addAction(self.act('&Replace Picture…', self.replace_image))
+        pm.addSeparator()
+        pm.addAction(self.act('Edit in &PAINTcanvas…', self.edit_in_paint))
         a = m.addMenu('&Arrange')
         a.addAction(self.act('Bring to &Front', lambda: self.canvas.z_order('front'), QKeySequence('Ctrl+Shift+]')))
         a.addAction(self.act('Send to &Back', lambda: self.canvas.z_order('back'), QKeySequence('Ctrl+Shift+[')))
