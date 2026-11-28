@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.35-00"
+VERSION = "1.36-00"
 
 
 def _just_dir(kind):
@@ -1553,6 +1553,17 @@ def pixmap_from_src(src):
     return pm if not pm.isNull() else None
 
 
+def grad_stops(g):
+    """Normalised colour stops for a gradient dict → [(pos 0..1, '#rrggbb'), …].
+    Prefers g['stops'] (multi-stop); falls back to the old 2-colour c1/c2 pair so
+    documents saved before multi-stop gradients still render."""
+    ss = g.get('stops')
+    if ss:
+        out = [(max(0.0, min(1.0, float(s.get('pos', 0)))), s.get('color', '#000000')) for s in ss]
+        return sorted(out, key=lambda s: s[0]) or [(0, g.get('c1', '#ffffff')), (1, g.get('c2', '#000000'))]
+    return [(0.0, g.get('c1', '#ffffff')), (1.0, g.get('c2', '#000000'))]
+
+
 def obj_brush(o):
     img = o.get('fillimg')
     if img:
@@ -1564,15 +1575,15 @@ def obj_brush(o):
             return QBrush(pm.scaled(w, h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation))
     g = o.get('grad')
     if g:
-        w, h = o['w'], o['h']
+        w, h = o['w'], o['h']; stops = grad_stops(g)
         if g.get('type') == 'radial':
             rg = QRadialGradient(w / 2, h / 2, max(w, h) / 2)
-            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            for pos, col in stops: rg.setColorAt(pos, QColor(col))
             return QBrush(rg)
         ang = math.radians(g.get('angle', 90))
         cx, cy, dx, dy = w / 2, h / 2, math.cos(ang), math.sin(ang)
         lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
-        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        for pos, col in stops: lg.setColorAt(pos, QColor(col))
         return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
@@ -1757,17 +1768,15 @@ def shape_svg(o):
     g = o.get('grad'); defs = ''; fill = 'none'
     if g:
         gid = 'qsg_' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', 'x')))
+        stps = ''.join(f'<stop offset="{pos * 100:.1f}%" stop-color="{col}"/>' for pos, col in grad_stops(g))
         if g.get('type') == 'radial':
-            defs = (f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">'
-                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></radialGradient>')
+            defs = f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">{stps}</radialGradient>'
         else:
             rad = math.radians(g.get('angle', 90))
             x1, y1 = 50 - 50 * math.cos(rad), 50 - 50 * math.sin(rad)
             x2, y2 = 50 + 50 * math.cos(rad), 50 + 50 * math.sin(rad)
             defs = (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
-                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+                    f'{stps}</linearGradient>')
         fill = f'url(#{gid})'
     elif o.get('fillimg'):
         pid = 'qsp_' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', 'x')))
@@ -1853,6 +1862,16 @@ def fx_css(o):
         c = _rgba(gl.get('color', '#ffe08a'), gl.get('opacity', 70)); b = max(1, gl.get('blur', 12))
         parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
     return ('filter:' + ' '.join(parts) + ';') if parts else ''
+
+def mask_css(o):
+    """CSS mask-image implementing an object's transparency gradient (o['agrad']) at
+    publish — a linear black→transparent fade whose alpha is the a1..a2 opacity."""
+    ag = o.get('agrad')
+    if not ag: return ''
+    a1 = max(0, min(100, ag.get('a1', 100))) / 100.0; a2 = max(0, min(100, ag.get('a2', 0))) / 100.0
+    deg = (90 - ag.get('angle', 0)) % 360   # maths CCW-from-+x → CSS CW-from-up
+    grad = f"linear-gradient({deg:g}deg, rgba(0,0,0,{a1:g}) 0%, rgba(0,0,0,{a2:g}) 100%)"
+    return f"-webkit-mask-image:{grad};mask-image:{grad};"
 
 # ---------------------------------------------------------------- Lines & arrowheads
 def _line_ends(o):
@@ -2229,6 +2248,33 @@ def paint_qr(o, p):
 
 
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
+    # Transparency gradient (o['agrad']): render the object to a temp layer, multiply
+    # its alpha by a linear a1→a2 fade across `angle`, then draw the masked layer back.
+    # Composes with flat opacity because we draw the layer at the painter's opacity.
+    ag = o.get('agrad')
+    if ag and o['type'] not in ('nav', 'form', 'search', 'youtube', 'map'):
+        w, h = o['w'], o['h']
+        sx = math.hypot(p.worldTransform().m11(), p.worldTransform().m12()) or 1  # device px per logical px
+        sx = max(0.5, min(sx, 8))
+        W, H = max(1, int(math.ceil(w * sx))), max(1, int(math.ceil(h * sx)))
+        layer = QImage(W, H, QImage.Format_ARGB32_Premultiplied); layer.fill(Qt.transparent)
+        lp = QPainter(layer)
+        lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+        lp.scale(sx, sx)
+        _paint_obj_body(lp, o, site, page, hide_text, edit)   # object drawn opaque into the layer
+        # alpha mask: a1..a2 opacity across the gradient angle, applied with DestinationIn
+        ang = math.radians(ag.get('angle', 0)); dx, dy = math.cos(ang), math.sin(ang)
+        mg = QLinearGradient(w / 2 - dx * w / 2, h / 2 - dy * h / 2, w / 2 + dx * w / 2, h / 2 + dy * h / 2)
+        mg.setColorAt(0, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a1', 100))) * 2.55))))
+        mg.setColorAt(1, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a2', 0))) * 2.55))))
+        lp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        lp.setPen(Qt.NoPen); lp.setBrush(QBrush(mg)); lp.drawRect(QRectF(0, 0, w, h))
+        lp.end()
+        p.drawImage(QRectF(0, 0, w, h), layer)              # at the painter's current opacity
+        return
+    _paint_obj_body(p, o, site, page, hide_text, edit)
+
+def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
     rad = o.get('radius', 0)
@@ -3064,6 +3110,14 @@ def text_css(o):
         s += f"column-count:{int(o['cols'])};column-gap:{o.get('colgap', 16)}px;"
     return s
 
+def grad_css(g):
+    """A CSS linear-/radial-gradient() for a gradient dict, all stops included."""
+    stops = ', '.join(f"{col} {pos * 100:.0f}%" for pos, col in grad_stops(g))
+    if g.get('type') == 'radial':
+        return f"radial-gradient(circle at 50% 50%, {stops})"
+    # CSS angles run clockwise from "up"; our angle is maths-style (CCW from +x), so convert.
+    return f"linear-gradient({(90 - g.get('angle', 90)) % 360:g}deg, {stops})"
+
 def box_css(o):
     s = ''
     if o.get('fillimg'):
@@ -3071,6 +3125,7 @@ def box_css(o):
             s += f"background-image:url({o['fillimg']});background-repeat:repeat;"
         else:
             s += f"background-image:url({o['fillimg']});background-size:cover;background-position:center;background-repeat:no-repeat;"
+    elif o.get('grad'): s += f"background:{grad_css(o['grad'])};"
     elif o.get('fill'): s += f"background:{o['fill']};"
     if o.get('strokeW', 0) > 0 and o.get('stroke'): s += f"border:{o['strokeW']}px {o.get('dash', 'solid')} {o['stroke']};"
     if o.get('radius'): s += f"border-radius:{o['radius']}px;"
@@ -3281,7 +3336,7 @@ def obj_html(o, site, page, img):
     st = f"left:{o['x']:g}px;top:{o['y']:g}px;width:{o['w']:g}px;height:{o['h']:g}px;"
     if o.get('rot'): st += f"transform:rotate({o['rot']:g}deg);"
     if o.get('opacity', 1) < 1: st += f"opacity:{o['opacity']:g};"
-    st += fx_css(o)
+    st += fx_css(o); st += mask_css(o)
     tag, attrs = 'div', ''
     L = o.get('link')
     if L and t not in ('nav', 'form'):
@@ -7262,6 +7317,10 @@ class MainWindow(QMainWindow):
                          self.act('&Picture Fill…', lambda: self.bitmap_fill_dialog(), None, ['insert-image', 'fill-color', 'view-preview']),
                          self.act('Remove Picture Fill', lambda: self.clear_fill_image(), None, None),
                          None,
+                         self.act('&Transparency Gradient…', lambda: self.transparency_gradient_dialog(), None,
+                                  ['fill-gradient-linear', 'color-gradient', 'adjustcurves']),
+                         self.act('Remove Transparency Gradient', lambda: self.remove_transparency_gradient(), None, None),
+                         None,
                          self.act('Chec&k Spelling…', lambda: self.spell_dialog(), 'F7', ['tools-check-spelling', 'gtk-spell-check']),
                          a['pageprops']])
         al = [self.act(n, lambda _=False, k=k: self.align(k), None, ic) for k, n, ic in (
@@ -10760,21 +10819,51 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def gradient_dialog(self, kind='linear'):
-        from PySide6.QtWidgets import QSpinBox
+        from PySide6.QtWidgets import (QSpinBox, QDoubleSpinBox, QVBoxLayout, QHBoxLayout,
+                                       QScrollArea, QWidget, QPushButton)
         if not isinstance(kind, str): kind = 'linear'          # guard against QAction's checked bool
         objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
         if not objs: return
         g0 = objs[0].get('grad') or {}
-        c1 = [g0.get('c1', '#ffffff')]; c2 = [g0.get('c2', '#2a7d6b')]
-        b1 = ColorButton(c1[0], lambda c: c1.__setitem__(0, c or '#ffffff'), 'Start colour')
-        b2 = ColorButton(c2[0], lambda c: c2.__setitem__(0, c or '#000000'), 'End colour')
+        stops = list(grad_stops(g0))                            # [(pos, '#rrggbb'), …] incl. 2-stop fallback
+        dlg = QDialog(self); dlg.setWindowTitle(('Radial' if kind == 'radial' else 'Linear') + ' Gradient'); dlg.resize(420, 420)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('Add, move or recolour the gradient stops. Position runs 0 (start) to 1 (end).'))
+        # Scrollable list of stop rows; each holds a mutable [pos, color] model entry.
+        model = [[p, c] for p, c in stops]
+        host = QWidget(); vl = QVBoxLayout(host); vl.setContentsMargins(0, 0, 0, 0)
+        sa = QScrollArea(); sa.setWidgetResizable(True); sa.setWidget(host); v.addWidget(sa, 1)
+        def rebuild():
+            while vl.count():
+                it = vl.takeAt(0); w = it.widget()
+                if w: w.setParent(None)
+            for i, ent in enumerate(model):
+                row = QWidget(); hl = QHBoxLayout(row); hl.setContentsMargins(0, 0, 0, 0)
+                ps = QDoubleSpinBox(); ps.setRange(0.0, 1.0); ps.setSingleStep(0.05); ps.setDecimals(2); ps.setValue(ent[0])
+                ps.valueChanged.connect(lambda val, e=ent: e.__setitem__(0, val))
+                cb = ColorButton(ent[1], lambda c, e=ent: e.__setitem__(1, c or '#000000'), 'Stop colour')
+                rm = QPushButton('✕'); rm.setFixedWidth(30); rm.setToolTip('Remove this stop')
+                rm.setEnabled(len(model) > 2)
+                rm.clicked.connect(lambda _=False, e=ent: (model.remove(e), rebuild()))
+                hl.addWidget(QLabel(f'{i + 1}.')); hl.addWidget(ps); hl.addWidget(cb); hl.addWidget(rm); hl.addStretch()
+                vl.addWidget(row)
+            vl.addStretch()
+        rebuild()
+        add = QPushButton('＋ Add stop')
+        add.clicked.connect(lambda: (model.append([1.0, '#000000']), rebuild()))
+        v.addWidget(add)
         ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
-        rows = [('Start colour:', b1), ('End colour:', b2)] + ([('Angle:', ang)] if kind == 'linear' else [])
-        dlg = form_dialog(self, ('Radial' if kind == 'radial' else 'Linear') + ' Gradient',
-                          rows, QLabel(f'A {kind} gradient between two colours.'))
+        if kind == 'linear':
+            arow = QHBoxLayout(); arow.addWidget(QLabel('Angle:')); arow.addWidget(ang); arow.addStretch(); v.addLayout(arow)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
         if not dlg.exec(): return
+        norm = sorted(([max(0.0, min(1.0, p)), c] for p, c in model), key=lambda s: s[0]) or [[0, '#fff'], [1, '#000']]
         self.commit()
-        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind}
+        for o in objs:
+            o['grad'] = {'type': kind, 'angle': ang.value(),
+                         'stops': [{'pos': round(p, 4), 'color': c} for p, c in norm],
+                         'c1': norm[0][1], 'c2': norm[-1][1]}   # keep c1/c2 for old-reader fallback
         self.refresh()
 
     def fill_solid(self):
@@ -10799,6 +10888,34 @@ class MainWindow(QMainWindow):
         if not objs: return
         self.commit()
         for o in objs: o.pop('grad', None)
+        self.refresh()
+
+    # Transparency gradient (o['agrad']) — a linear alpha fade across the object.
+    # Works on pictures, shapes and text frames; composes with the flat opacity.
+    AGRAD_OBJ = ('shape', 'text', 'artistic', 'button', 'picture')
+
+    def transparency_gradient_dialog(self):
+        from PySide6.QtWidgets import QSpinBox
+        objs = [o for o in self.sel_objs() if o['type'] in self.AGRAD_OBJ]
+        if not objs:
+            self.hint('Select a picture, shape or text frame first.'); return
+        a0 = objs[0].get('agrad') or {}
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(a0.get('angle', 0)))
+        a1 = QSpinBox(); a1.setRange(0, 100); a1.setSuffix(' %'); a1.setValue(int(a0.get('a1', 100)))
+        a2 = QSpinBox(); a2.setRange(0, 100); a2.setSuffix(' %'); a2.setValue(int(a0.get('a2', 0)))
+        dlg = form_dialog(self, 'Transparency Gradient',
+                          [('Angle:', ang), ('Start opacity:', a1), ('End opacity:', a2)],
+                          QLabel('Fades the object across the angle, from the start opacity to the end opacity.'))
+        if not dlg.exec(): return
+        self.commit()
+        for o in objs: o['agrad'] = {'type': 'linear', 'angle': ang.value(), 'a1': a1.value(), 'a2': a2.value()}
+        self.refresh()
+
+    def remove_transparency_gradient(self):
+        objs = [o for o in self.sel_objs() if o.get('agrad')]
+        if not objs: return
+        self.commit()
+        for o in objs: o.pop('agrad', None)
         self.refresh()
 
     def toggle_wrap(self):
@@ -11528,6 +11645,9 @@ class MainWindow(QMainWindow):
                 m.addAction('Linear Gradient Fill…', lambda: self.gradient_dialog('linear'))
                 m.addAction('Radial Gradient Fill…', lambda: self.gradient_dialog('radial'))
                 if o.get('grad'): m.addAction('Remove Gradient', self.remove_gradient)
+            if o['type'] in self.AGRAD_OBJ:
+                m.addAction('Transparency Gradient…', self.transparency_gradient_dialog)
+                if o.get('agrad'): m.addAction('Remove Transparency Gradient', self.remove_transparency_gradient)
             if o['type'] in self.FX_OBJ:
                 m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
             m.addAction('Transform — Position & Size…', self.transform_dialog)
