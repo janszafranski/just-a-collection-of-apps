@@ -15,7 +15,7 @@ try:
                                    QSizePolicy)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QFont, QFontMetricsF, QPainterPath, QActionGroup, QPolygonF,
-                               QLinearGradient, QRadialGradient, QPdfWriter, QPageSize, QPageLayout)
+                               QLinearGradient, QRadialGradient, QPdfWriter, QPageSize, QPageLayout, QTransform)
     from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings, QMarginsF, QBuffer, QByteArray
     from PySide6.QtSvg import QSvgGenerator
     from PySide6.QtPrintSupport import QPrinter, QPrintDialog
@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.14-00"
+VERSION = "1.15-00"
 
 
 # ===================================================================== font grouping
@@ -1003,6 +1003,147 @@ def _obj_layer_img(o, pad=0):
     return img, ox, oy, w, h
 
 
+# ---------------------------------------------------------------- Perspective & Envelope
+# Non-destructive render-time warps (DrawPlus Perspective & Envelope). Both work on ANY
+# object by warping its RENDERED pixels (via _obj_layer_img), keeping the underlying
+# geometry intact. State lives in o['perspective'] (4 corner offsets) and o['envelope']
+# (a grid of control-point offsets). Reset = pop the key.
+
+def _warp_pts(bbox, pts):
+    """Resolve a list of (fx, fy) control points to absolute world coords inside bbox.
+    Each component is an offset in 0..1 fractions of the box (so 0,0 = TL; 1,1 = BR),
+    plus the point's stored offset. Here pts are already absolute fractions — we just
+    map fraction → world. Used by both warps so presets are resolution-independent."""
+    x0, y0, w, h = bbox.x(), bbox.y(), bbox.width() or 1, bbox.height() or 1
+    return [QPointF(x0 + fx * w, y0 + fy * h) for fx, fy in pts]
+
+
+def perspective_transform(bbox, corners):
+    """A QTransform that maps bbox's TL/TR/BR/BL to the four `corners` (each a fractional
+    (fx, fy) offset of the box, where the undistorted box is [(0,0),(1,0),(1,1),(0,1)]).
+    Returns identity if the quad is degenerate. corners order = TL, TR, BR, BL."""
+    src = QPolygonF([QPointF(bbox.left(), bbox.top()), QPointF(bbox.right(), bbox.top()),
+                     QPointF(bbox.right(), bbox.bottom()), QPointF(bbox.left(), bbox.bottom())])
+    dst = QPolygonF(_warp_pts(bbox, corners))
+    t = QTransform()
+    if not QTransform.quadToQuad(src, dst, t):
+        return QTransform()
+    return t
+
+
+def default_perspective():
+    """The identity perspective: the 4 corners sit exactly on the box (TL,TR,BR,BL)."""
+    return [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]]
+
+
+def default_envelope(cols=2, rows=2):
+    """An identity mesh of (cols+1)x(rows+1) control points, each the fractional position
+    of a grid vertex over the box (so a flat mesh reproduces the box exactly)."""
+    pts = []
+    for j in range(rows + 1):
+        for i in range(cols + 1):
+            pts.append([i / cols, j / rows])
+    return {'cols': cols, 'rows': rows, 'pts': pts}
+
+
+ENVELOPE_PRESETS = ('reset', 'arch', 'bulge', 'pinch', 'wave')
+
+
+def envelope_preset(name, cols=2, rows=2):
+    """Build a preset control mesh. Returns an envelope dict (or None for reset)."""
+    if name == 'reset':
+        return None
+    env = default_envelope(cols, rows)
+    pts = env['pts']
+    def idx(i, j): return j * (cols + 1) + i
+    for j in range(rows + 1):
+        for i in range(cols + 1):
+            fx, fy = i / cols, j / rows
+            if name == 'arch':
+                # lift the top edge into an arch (centre rises), bottom flat
+                pts[idx(i, j)][1] = fy - (1 - fy) * 0.35 * math.sin(math.pi * fx)
+            elif name in ('bulge', 'pinch'):
+                # barrel (bulge) / pincushion (pinch): push each vertex radially out from /
+                # in toward the centre, strongest mid-edge, zero at the 4 corners.
+                dx, dy = fx - 0.5, fy - 0.5
+                rad = math.hypot(dx, dy)
+                corner = math.hypot(0.5, 0.5)
+                falloff = math.sin(math.pi * (rad / corner))   # 0 at centre & corners, 1 mid-edge
+                k = (0.16 if name == 'bulge' else -0.28) * falloff
+                pts[idx(i, j)][0] = fx + dx * 2 * k
+                pts[idx(i, j)][1] = fy + dy * 2 * k
+            elif name == 'wave':
+                pts[idx(i, j)][1] = fy + 0.18 * math.sin(2 * math.pi * fx)
+    return env
+
+
+def envelope_cell_quad(env, bbox, i, j):
+    """World-space destination quad (QPolygonF, TL,TR,BR,BL) for mesh cell (i, j), from
+    the envelope's control points mapped through bbox. A flat mesh reproduces the cell's
+    own sub-rectangle of the box exactly."""
+    cols, rows = env.get('cols', 2), env.get('rows', 2)
+    pts = env['pts']
+    def cp(ii, jj):
+        fx, fy = pts[jj * (cols + 1) + ii]
+        return QPointF(bbox.x() + fx * (bbox.width() or 1), bbox.y() + fy * (bbox.height() or 1))
+    return QPolygonF([cp(i, j), cp(i + 1, j), cp(i + 1, j + 1), cp(i, j + 1)])
+
+
+def draw_object_warped(p, o, selected=False, skip_text=False):
+    """Blit the object's rendered pixels through its perspective and/or envelope warp.
+    Returns True if a warp was applied (so the caller skips the normal body draw)."""
+    persp = o.get('perspective'); env = o.get('envelope')
+    if not persp and not env:
+        return False
+    # Render the object's crisp pixels to an offscreen layer (supersampled a little for
+    # smoother warped edges), keyed to its world bounding box.
+    try:
+        sx = math.hypot(p.worldTransform().m11(), p.worldTransform().m12()) or 1
+    except Exception:
+        sx = 1
+    ss = max(1.0, min(sx, 4))                      # supersample factor
+    r = obj_rect(o)
+    ox, oy = r.x(), r.y(); w = r.width() or 1; h = r.height() or 1
+    W = max(1, int(math.ceil(w * ss))); H = max(1, int(math.ceil(h * ss)))
+    img = QImage(W, H, QImage.Format_ARGB32_Premultiplied); img.fill(Qt.transparent)
+    lp = QPainter(img); lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+    lp.scale(W / w, H / h); lp.translate(-ox, -oy)
+    o2 = {k: v for k, v in o.items() if k not in ('perspective', 'envelope', 'rot', 'opacity', 'blend')}
+    _paint_object_body(lp, o2, False, skip_text)
+    lp.end()
+    # unit box over the source image (0..1 → pixel coords)
+    def src_quad(fx0, fy0, fx1, fy1):
+        return QPolygonF([QPointF(fx0 * W, fy0 * H), QPointF(fx1 * W, fy0 * H),
+                          QPointF(fx1 * W, fy1 * H), QPointF(fx0 * W, fy1 * H)])
+    p.save(); p.setRenderHint(QPainter.SmoothPixmapTransform)
+    if env:
+        cols, rows = env.get('cols', 2), env.get('rows', 2)
+        pt = perspective_transform(r, persp) if persp else None
+        for j in range(rows):
+            for i in range(cols):
+                sq = src_quad(i / cols, j / rows, (i + 1) / cols, (j + 1) / rows)
+                dq = envelope_cell_quad(env, r, i, j)
+                if pt is not None:
+                    dq = QPolygonF([pt.map(q) for q in dq])
+                t = QTransform()
+                if QTransform.quadToQuad(sq, dq, t):
+                    # draw ONLY this cell's pixels: clip to its source sub-rect (grown a
+                    # hair so adjacent cells overlap and leave no seam), under the transform.
+                    sx0, sy0 = i / cols * W, j / rows * H
+                    sx1, sy1 = (i + 1) / cols * W, (j + 1) / rows * H
+                    p.save(); p.setTransform(t, True)
+                    p.setClipRect(QRectF(sx0 - 0.5, sy0 - 0.5, (sx1 - sx0) + 1, (sy1 - sy0) + 1))
+                    p.drawImage(0, 0, img); p.restore()
+    else:
+        dq = QPolygonF(_warp_pts(r, persp))
+        sq = src_quad(0, 0, 1, 1)
+        t = QTransform()
+        if QTransform.quadToQuad(sq, dq, t):
+            p.setTransform(t, True); p.drawImage(0, 0, img)
+    p.restore()
+    return True
+
+
 def _blur_alpha_img(img, radius):
     """A copy of img whose ALPHA channel is box-blurred by radius (colour kept). Uses the
     module _box_blur — no new deps. Ported from PAGEcreator."""
@@ -1615,7 +1756,9 @@ def paint_object(p, o, selected=False, skip_text=False):
         # for shapes (text is spliced separately with its own rotate()).
         cx, cy = obj_center(o)
         p.save(); p.translate(cx, cy); p.rotate(a); p.translate(-cx, -cy)
-    if o.get('agrad'):
+    if o.get('perspective') or o.get('envelope'):
+        draw_object_warped(p, o, selected, skip_text)   # render-time Perspective / Envelope warp
+    elif o.get('agrad'):
         _paint_object_agrad(p, o, selected, skip_text)
     else:
         _paint_object_body(p, o, selected, skip_text)
@@ -1757,6 +1900,8 @@ class Canvas(QWidget):
         # Node tool: the path being reshaped, which node/handle is grabbed, and which node
         # index is "selected" (for delete / type-convert via keys and menu)
         self.node_obj = None; self.node_grab = None; self.selected_node = None
+        # Perspective / Envelope warp tools: which control point (index) is grabbed
+        self.warp_grab = None
         # transform/rubber-band drag state
         self.handle = None       # which transform handle is being dragged
         self.drag_start = None   # canvas pt where a handle/rubber drag began
@@ -2123,6 +2268,8 @@ class Canvas(QWidget):
             self._draw_handles(p)
         if self.tool == 'node' and self.node_obj is not None:
             self._draw_node_handles(p)
+        if self.tool in ('perspective', 'envelope'):
+            self._draw_warp_handles(p)
         p.end()
 
     def _draw_pen_preview(self, p):
@@ -2287,6 +2434,75 @@ class Canvas(QWidget):
             if abs(nd['x'] - pt[0]) <= tol and abs(nd['y'] - pt[1]) <= tol:
                 return ('node', i)
         return None
+
+    # ---------------------------------------------------------------- Perspective / Envelope
+    def _warp_target(self):
+        """The single selected object the warp tools act on (or None)."""
+        sel = self._selection()
+        return sel[0] if len(sel) == 1 else None
+
+    def _warp_points(self, o):
+        """World-coord control points for the active warp tool over object o, as a list of
+        QPointF (perspective → 4 corners; envelope → mesh grid). Ensures the key exists."""
+        r = obj_rect(o)
+        if self.tool == 'perspective':
+            persp = o.get('perspective') or default_perspective()
+            return _warp_pts(r, persp)
+        env = o.get('envelope') or default_envelope()
+        return _warp_pts(r, env['pts'])
+
+    def _draw_warp_handles(self, p):
+        """Draw the perspective corner box, or the envelope mesh grid, with draggable
+        control points on the single selected object."""
+        o = self._warp_target()
+        if o is None: return
+        pts = self._warp_points(o)
+        hs = (self.HANDLE_PX + 1) / max(self.zoom, 0.01)
+        pen = QPen(QColor('#8a3ffc'), 1, Qt.SolidLine); pen.setCosmetic(True)
+        p.save(); p.setPen(pen); p.setBrush(Qt.NoBrush)
+        if self.tool == 'perspective':
+            p.drawPolygon(QPolygonF(pts + [pts[0]]))
+        else:
+            env = o.get('envelope') or default_envelope()
+            cols, rows = env.get('cols', 2), env.get('rows', 2)
+            def gp(i, j): return pts[j * (cols + 1) + i]
+            for j in range(rows + 1):
+                p.drawPolyline(QPolygonF([gp(i, j) for i in range(cols + 1)]))
+            for i in range(cols + 1):
+                p.drawPolyline(QPolygonF([gp(i, j) for j in range(rows + 1)]))
+        p.setBrush(QColor('#ffffff'))
+        for c in pts:
+            p.drawEllipse(c, hs * .55, hs * .55)
+        p.restore()
+
+    def _hit_warp(self, pt):
+        """Index of the warp control point under pt (within tolerance), or None."""
+        o = self._warp_target()
+        if o is None: return None
+        pts = self._warp_points(o)
+        tol = (self.HANDLE_PX + 5) / max(self.zoom, 0.01)
+        for i, c in enumerate(pts):
+            if abs(c.x() - pt[0]) <= tol and abs(c.y() - pt[1]) <= tol:
+                return i
+        return None
+
+    def _drag_warp_to(self, pt):
+        """Move the grabbed warp control point to pt, updating o['perspective']/['envelope']
+        as a fractional offset of the object's bounding box (non-destructive)."""
+        o = self._warp_target()
+        if o is None or self.warp_grab is None: return
+        r = obj_rect(o); w = r.width() or 1; h = r.height() or 1
+        fx = (pt[0] - r.x()) / w; fy = (pt[1] - r.y()) / h
+        if self.tool == 'perspective':
+            persp = o.get('perspective')
+            if persp is None:
+                persp = default_perspective(); o['perspective'] = persp
+            persp[self.warp_grab] = [fx, fy]
+        else:
+            env = o.get('envelope')
+            if env is None:
+                env = default_envelope(); o['envelope'] = env
+            env['pts'][self.warp_grab] = [fx, fy]
 
     def _hit_segment(self, pt):
         """Return (seg_index, t) for the path segment nearest pt (within tolerance), or
@@ -2642,6 +2858,22 @@ class Canvas(QWidget):
                     hit = None
             self.node_obj = hit; self.node_grab = None; self.selected_node = None
             self.update(); return
+        if self.tool in ('perspective', 'envelope'):
+            o = self._warp_target()
+            if o is None:
+                # nothing selected: let a click pick an object so the tool has a target
+                hit = next((x for x in reversed(self.ordered_objs())
+                            if not x.get('locked') and obj_hit(x, pt)), None)
+                if hit is not None: self.set_selection([hit])
+                self.update(); return
+            g = self._hit_warp(pt)
+            if g is not None:
+                self.snapshot(); self.warp_grab = g; self.drag_start = pt
+            else:
+                hit = next((x for x in reversed(self.ordered_objs())
+                            if not x.get('locked') and obj_hit(x, pt)), None)
+                if hit is not None and hit is not o: self.set_selection([hit])
+            self.update(); return
 
     def mouseMoveEvent(self, e):
         pt = self.pos(e); self.win.set_pos(pt)
@@ -2672,6 +2904,8 @@ class Canvas(QWidget):
             self.cur = pt; self.update()
         elif self.tool == 'node' and self.node_grab is not None and (e.buttons() & Qt.LeftButton):
             self._drag_node_to(pt); self.update()
+        elif self.tool in ('perspective', 'envelope') and self.warp_grab is not None and (e.buttons() & Qt.LeftButton):
+            self._drag_warp_to(pt); self.update()
 
     def mousePressSnapMove(self): pass
 
@@ -2801,6 +3035,8 @@ class Canvas(QWidget):
             self.pen_dragging = False; self.update()
         elif self.tool == 'node' and self.node_grab is not None:
             self.node_grab = None; self.drag_start = None
+        elif self.tool in ('perspective', 'envelope') and self.warp_grab is not None:
+            self.warp_grab = None; self.drag_start = None; self.win.sync_props()
 
     def _finish_pen(self, closed):
         """Commit the Bézier pen's nodes as a node path — closed+filled or open."""
@@ -3513,7 +3749,8 @@ class Main(QMainWindow):
              ('freehand', 'Freehand', '✎'), ('brush', 'Brush (pressure)', '🖌'), ('pen', 'Pen (Bézier curves)', '✐'),
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
              ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻'),
-             ('dim', 'Dimension line', '↔'), ('conn', 'Connector', '⌐')]
+             ('dim', 'Dimension line', '↔'), ('conn', 'Connector', '⌐'),
+             ('perspective', 'Perspective (drag corners)', '◇'), ('envelope', 'Envelope (mesh warp)', '▦')]
 
     def __init__(self):
         super().__init__()
@@ -4093,6 +4330,8 @@ class Main(QMainWindow):
             c.node_obj = c.sel if (c.sel and c.sel.get('type') == 'nodes') else None
         else:
             c.node_obj = None; c.node_grab = None
+        if t not in ('perspective', 'envelope'):
+            c.warp_grab = None
         c.update()
         if t == 'image':
             self.begin_image_insert()
@@ -4169,6 +4408,46 @@ class Main(QMainWindow):
         for k in ('shadow', 'glow', 'reflect', 'feather', 'bevel'):
             if not o.get(k): o.pop(k, None)
         self.canvas.update()
+
+    # ---------------------------------------------------------------- Distort (Perspective / Envelope)
+    def add_perspective(self):
+        """Give the selected object a (fresh identity) perspective and switch to the tool
+        so its corner handles are ready to drag."""
+        o = self.canvas.sel
+        if o is None:
+            QMessageBox.information(self, APP, 'Select an object first, then add a perspective.')
+            return
+        self.canvas.snapshot()
+        if not o.get('perspective'):
+            o['perspective'] = default_perspective()
+        self.set_tool('perspective'); self.tool_acts['perspective'].setChecked(True)
+        self.canvas.update()
+
+    def reset_perspective(self):
+        o = self.canvas.sel
+        if o is not None and o.get('perspective'):
+            self.canvas.snapshot(); o.pop('perspective', None); self.canvas.update()
+
+    def add_envelope(self, preset='reset'):
+        """Apply an envelope preset to the selected object (preset='reset' adds a flat 2×2
+        identity mesh ready to drag) and switch to the Envelope tool."""
+        o = self.canvas.sel
+        if o is None:
+            QMessageBox.information(self, APP, 'Select an object first, then add an envelope.')
+            return
+        self.canvas.snapshot()
+        if preset == 'reset':
+            o['envelope'] = default_envelope()
+        else:
+            env = envelope_preset(preset)
+            if env is not None: o['envelope'] = env
+        self.set_tool('envelope'); self.tool_acts['envelope'].setChecked(True)
+        self.canvas.update()
+
+    def reset_envelope(self):
+        o = self.canvas.sel
+        if o is not None and o.get('envelope'):
+            self.canvas.snapshot(); o.pop('envelope', None); self.canvas.update()
 
     # ---------------------------------------------------------------- Pressure Studio
     def pressure_studio(self):
@@ -4906,6 +5185,14 @@ class Main(QMainWindow):
         cm.addAction(self.act('&Subtract (Front from Back)', lambda: self.combine('subtract')))
         cm.addAction(self.act('&Intersect', lambda: self.combine('intersect')))
         a.addAction(self.act('Ble&nd…', self.blend))
+        dm = a.addMenu('Dis&tort (Perspective / Envelope)')
+        dm.addAction(self.act('Add &Perspective (drag corners)', self.add_perspective))
+        dm.addAction(self.act('&Reset Perspective', self.reset_perspective))
+        dm.addSeparator()
+        dm.addAction(self.act('Add &Envelope (mesh warp)', lambda: self.add_envelope('reset')))
+        for nm in ('arch', 'bulge', 'pinch', 'wave'):
+            dm.addAction(self.act('Envelope: ' + nm.capitalize(), lambda _=0, n=nm: self.add_envelope(n)))
+        dm.addAction(self.act('Reset En&velope', self.reset_envelope))
         al = a.addMenu('A&lign')
         for lbl, how in (('Align Left', 'left'), ('Align Centre', 'hcenter'), ('Align Right', 'right'),
                          ('Align Top', 'top'), ('Align Middle', 'vcenter'), ('Align Bottom', 'bottom')):
