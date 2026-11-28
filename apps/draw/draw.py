@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.15-00"
+VERSION = "1.16-00"
 
 
 # ===================================================================== font grouping
@@ -470,6 +470,141 @@ def _nodes_from_painterpath(pp):
         else:
             closed = True   # QuickShapes are closed outlines
     return nodes, closed
+
+
+# ---------------------------------------------------------------- Roughen & Knife cores
+def _lcg(seed):
+    """A tiny deterministic PRNG (32-bit LCG, Numerical-Recipes constants) yielding floats
+    in [-1, 1). Used so Roughen is reproducible: same points+params+seed → same output."""
+    state = int(seed) & 0xFFFFFFFF
+    while True:
+        state = (1664525 * state + 1013904223) & 0xFFFFFFFF
+        yield (state / 0xFFFFFFFF) * 2.0 - 1.0
+
+
+def roughen_points(points, amplitude=10.0, freq=12.0, smooth=0.0, seed=1):
+    """PURE core of the Roughen effect. Take a flat polyline `points` (list of (x,y)),
+    resample it to roughly `freq` jitter points per 100px of outline, then displace each
+    resampled point by a seeded-random amount (±amplitude) along the local normal. Returns
+    a new list of (x,y). `smooth` 0..1 blends each displaced point toward its neighbours'
+    average, softening spikes (0 = spiky, 1 = smoothed). Deterministic for a fixed seed."""
+    pts = [(float(x), float(y)) for x, y in points]
+    if len(pts) < 2:
+        return pts
+    closed = (abs(pts[0][0] - pts[-1][0]) < 1e-6 and abs(pts[0][1] - pts[-1][1]) < 1e-6)
+    # cumulative arc length
+    seg = [math.hypot(pts[i + 1][0] - pts[i][0], pts[i + 1][1] - pts[i][1]) for i in range(len(pts) - 1)]
+    total = sum(seg)
+    if total <= 0:
+        return pts
+    # resample uniformly to n samples (at least len(pts); density from freq per 100px)
+    n = max(len(pts), int(total / 100.0 * max(1.0, freq)) + 1)
+    cum = [0.0]
+    for s in seg:
+        cum.append(cum[-1] + s)
+    samples = []
+    for k in range(n + (0 if closed else 1)):
+        d = total * (k / n)
+        # locate segment containing arc-distance d
+        j = 0
+        while j < len(seg) and cum[j + 1] < d:
+            j += 1
+        if j >= len(seg):
+            samples.append(pts[-1]); continue
+        t = (d - cum[j]) / (seg[j] or 1.0)
+        ax, ay = pts[j]; bx, by = pts[j + 1]
+        samples.append((ax + (bx - ax) * t, ay + (by - ay) * t))
+    rng = _lcg(seed)
+    out = []
+    m = len(samples)
+    for i in range(m):
+        px, py = samples[i]
+        # local tangent (from neighbours) → normal
+        a = samples[(i - 1) % m] if closed else samples[max(0, i - 1)]
+        b = samples[(i + 1) % m] if closed else samples[min(m - 1, i + 1)]
+        tx, ty = b[0] - a[0], b[1] - a[1]
+        tl = math.hypot(tx, ty) or 1.0
+        nx, ny = -ty / tl, tx / tl
+        if (not closed) and (i == 0 or i == m - 1):
+            disp = 0.0  # pin the endpoints of an open path
+        else:
+            disp = next(rng) * amplitude
+        out.append((px + nx * disp, py + ny * disp))
+    if closed and out:
+        out[-1] = out[0] if m == len(samples) else out[-1]
+    # smoothing pass: blend toward neighbour average
+    s = max(0.0, min(1.0, smooth))
+    if s > 0:
+        src = list(out)
+        for _ in range(1 + int(s * 3)):
+            nxt = []
+            for i in range(len(src)):
+                a = src[(i - 1) % len(src)] if closed else src[max(0, i - 1)]
+                b = src[(i + 1) % len(src)] if closed else src[min(len(src) - 1, i + 1)]
+                avg = ((a[0] + b[0]) / 2, (a[1] + b[1]) / 2)
+                nxt.append((src[i][0] * (1 - s) + avg[0] * s, src[i][1] * (1 - s) + avg[1] * s))
+            src = nxt
+        out = src
+    return out
+
+
+def _points_to_nodes(points, closed, smooth=0.0):
+    """Turn a flat polyline into a node list. smooth=0 → corner nodes; smooth>0 → give each
+    node tangent handles (Catmull-Rom-ish) scaled by smooth, for a flowing path."""
+    pts = [(float(x), float(y)) for x, y in points]
+    if closed and len(pts) >= 2 and abs(pts[0][0] - pts[-1][0]) < 1e-6 and abs(pts[0][1] - pts[-1][1]) < 1e-6:
+        pts = pts[:-1]
+    n = len(pts)
+    nodes = []
+    s = max(0.0, min(1.0, smooth))
+    for i in range(n):
+        x, y = pts[i]
+        if s <= 0 or n < 3:
+            nodes.append({'x': x, 'y': y, 'hin': [0.0, 0.0], 'hout': [0.0, 0.0], 'smooth': False})
+            continue
+        prev = pts[(i - 1) % n] if closed else pts[max(0, i - 1)]
+        nxt = pts[(i + 1) % n] if closed else pts[min(n - 1, i + 1)]
+        tx, ty = (nxt[0] - prev[0]) * s / 3.0, (nxt[1] - prev[1]) * s / 3.0
+        nodes.append({'x': x, 'y': y, 'hin': [-tx, -ty], 'hout': [tx, ty], 'smooth': True})
+    return nodes
+
+
+def knife_split(object_path, cut_p1, cut_p2):
+    """PURE core of the Knife tool. Split a filled QPainterPath by the infinite line through
+    cut_p1→cut_p2 by intersecting it with two large half-plane polygons (one on each side of
+    the line). Returns a list of QPainterPath pieces: 2 when the line crosses the shape, else
+    [object_path] (a miss leaves the object whole). cut points are (x,y) tuples."""
+    if object_path is None or object_path.isEmpty():
+        return [object_path] if object_path is not None else []
+    x1, y1 = cut_p1; x2, y2 = cut_p2
+    dx, dy = x2 - x1, y2 - y1
+    if abs(dx) < 1e-9 and abs(dy) < 1e-9:
+        return [object_path]
+    br = object_path.boundingRect()
+    diag = math.hypot(br.width(), br.height()) + 10.0
+    L = diag * 4.0  # extend the cut line well past the object both ways
+    ux, uy = dx, dy
+    ul = math.hypot(ux, uy) or 1.0
+    ux, uy = ux / ul, uy / ul
+    nx, ny = -uy, ux  # left normal
+    cx, cy = (x1 + x2) / 2.0, (y1 + y2) / 2.0
+    a = (cx - ux * L, cy - uy * L)   # far-back point on the line
+    b = (cx + ux * L, cy + uy * L)   # far-forward point on the line
+    pieces = []
+    for sgn in (1.0, -1.0):
+        off = (nx * L * sgn, ny * L * sgn)
+        half = QPainterPath()
+        half.moveTo(a[0], a[1])
+        half.lineTo(b[0], b[1])
+        half.lineTo(b[0] + off[0], b[1] + off[1])
+        half.lineTo(a[0] + off[0], a[1] + off[1])
+        half.closeSubpath()
+        piece = object_path.intersected(half).simplified()
+        if not piece.isEmpty() and piece.boundingRect().width() > 0.01 and piece.boundingRect().height() > 0.01:
+            pieces.append(piece)
+    if len(pieces) < 2:
+        return [object_path]  # cut missed (or barely grazed) the shape → leave it whole
+    return pieces
 
 
 # ---------------------------------------------------------------- node editing helpers
@@ -1902,6 +2037,8 @@ class Canvas(QWidget):
         self.node_obj = None; self.node_grab = None; self.selected_node = None
         # Perspective / Envelope warp tools: which control point (index) is grabbed
         self.warp_grab = None
+        # Knife tool: the cut line being dragged, as (p1, p2) or None
+        self.knife_line = None
         # transform/rubber-band drag state
         self.handle = None       # which transform handle is being dragged
         self.drag_start = None   # canvas pt where a handle/rubber drag began
@@ -2261,6 +2398,10 @@ class Canvas(QWidget):
             paint_object(p, prev)
         if self.tool == 'pen' and self.pen_nodes:
             self._draw_pen_preview(p)
+        if self.tool == 'knife' and self.knife_line is not None:
+            (ax, ay), (bx, by) = self.knife_line
+            p.setPen(QPen(QColor('#e14d2a'), 0, Qt.DashLine)); p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(ax, ay), QPointF(bx, by))
         self._draw_guides(p)
         if self.rubber:
             self._draw_rubber(p)
@@ -2743,6 +2884,104 @@ class Canvas(QWidget):
             pp.closeSubpath()
         return pp
 
+    def _node_path_of(self, o):
+        """Return o as a QPainterPath via its node form (converting rect/ellipse/… first),
+        so Roughen/Knife can work on any convertible shape. (None if unconvertible.)"""
+        if o.get('type') == 'nodes':
+            return node_painter_path(o)
+        n = self._as_node_obj(o)
+        return node_painter_path(n) if n else None
+
+    def roughen_selection(self, amplitude, freq, smooth):
+        """Roughen each selected (convertible) object: flatten its outline, perturb it with
+        roughen_points (seeded, reproducible), and replace it with a jagged node path."""
+        sel = [o for o in self._selection()
+               if o.get('type') in ('rect', 'ellipse', 'quick', 'line', 'poly', 'path', 'nodes')]
+        if not sel:
+            return 0
+        self.snapshot()
+        done = 0
+        for o in list(sel):
+            node_o = self._as_node_obj(o)
+            if node_o is None:
+                continue
+            closed = bool(node_o.get('closed'))
+            pp = node_painter_path(node_o)
+            if pp.isEmpty():
+                continue
+            # flatten to a polyline sized to the outline length (denser than the default)
+            length = max(1.0, pp.length())
+            step = max(0.002, min(0.05, 60.0 / length))
+            pts = _flatten_painterpath(pp, step)
+            if closed and pts and (pts[0] != pts[-1]):
+                pts = pts + [pts[0]]
+            seed = o.get('_roughseed')
+            if seed is None:
+                seed = (abs(hash((round(pts[0][0], 1), round(pts[0][1], 1), len(pts)))) % 100000) + 1
+            rough = roughen_points(pts, amplitude, freq, smooth, seed)
+            nodes = _points_to_nodes(rough, closed, smooth)
+            if len(nodes) < 2:
+                continue
+            new = dict(type='nodes', nodes=nodes, closed=closed, _roughseed=seed,
+                       stroke=o.get('stroke', '#1f2a30'), sw=o.get('sw', 2),
+                       fill=o.get('fill') if closed else None, layer=self.obj_layer(o))
+            for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'blend', 'gid', 'dash',
+                      'agrad', 'reflect', 'feather', 'bevel'):
+                if o.get(k) is not None:
+                    new[k] = copy.deepcopy(o[k])
+            i = self.objs.index(o); self.objs[i] = new
+            done += 1
+        if done:
+            self.set_selection([x for x in self.objs if x.get('_roughseed') is not None][-done:])
+            self.update()
+        return done
+
+    def knife_cut(self, p1, p2):
+        """Cut every crossed (filled, convertible) object along the line p1→p2, replacing it
+        with its pieces as node paths (fill/stroke preserved). Open strokes are skipped."""
+        sel = self._selection()
+        targets = sel if sel else self.ordered_objs()
+        targets = [o for o in targets
+                   if o.get('type') in ('rect', 'ellipse', 'quick', 'poly', 'nodes', 'path')]
+        if not targets:
+            return 0
+        made = []
+        snap_done = False
+        for o in list(targets):
+            if o.get('type') == 'nodes' and not o.get('closed'):
+                continue  # open stroke — skip (filled shapes only)
+            pp = self._node_path_of(o)
+            if pp is None or pp.isEmpty():
+                continue
+            pieces = knife_split(pp, p1, p2)
+            if len(pieces) < 2:
+                continue
+            if not snap_done:
+                self.snapshot(); snap_done = True
+            idx = self.objs.index(o) if o in self.objs else len(self.objs)
+            new_objs = []
+            for pc in pieces:
+                nodes, closed = _nodes_from_painterpath(pc)
+                if len(nodes) < 2:
+                    continue
+                npc = dict(type='nodes', nodes=nodes, closed=True,
+                           stroke=o.get('stroke', '#1f2a30'), sw=o.get('sw', 2),
+                           fill=o.get('fill', '#cfe3ef'), layer=self.obj_layer(o))
+                for k in ('shadow', 'glow', 'opacity', 'blend'):
+                    if o.get(k) is not None:
+                        npc[k] = copy.deepcopy(o[k])
+                new_objs.append(npc)
+            if len(new_objs) < 2:
+                continue
+            if o in self.objs:
+                self.objs.pop(idx)
+            for j, npc in enumerate(new_objs):
+                self.objs.insert(idx + j, npc)
+            made.extend(new_objs)
+        if made:
+            self.set_selection(made); self.update()
+        return len(made)
+
     def pos(self, e):
         return (e.position().x() / self.zoom, e.position().y() / self.zoom)
 
@@ -2813,6 +3052,8 @@ class Canvas(QWidget):
             self.update(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim'):
             self.start = pt; self.cur = pt; return
+        if self.tool == 'knife':
+            self.knife_line = (pt, pt); return
         if self.tool == 'conn':
             self.start = pt; self.cur = pt; return
         if self.tool == 'text':
@@ -2883,6 +3124,8 @@ class Canvas(QWidget):
             self.rubber = (self.drag_start, pt); self.update(); return
         if self.tool == 'select' and self.sel is not None and (e.buttons() & Qt.LeftButton) and self.drag_off:
             self._move_sel(pt); self.update(); return
+        if self.tool == 'knife' and self.knife_line is not None and (e.buttons() & Qt.LeftButton):
+            self.knife_line = (self.knife_line[0], pt); self.update(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn', 'image') and self.start and (e.buttons() & Qt.LeftButton):
             self.cur = pt; self.update()
         elif self.tool == 'brush' and (e.buttons() & Qt.LeftButton) and self.objs and self.objs[-1].get('type') == 'brush':
@@ -3019,6 +3262,11 @@ class Canvas(QWidget):
                 self.snapshot(); self.objs.append(self._make_connector(self.start, self.cur))
                 self.set_selection([self.objs[-1]])
             self.start = self.cur = None; self.update(); self.win.sync_props()
+        elif self.tool == 'knife' and self.knife_line is not None:
+            p1, p2 = self.knife_line; self.knife_line = None
+            if abs(p2[0] - p1[0]) > 2 or abs(p2[1] - p1[1]) > 2:
+                self.knife_cut(p1, p2)
+            self.update(); self.win.sync_props()
         elif self.tool == 'select' and self.handle is not None:
             self.handle = None; self.drag_start = self.drag_orig = None; self.update(); self.win.sync_props()
         elif self.tool == 'select' and self.rubber is not None:
@@ -3750,7 +3998,8 @@ class Main(QMainWindow):
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
              ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻'),
              ('dim', 'Dimension line', '↔'), ('conn', 'Connector', '⌐'),
-             ('perspective', 'Perspective (drag corners)', '◇'), ('envelope', 'Envelope (mesh warp)', '▦')]
+             ('perspective', 'Perspective (drag corners)', '◇'), ('envelope', 'Envelope (mesh warp)', '▦'),
+             ('knife', 'Knife (cut shapes)', '🔪')]
 
     def __init__(self):
         super().__init__()
@@ -4332,6 +4581,8 @@ class Main(QMainWindow):
             c.node_obj = None; c.node_grab = None
         if t not in ('perspective', 'envelope'):
             c.warp_grab = None
+        if t != 'knife':
+            c.knife_line = None
         c.update()
         if t == 'image':
             self.begin_image_insert()
@@ -4339,6 +4590,30 @@ class Main(QMainWindow):
     def pick_quickshape(self, i):
         self.canvas.quick_shape = self.shape_cb.itemData(i)
         self.canvas.tool = 'quick'; self.tool_acts['quick'].setChecked(True)
+
+    def roughen_dialog(self):
+        """DrawPlus Roughen effect: perturb the selected shape(s)' outline into a jagged /
+        rough node path. Amplitude = px of jitter, Detail = jitter points per 100px,
+        Smoothness = 0 spiky … 100 flowing."""
+        if not [o for o in self.canvas._selection()
+                if o.get('type') in ('rect', 'ellipse', 'quick', 'line', 'poly', 'path', 'nodes')]:
+            QMessageBox.information(self, APP, 'Select a shape first (the Select tool), then Roughen.')
+            return
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        dlg = QDialog(self); dlg.setWindowTitle('Roughen'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        amp = QSpinBox(); amp.setRange(0, 200); amp.setSuffix(' px'); amp.setValue(10)
+        det = QSpinBox(); det.setRange(1, 100); det.setValue(12)
+        sm = QSpinBox(); sm.setRange(0, 100); sm.setSuffix(' %'); sm.setValue(0)
+        form.addRow('Amplitude', amp); form.addRow('Detail (points / 100px)', det)
+        form.addRow('Smoothness', sm)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        n = self.canvas.roughen_selection(float(amp.value()), float(det.value()), sm.value() / 100.0)
+        if n:
+            self.refresh_layers()
 
     def effects_dialog(self):
         o = self.canvas.sel
@@ -5185,6 +5460,7 @@ class Main(QMainWindow):
         cm.addAction(self.act('&Subtract (Front from Back)', lambda: self.combine('subtract')))
         cm.addAction(self.act('&Intersect', lambda: self.combine('intersect')))
         a.addAction(self.act('Ble&nd…', self.blend))
+        a.addAction(self.act('Rou&ghen…', self.roughen_dialog))
         dm = a.addMenu('Dis&tort (Perspective / Envelope)')
         dm.addAction(self.act('Add &Perspective (drag corners)', self.add_perspective))
         dm.addAction(self.act('&Reset Perspective', self.reset_perspective))
