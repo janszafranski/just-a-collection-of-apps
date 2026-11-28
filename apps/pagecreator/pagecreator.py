@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.43-00"
+VERSION = "1.44-00"
 
 
 def _just_dir(kind):
@@ -1904,17 +1904,90 @@ def wrap_exclusions(o, site, page, pad):
         excl.append(((qx1 - ox) - pad, (qy1 - oy) - pad, (qx2 - ox) - pad, (qy2 - oy) - pad))
     return excl
 
-def flow_chain(page, o):
-    """The ordered list of text frames in o's linked-text story (within one page).
-    The story's text lives on the head frame; followers render slices of it."""
-    if page is None:
+def flow_chain(page, o, site=None):
+    """The ordered list of text frames in o's linked-text story. The story's text
+    lives on the head frame; followers render slices of it. When `site` is given the
+    chain is resolved across ALL pages (frame ids are globally unique) so a story can
+    autoflow onto later pages; otherwise it stays page-local (original behaviour)."""
+    if page is None and site is None:
         return [o]
-    byid = {x['id']: x for x in page.get('objects', [])}
+    if site is not None:
+        byid = {x['id']: x for p in site['pages'] for x in p.get('objects', [])}
+    else:
+        byid = {x['id']: x for x in page.get('objects', [])}
     head = byid.get(o.get('flow_head')) or o
     chain, seen, cur = [head], {head['id']}, head
     while cur.get('flow_next') in byid and cur['flow_next'] not in seen:
         cur = byid[cur['flow_next']]; chain.append(cur); seen.add(cur['id'])
     return chain
+
+def _page_of(site, oid):
+    """The page dict holding the object with this id (None if unplaced)."""
+    for p in site['pages']:
+        if any(x['id'] == oid for x in p.get('objects', [])):
+            return p
+    return None
+
+def _chain_capacity(chain):
+    """Total vertical capacity (px) of a linked story, measured EXACTLY as paint_obj
+    does: each frame holds `h - 2*pad` of the shared document (clamped to >=1), summed."""
+    pad = chain[0].get('pad', 8)
+    return sum(max(1, cf['h'] - 2 * pad) for cf in chain)
+
+# Autoflow clones the tail frame's whole dict for each continuation, so EVERY layout
+# prop (w/h, pad, pgap, cols, colgap, font, size, lh, align, fill, stroke, snapbaseline…)
+# is carried over. Only these per-object / story-ownership keys must NOT be copied.
+_AUTOFLOW_DROP = ('id', 'html', 'flow_head', 'flow_next', 'link', 'anchor', 'name', 'locked')
+
+def autoflow(site, head, limit=50, add_page_fn=None):
+    """Continue an overflowing linked-text story into NEW frames on following pages
+    until nothing overflows. Pure data operation on `site` — no GUI. Returns a dict
+    with counts/the frames & pages added so callers can report and (un)do.
+
+    Algorithm:
+      * Resolve the full cross-page chain; the head frame owns the html.
+      * While the shared document is taller than the chain's summed capacity
+        (same test paint_obj uses) and we're under `limit`:
+          - clone the current TAIL frame's geometry/layout onto the NEXT page
+            (creating one, same size/master, if there is no next page),
+          - link it: old tail's flow_next -> new id, new frame's flow_head = head id,
+          - re-measure with the new capacity and repeat.
+    `add_page_fn(after_page)` lets the GUI create a page its own way; the default
+    appends a plain page cloning the previous page's height/master/bg."""
+    head = flow_chain(None, head, site)[0]          # normalise to the story's head
+    if head['type'] != 'text':
+        return dict(ok=False, reason='nottext', added=0, pages=0)
+    doc_h = make_doc(head).size().height()
+    chain = flow_chain(None, head, site)
+    if doc_h <= _chain_capacity(chain) + 1:
+        return dict(ok=False, reason='fits', added=0, pages=0, chain=len(chain))
+
+    def default_add_page(after):
+        idx = site['pages'].index(after)
+        p = dict(id=uid(), title=f"{after.get('title', 'Page')} (cont.)",
+                 file=slug('page', {q['file'] for q in site['pages']}),
+                 master=after.get('master', site['masters'][0]['id']), nav=False,
+                 level=after.get('level', 0), height=after.get('height'), bg='', objects=[])
+        site['pages'].insert(idx + 1, p); return p
+    mk_page = add_page_fn or default_add_page
+
+    added_frames, added_pages, n = [], [], 0
+    while doc_h > _chain_capacity(chain) + 1 and n < limit:
+        tail = chain[-1]
+        tp = _page_of(site, tail['id']) or site['pages'][0]
+        ti = site['pages'].index(tp)
+        if ti + 1 < len(site['pages']):
+            nxt = site['pages'][ti + 1]
+        else:
+            nxt = mk_page(tp); added_pages.append(nxt)
+        clone = {k: copy.deepcopy(v) for k, v in tail.items() if k not in _AUTOFLOW_DROP}
+        clone['id'] = uid(); clone['flow_head'] = head['id']; clone['flow_next'] = None
+        nxt['objects'].append(clone)
+        tail['flow_next'] = clone['id']
+        added_frames.append(clone); chain.append(clone); n += 1
+    return dict(ok=True, added=len(added_frames), pages=len(added_pages),
+                chain=len(chain), frames=added_frames, newpages=added_pages,
+                overflow=doc_h > _chain_capacity(chain) + 1)
 
 TEXT_PROPS = {
     'font': ('FontFamilies', 'FontFamily'), 'size': ('FontPixelSize', 'FontPointSize'), 'color': ('ForegroundBrush',),
@@ -2982,7 +3055,7 @@ def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
                 o = dict(o, html=(o.get('html') or '<p>#</p>').replace('#', str(num)))
             pad = o.get('pad', 8) if t == 'text' else 0
             chained = t == 'text' and (o.get('flow_head') or o.get('flow_next'))
-            chain = flow_chain(page, o) if chained else [o]
+            chain = flow_chain(page, o, site) if chained else [o]
             head = chain[0]
             doc = make_doc(head)
             ctx = QAbstractTextDocumentLayout.PaintContext()
@@ -8193,7 +8266,9 @@ class MainWindow(QMainWindow):
                          self.act('C&haracter…', lambda: self.character_dialog(), None,
                                   ['format-text-character', 'format-font-size-more', 'preferences-desktop-font']),
                          self.act('Text Frame &Columns…', lambda: self.text_columns_dialog(), None,
-                                  ['view-split-left-right', 'format-text-columns', 'view-column']), None,
+                                  ['view-split-left-right', 'format-text-columns', 'view-column']),
+                         self.act('Auto&flow Text', lambda: self.autoflow_text(), None,
+                                  ['format-text-flow', 'insert-link', 'go-next']), None,
                          self.act('Colour &Scheme…', lambda: self.scheme_dialog(), None, ['preferences-desktop-color', 'color-management', 'gtk-select-color']),
                          self.act('&Replace Colour…', lambda: self.replace_colour_dialog(), None, ['color-picker', 'gtk-select-color', 'preferences-desktop-color']),
                          self.act('&Picture Fill…', lambda: self.bitmap_fill_dialog(), None, ['insert-image', 'fill-color', 'view-preview']),
@@ -9857,6 +9932,29 @@ class MainWindow(QMainWindow):
         for o in objs:
             o.pop('flow_head', None); o.pop('flow_next', None)
         self.refresh(); self.hint('Unlinked text frames.')
+
+    def autoflow_text(self, o=None):
+        """Continue an overflowing text story into new linked frames on following
+        pages (one undo step). Takes the selected frame (or `o`) as the story anchor."""
+        o = o or (self.sel_objs()[0] if self.sel_objs() else None)
+        if not o or o['type'] != 'text':
+            self.hint('Autoflow works on a text frame — select one first.'); return
+        head = flow_chain(None, o, self.site)[0]            # the story's head owns the text
+        if make_doc(head).size().height() <= _chain_capacity(flow_chain(None, head, self.site)) + 1:
+            self.hint('Nothing to autoflow — the text already fits.'); return
+        self.commit()
+        # Let autoflow create pages via add_page so they are well-formed like any new page.
+        def add_cont_page(after):
+            return add_page(self.site, f"{after.get('title', 'Page')} (cont.)",
+                            level=after.get('level', 0), master=after.get('master'),
+                            index=self.site['pages'].index(after) + 1)
+        res = autoflow(self.site, head, add_page_fn=add_cont_page)
+        if not res.get('ok'):
+            self.hint('Nothing to autoflow — the text already fits.'); return
+        self.refresh()
+        pp = f" across {res['pages']} new page{'s' if res['pages'] != 1 else ''}" if res['pages'] else ''
+        tail = 'but it still overflows (frame limit reached)' if res.get('overflow') else 'the story now fits'
+        self.hint(f"Autoflowed into {res['added']} new frame{'s' if res['added'] != 1 else ''}{pp} — {tail}.")
 
     def start_edit(self, o, select_all=False):
         o = self.flow_head_obj(o)        # edit a linked story at its head frame
@@ -12834,6 +12932,11 @@ class MainWindow(QMainWindow):
                 n_text = sum(1 for i in self.sel if (self.find(i) or {}).get('type') == 'text')
                 if n_text >= 2: m.addAction(ticon(['insert-link', 'link'], ''), 'Link Text Frames', self.link_text_frames)
                 if o.get('flow_head'): m.addAction('Unlink Text Frames', self.unlink_text_frames)
+                # Offer autoflow when this story overflows its frame(s) — measured as paint_obj does.
+                head = flow_chain(None, o, self.site)[0]
+                if make_doc(head).size().height() > _chain_capacity(flow_chain(None, head, self.site)) + 1:
+                    m.addAction(ticon(['format-text-flow', 'go-next'], ''), 'Autoflow from here',
+                                lambda _=0, oo=o: self.autoflow_text(oo))
             if o['type'] in ('text', 'artistic', 'button') and o.get('html'):
                 m.addAction(ticon(['insert-table', 'table'], ''), 'Convert to Table…', self.text_to_table)
             if o['type'] in ('shape', 'text', 'picture', 'button'):
