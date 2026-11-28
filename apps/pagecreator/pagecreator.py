@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.37-00"
+VERSION = "1.38-00"
 
 
 def _just_dir(kind):
@@ -1127,7 +1127,14 @@ def serif_site(row, scheme=None):
 
 _PIX = {}
 _YT_THUMBS = {}   # YouTube video id -> QPixmap poster (for the editor canvas; None while in-flight/failed)
+# When a PDF "Web / screen" export is in progress this holds down-rasterised copies of
+# oversized embedded pictures (keyed by asset id). pixmap_for consults it first so the
+# whole paint_obj path transparently draws the smaller images — keeping the file small —
+# without touching the shared editor cache. Cleared again as soon as the export finishes.
+_PIX_OVERRIDE = {}
+
 def pixmap_for(site, key):
+    if key in _PIX_OVERRIDE: return _PIX_OVERRIDE[key]
     src = site.get('assets', {}).get(key)
     if not src: return None
     if key not in _PIX:
@@ -2883,6 +2890,39 @@ def render_page_image(site, page, width=240, crop=None):
     p.end()
     return img
 
+def render_page_to_image(site, page, out_w, out_h, src_rect=None, transparent=False, supersample=True):
+    """Render a page (or a sub-rectangle of it) to a QImage of exactly out_w × out_h px for the
+    'Export As Picture' command. `src_rect` is a QRectF in page coordinates (px); None = whole page.
+    When `supersample` we render at 2× and smooth-scale down for crisp anti-aliased edges and text.
+    `transparent` keeps an alpha channel (no page background painted); otherwise the page background
+    (or white) is flattened in. Uses the shared paint_obj path so gradients/cutouts/effects all show."""
+    out_w = max(1, int(round(out_w))); out_h = max(1, int(round(out_h)))
+    ss = 2 if supersample else 1
+    W, Hh = site['width'], page.get('height') or site['height']
+    if src_rect is None: src_rect = QRectF(0, 0, W, Hh)
+    rw = max(1e-6, src_rect.width()); rh = max(1e-6, src_rect.height())
+    iw, ih = out_w * ss, out_h * ss
+    img = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
+    if transparent:
+        img.fill(Qt.transparent)
+    else:
+        m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
+        img.fill(QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff'))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform); p.setRenderHint(QPainter.TextAntialiasing)
+    # map the chosen source rectangle onto the full image (independent x/y scale handles odd aspects)
+    p.scale(iw / rw, ih / rh); p.translate(-src_rect.x(), -src_rect.y())
+    for o in page_objects(site, page):
+        if o.get('hidden'): continue
+        p.save(); p.translate(o['x'], o['y'])
+        if o.get('rot'):
+            p.translate(o['w'] / 2, o['h'] / 2); p.rotate(o['rot']); p.translate(-o['w'] / 2, -o['h'] / 2)
+        p.setOpacity(o.get('opacity', 1)); paint_obj(p, o, site, page, edit=False); p.restore()
+    p.end()
+    if ss != 1:
+        img = img.scaled(out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    return img
+
 def paint_page_vector(painter, site, page, Wpx, Hpx):
     """Paint one document page's objects onto `painter` at its current origin, vector —
     the same path export_pdf/print_document use. Does NOT fill the background."""
@@ -3256,6 +3296,22 @@ IMPOSITION = {
     '2up':     ('2-up (two pages per sheet)', 2, 1),
     '4up':     ('4-up (four pages per sheet)', 2, 2),
     'booklet': ('Booklet (saddle-stitch folding order)', 2, 1),
+}
+
+# PDF publishing profiles. Each entry: (label, bleed-default-mm, marks-default, img_cap_px, conformance).
+#   bleed/marks are only *presets* for the 1-up dialog controls; 'force' profiles disable them so
+#   press output always carries trim info.  img_cap caps the longest side of embedded pictures when set
+#   (Web profile only, for a smaller RGB file).  conformance is a short string recorded in the PDF
+#   metadata/keywords so a prepress operator can see which profile was chosen.
+# IMPORTANT: 'x1a'/'x3' are *PDF/X-style* only. QPdfWriter cannot embed a real ICC output intent or do
+#   true CMYK separation, so this does NOT produce a conformant PDF/X file — it forces bleed + crop marks
+#   on and tags the metadata with the intended standard so the file can be handed to a RIP/preflight that
+#   does the real conversion. We never claim actual PDF/X conformance.
+PDF_PROFILES = {
+    'web':   ('Web / screen (RGB, compressed)',        0,  False, 1600, ''),
+    'print': ('Print (high quality)',                  0,  False, None, ''),
+    'x1a':   ('PDF/X-1a-style (press-ready, CMYK intent)', 3, True,  None, 'PDF/X-1a:2001 (approx — CMYK intent, no embedded ICC)'),
+    'x3':    ('PDF/X-3-style (press-ready)',           3,  True,  None, 'PDF/X-3:2002 (approx — no embedded ICC)'),
 }
 
 def booklet_order(n):
@@ -7550,7 +7606,8 @@ class MainWindow(QMainWindow):
                 elif isinstance(it, tuple): sub = m.addMenu(it[0]); [sub.addAction(x) if x else sub.addSeparator() for x in it[1]]
                 else: m.addAction(it)
             return m
-        export_sub = [self.act('For &Canva (PowerPoint / PDF / Images)…', self.export_canva, None, ['document-export', 'document-send'])]
+        export_sub = [self.act('As &Picture (PNG / JPEG…)…', self.export_picture, None, ['image-x-generic', 'camera-photo', 'insert-image']),
+                      self.act('For &Canva (PowerPoint / PDF / Images)…', self.export_canva, None, ['document-export', 'document-send'])]
         import_canva_act = self.act('From &Canva (PowerPoint / PDF / Image)…', lambda: self.import_canva(), None, ['document-import', 'document-open'])
         menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openppp'], import_canva_act, None, a['save'], a['saveas'],
                        ('Export', export_sub), None, a['docsetup'], a['preflight'],
@@ -12886,21 +12943,41 @@ class MainWindow(QMainWindow):
         from PySide6.QtGui import QPdfWriter, QPageSize
         from PySide6.QtCore import QSizeF, QMarginsF
         from PySide6.QtWidgets import QDoubleSpinBox, QComboBox
+        # Publishing profile — presets bleed/marks and records a conformance note (see PDF_PROFILES).
+        prof = QComboBox()
+        for k, (lbl, *_r) in PDF_PROFILES.items(): prof.addItem(lbl, k)
+        prof.setCurrentIndex(max(0, prof.findData(self.site.get('pdf_profile', 'print'))))
         bleed = QDoubleSpinBox(); bleed.setRange(0, 20); bleed.setDecimals(0); bleed.setSuffix(' mm'); bleed.setValue(self.site.get('bleed_mm', 0))
         marks = QCheckBox('Add printer crop marks'); marks.setChecked(bool(self.site.get('crop_marks', False)))
         imp = QComboBox()
         for k, (lbl, *_rc) in IMPOSITION.items(): imp.addItem(lbl, k)
         preset = layout if layout in IMPOSITION else self.site.get('imposition', '1up')
         imp.setCurrentIndex(max(0, imp.findData(preset)))
+        def sync_profile(*_):
+            # Preset the bleed/marks controls to the profile's defaults; press profiles force them on.
+            k = prof.currentData(); _lbl, bdef, mdef, _cap, conf = PDF_PROFILES[k]
+            forced = bool(conf)        # the PDF/X-style profiles force (and lock) bleed + marks
+            if k != 'print':           # 'print' keeps whatever the user last set
+                if not bleed.value(): bleed.setValue(bdef)
+                marks.setChecked(mdef)
+            sync_enable()
+            if forced:
+                if not bleed.value(): bleed.setValue(bdef)
+                marks.setChecked(True); bleed.setEnabled(False); marks.setEnabled(False)
         def sync_enable(*_):
-            one = imp.currentData() == '1up'
-            bleed.setEnabled(one); marks.setEnabled(one)
-        imp.currentIndexChanged.connect(sync_enable); sync_enable()
-        dlg = form_dialog(self, 'Export PDF', [('Layout:', imp), ('Bleed:', bleed), ('', marks)],
-                          QLabel('Layout imposes pages onto larger sheets: 2-up/4-up fit several per sheet,\n'
-                                 'Booklet orders them for folding into a saddle-stitched booklet.\n'
-                                 'Bleed and crop marks apply to the 1-up layout.'))
+            one = imp.currentData() == '1up'; forced = bool(PDF_PROFILES[prof.currentData()][4])
+            bleed.setEnabled(one and not forced); marks.setEnabled(one and not forced)
+        prof.currentIndexChanged.connect(sync_profile)
+        imp.currentIndexChanged.connect(sync_enable); sync_profile()
+        dlg = form_dialog(self, 'Export PDF', [('Profile:', prof), ('Layout:', imp), ('Bleed:', bleed), ('', marks)],
+                          QLabel('Profile presets bleed/crop marks for web or press. The PDF/X-style profiles\n'
+                                 'force trim info on and tag the file for prepress (approximate — no embedded ICC\n'
+                                 'and no true CMYK conversion; a RIP/preflight does the real press conversion).\n'
+                                 'Layout imposes pages onto larger sheets: 2-up/4-up fit several per sheet,\n'
+                                 'Booklet orders them for folding. Bleed and crop marks apply to the 1-up layout.'))
         if not dlg.exec(): return
+        profile = prof.currentData()
+        self.site['pdf_profile'] = profile
         layout = imp.currentData()
         self.site['imposition'] = layout
         start = os.path.splitext(self.path or self.site.get('name') or 'document')[0] + '.pdf'
@@ -12913,7 +12990,26 @@ class MainWindow(QMainWindow):
         def page_bg(pg):
             m = next((x for x in site['masters'] if x['id'] == pg['master']), site['masters'][0])
             return QColor(pg.get('bg') or m.get('bg') or site.get('bg') or '#ffffff')
+        plbl, _pbd, _pmd, img_cap, conf = PDF_PROFILES[profile]
+        # Web profile: down-rasterise any oversized embedded pictures into a temporary override
+        # so the exported file stays small (shared editor cache is left untouched; cleared below).
+        _PIX_OVERRIDE.clear()
+        if img_cap:
+            for k in site.get('assets', {}):
+                pm = pixmap_for(site, k)
+                if pm and not pm.isNull() and max(pm.width(), pm.height()) > img_cap:
+                    _PIX_OVERRIDE[k] = pm.scaled(img_cap, img_cap, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         w = QPdfWriter(path); w.setResolution(96); w.setTitle(site.get('name') or 'Document')
+        # Record the chosen profile in the PDF metadata. The conformance string for the PDF/X-style
+        # profiles is advisory only — a prepress operator / RIP reads it; it is NOT real PDF/X.
+        try:
+            w.setCreator(f'{APP} {VERSION}')
+            tag = plbl + ((' — ' + conf) if conf else '')
+            if hasattr(w, 'setDocumentXmpMetadata'):
+                pass   # QPdfWriter has no simple keyword setter; title carries the human-readable tag
+            w.setTitle((site.get('name') or 'Document') + f'  [{tag}]')
+        except Exception:
+            pass
 
         if layout == '1up':
             self.site['bleed_mm'] = bleed.value(); self.site['crop_marks'] = marks.isChecked()
@@ -12944,7 +13040,7 @@ class MainWindow(QMainWindow):
                     painter.restore()
                     if mark: crop(painter, Wpx, Hpx)
             finally:
-                painter.end()
+                painter.end(); _PIX_OVERRIDE.clear()
             extra = [f'{bleed.value():.0f}mm bleed'] if bleed.value() else []
             if mark: extra.append('crop marks')
             self.hint(f'Exported {len(pages)} page(s)' + (f' ({", ".join(extra)})' if extra else '') + f' to {os.path.basename(path)}')
@@ -12973,7 +13069,7 @@ class MainWindow(QMainWindow):
                     paint_page_vector(painter, site, pg, Wpx, Hpx)
                     painter.restore()
         finally:
-            painter.end()
+            painter.end(); _PIX_OVERRIDE.clear()
         self.hint(f'Exported {len(pages)} page(s) as {IMPOSITION[layout][0].split(" (")[0]} '
                   f'on {len(sheets)} sheet(s) to {os.path.basename(path)}')
 
@@ -13022,6 +13118,119 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, APP, f"Couldn't write the PowerPoint file.\n\n{ex}"); return
         self.hint(f'Exported {n} slide(s) to {os.path.basename(path)} — upload it to Canva.')
         return path
+
+    # ------------------------------------------------- Export As Picture
+    def export_picture(self):
+        """Export the current page (or just the current selection) as a raster image:
+        PNG / JPEG / TIFF / BMP / WebP. Size is chosen by scale %, DPI, or an explicit pixel
+        width (height follows the aspect). Optional supersampling renders at 2× then smooth-
+        scales down for crisp edges; PNG/WebP can keep a transparent background. A live preview
+        updates as the options change. Uses render_page_to_image (the shared paint_obj path)."""
+        from PySide6.QtWidgets import (QComboBox, QSpinBox, QSlider,
+                                       QVBoxLayout, QHBoxLayout, QFormLayout, QDialogButtonBox)
+        if self.editor: self.finish_edit()
+        page = self.page()
+        Wpx = self.site['width']; Hpx = page.get('height') or self.site['height']
+        # Selection bounding box (page coords) if anything on the page is selected.
+        sel = [o for o in self.sel_objs()] if not self.edit_master else []
+        sel_rect = None
+        if sel:
+            x0 = min(o['x'] for o in sel); y0 = min(o['y'] for o in sel)
+            x1 = max(o['x'] + o['w'] for o in sel); y1 = max(o['y'] + o['h'] for o in sel)
+            sel_rect = QRectF(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
+        dlg = QDialog(self); dlg.setWindowTitle('Export As Picture'); dlg.setModal(True)
+        root = QHBoxLayout(dlg)
+        form = QFormLayout(); left = QVBoxLayout(); left.addLayout(form); root.addLayout(left, 1)
+
+        area = QComboBox(); area.addItem('Whole page', 'page')
+        if sel_rect is not None: area.addItem(f'Current selection ({len(sel)} object(s))', 'sel')
+        form.addRow('Area:', area)
+
+        fmt = QComboBox()
+        for lbl, ext in [('PNG', 'png'), ('JPEG', 'jpg'), ('TIFF', 'tif'), ('BMP', 'bmp'), ('WebP', 'webp')]:
+            fmt.addItem(lbl, ext)
+        form.addRow('Format:', fmt)
+
+        # Sizing: pick the method, then the value for that method.
+        method = QComboBox()
+        method.addItem('Scale %', 'scale'); method.addItem('DPI', 'dpi'); method.addItem('Width (pixels)', 'px')
+        form.addRow('Size by:', method)
+        scale = QSpinBox(); scale.setRange(5, 800); scale.setSuffix(' %'); scale.setValue(100)
+        dpi = QSpinBox(); dpi.setRange(18, 1200); dpi.setSuffix(' dpi'); dpi.setValue(96)
+        pxw = QSpinBox(); pxw.setRange(16, 20000); pxw.setSuffix(' px'); pxw.setValue(int(Wpx))
+        form.addRow('Scale:', scale); form.addRow('Resolution:', dpi); form.addRow('Pixel width:', pxw)
+
+        quality = QSlider(Qt.Horizontal); quality.setRange(0, 100); quality.setValue(90)
+        qlbl = QLabel('90')
+        quality.valueChanged.connect(lambda v: qlbl.setText(str(v)))
+        qrow = QHBoxLayout(); qrow.addWidget(quality); qrow.addWidget(qlbl)
+        qwrap = QWidget(); qwrap.setLayout(qrow); form.addRow('Quality:', qwrap)
+
+        transp = QCheckBox('32-bit transparent background'); form.addRow('', transp)
+        ssample = QCheckBox('Supersample (render 2× then downscale)'); ssample.setChecked(True); form.addRow('', ssample)
+        dim = QLabel(''); dim.setStyleSheet('color:gray'); form.addRow('Output:', dim)
+
+        prev = QLabel(); prev.setFixedSize(220, 260); prev.setAlignment(Qt.AlignCenter)
+        prev.setStyleSheet('border:1px solid #888; background:#f2f2f2')
+        pv = QVBoxLayout(); pv.addWidget(QLabel('Preview')); pv.addWidget(prev); pv.addStretch(1); root.addLayout(pv)
+
+        def src():
+            return sel_rect if (area.currentData() == 'sel' and sel_rect is not None) else QRectF(0, 0, Wpx, Hpx)
+
+        def out_size():
+            r = src(); sw, sh = r.width(), r.height()
+            m = method.currentData()
+            if m == 'scale': f = scale.value() / 100.0; ow = sw * f
+            elif m == 'dpi': f = dpi.value() / 96.0; ow = sw * f
+            else: ow = pxw.value()
+            ow = max(1, int(round(ow))); oh = max(1, int(round(ow * sh / max(1e-6, sw))))
+            return ow, oh
+
+        def can_alpha():
+            return fmt.currentData() in ('png', 'webp')
+
+        def refresh(*_):
+            scale.setVisible(method.currentData() == 'scale'); form.labelForField(scale).setVisible(method.currentData() == 'scale')
+            dpi.setVisible(method.currentData() == 'dpi'); form.labelForField(dpi).setVisible(method.currentData() == 'dpi')
+            pxw.setVisible(method.currentData() == 'px'); form.labelForField(pxw).setVisible(method.currentData() == 'px')
+            lossy = fmt.currentData() in ('jpg', 'webp')
+            qwrap.setVisible(lossy); form.labelForField(qwrap).setVisible(lossy)
+            transp.setEnabled(can_alpha())
+            if not can_alpha(): transp.setChecked(False)
+            ow, oh = out_size(); dim.setText(f'{ow} × {oh} px')
+            # live preview: render a small thumbnail at the source aspect, then letterbox into the panel
+            r = src(); pw = 200; ph = max(1, int(round(pw * r.height() / max(1e-6, r.width()))))
+            img = render_page_to_image(self.site, page, pw, ph, src_rect=r,
+                                       transparent=transp.isChecked() and can_alpha(), supersample=False)
+            prev.setPixmap(QPixmap.fromImage(img).scaled(prev.width(), prev.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        for wdg in (area, fmt, method): wdg.currentIndexChanged.connect(refresh)
+        for sp in (scale, dpi, pxw): sp.valueChanged.connect(refresh)
+        transp.toggled.connect(refresh)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Export')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); left.addWidget(bb)
+        refresh()
+        if dlg.exec() != QDialog.Accepted: return
+
+        ext = fmt.currentData()
+        base = os.path.splitext(self.path or self.site.get('name') or 'document')[0]
+        start = f'{base}.{ext}'
+        filt = {'png': 'PNG image (*.png)', 'jpg': 'JPEG image (*.jpg *.jpeg)', 'tif': 'TIFF image (*.tif *.tiff)',
+                'bmp': 'BMP image (*.bmp)', 'webp': 'WebP image (*.webp)'}[ext]
+        path, _ = QFileDialog.getSaveFileName(self, 'Export As Picture', start, filt)
+        if not path: return
+        if not path.lower().endswith('.' + ext) and not (ext == 'jpg' and path.lower().endswith('.jpeg')):
+            path += '.' + ext
+        ow, oh = out_size()
+        img = render_page_to_image(self.site, page, ow, oh, src_rect=src(),
+                                   transparent=transp.isChecked() and can_alpha(), supersample=ssample.isChecked())
+        qual = quality.value() if ext in ('jpg', 'webp') else -1
+        qfmt = {'png': 'PNG', 'jpg': 'JPEG', 'tif': 'TIFF', 'bmp': 'BMP', 'webp': 'WEBP'}[ext]
+        ok = img.save(path, qfmt, qual)
+        if ok: self.hint(f'Exported {ow}×{oh} {qfmt} to {os.path.basename(path)}')
+        else: QMessageBox.warning(self, APP, "Couldn't save that image.")
 
     def import_canva(self, path=None, skip_save_check=False):
         """Import a design Canva can Download: PowerPoint (.pptx), PDF or an image.
