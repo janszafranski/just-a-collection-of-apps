@@ -17,7 +17,8 @@ try:
         QDockWidget, QListWidget, QListWidgetItem, QLineEdit, QDialog, QFormLayout,
         QSpinBox, QDoubleSpinBox, QDialogButtonBox, QColorDialog, QMenu, QSlider,
         QStyle, QProgressDialog, QCheckBox, QTextEdit, QSizePolicy,
-        QAbstractItemView, QToolButton, QGroupBox, QStackedWidget)
+        QAbstractItemView, QToolButton, QGroupBox, QStackedWidget,
+        QTableWidget, QTableWidgetItem, QHeaderView)
     from PySide6.QtGui import (
         QAction, QIcon, QColor, QPainter, QPen, QBrush, QPixmap, QImage, QFont,
         QKeySequence, QActionGroup, QLinearGradient, QFontMetrics, QPolygonF)
@@ -33,7 +34,7 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.5-00"
+VERSION = "1.6-00"
 
 
 # ===================================================================== font grouping
@@ -733,6 +734,88 @@ def _font_file():
 FONT_FILE = _font_file()
 
 
+# ===================================================================== keyframe engine
+# General N-point animation: clip['keyframes'] = { <prop>: [ {'t':s,'v':val,'ease':..}, .. ] }
+# where t is seconds from the clip's start, v the value, ease in linear/hold/smooth.
+# kf_expr() turns a keyframe list into an ffmpeg piecewise expression over a time var.
+# This is purely numeric + ffmpeg-expr operators — NEVER embeds user strings — so the
+# output is always safe to drop straight into a filter argument.
+KF_PROPS = ('opacity', 'pip_x', 'pip_y', 'pip_scale', 'volume', 'kb_zoom')
+KF_EASES = ('linear', 'hold', 'smooth')
+
+
+def _kf_num(x):
+    """Coerce any value (incl. hostile) to a finite float; non-numbers -> 0.0."""
+    try:
+        f = float(x)
+    except (TypeError, ValueError):
+        return 0.0
+    if f != f or f in (float('inf'), float('-inf')):   # NaN / inf
+        return 0.0
+    return f
+
+
+def kf_sorted(kfs):
+    """Normalise a raw keyframe list -> sorted list of (t, v, ease) tuples (all numeric)."""
+    out = []
+    for k in (kfs or []):
+        if isinstance(k, dict):
+            t, v, e = k.get('t'), k.get('v'), k.get('ease', 'linear')
+        elif isinstance(k, (list, tuple)) and len(k) >= 2:
+            t, v = k[0], k[1]
+            e = k[2] if len(k) > 2 else 'linear'
+        else:
+            continue
+        e = e if e in KF_EASES else 'linear'
+        out.append((_kf_num(t), _kf_num(v), e))
+    out.sort(key=lambda r: r[0])
+    return out
+
+
+def kf_expr(keyframes, var='t', t0=0.0):
+    """Pure fn: keyframe list -> ffmpeg piecewise expression string over `var`.
+    `var` is the ffmpeg time variable; `t0` shifts kf times into absolute timeline
+    seconds (the kf list stores times relative to the clip start). Output is numbers
+    + ffmpeg operators (if/lt/+/-/*// and parentheses) only. Empty -> ''.  Single
+    keyframe -> the constant value. Monotone sweep from the first to the last kf."""
+    kfs = kf_sorted(keyframes)
+    if not kfs:
+        return ''
+    t0 = _kf_num(t0)
+    if len(kfs) == 1:
+        return f"{kfs[0][1]:.6f}"
+    # tail value (after the last keyframe)
+    expr = f"{kfs[-1][1]:.6f}"
+    # fold segments right-to-left: before kf[i+1] use the i->i+1 interpolation
+    for i in range(len(kfs) - 2, -1, -1):
+        ta, va, _ = kfs[i]
+        tb, vb, ease_b = kfs[i + 1]
+        ta_abs, tb_abs = ta + t0, tb + t0
+        span = tb - ta
+        if span <= 1e-9:                     # coincident times -> step to vb
+            seg = f"{vb:.6f}"
+        elif ease_b == 'hold':               # hold value of the left kf until the next kf
+            seg = f"{va:.6f}"
+        else:
+            frac = f"(({var}-{ta_abs:.6f})/{span:.6f})"
+            if ease_b == 'smooth':           # smoothstep: 3f^2 - 2f^3
+                frac = f"({frac}*{frac}*(3-2*{frac}))"
+            seg = f"({va:.6f}+({vb - va:.6f})*{frac})"
+        expr = f"if(lt({var},{tb_abs:.6f}),{seg},{expr})"
+    # before the first keyframe: hold the first value
+    ta0_abs = kfs[0][0] + t0
+    expr = f"if(lt({var},{ta0_abs:.6f}),{kfs[0][1]:.6f},{expr})"
+    return expr
+
+
+def clip_kfs(clip, prop):
+    """Return the normalised keyframe list for a prop on a clip, or [] if none/off."""
+    kf = clip.get('keyframes')
+    if not isinstance(kf, dict):
+        return []
+    return kf_sorted(kf.get(prop))
+
+
 # ===================================================================== project model
 def new_clip(src, kind, info=None):
     info = info or {}
@@ -756,6 +839,7 @@ def new_clip(src, kind, info=None):
         'color': '#3366cc',  # used when kind == 'color'
         'reverse': False,   # play this clip backwards (buffers the whole clip in ffmpeg)
         'freeze': None,     # {'hold': seconds} — hold the last frame for N extra seconds
+        'keyframes': None,  # {prop:[{'t','v','ease'},..]} N-point animation (see kf_expr)
         'text': None,
     }
     if kind == 'text':
@@ -902,6 +986,10 @@ class RenderWorker(QThread):
                 z = float(kb.get('zoom', 1.3))
                 frames = max(1, int(src_dur * FPS))
                 zexpr = f"min(zoom+{(z-1)/frames:.6f},{z})"
+                zkfs = clip_kfs(clip, 'kb_zoom')
+                if zkfs:   # N-point zoom keyframes drive z directly (on = output frame)
+                    zkfs = [(t * FPS, v, e) for (t, v, e) in zkfs]
+                    zexpr = kf_expr(zkfs, var='on', t0=0.0)
                 pan = kb.get('pan', 'in')
                 # x/y expressions pan across the over-scanned frame as it zooms
                 xmid, ymid = "iw/2-(iw/zoom/2)", "ih/2-(ih/zoom/2)"
@@ -1130,9 +1218,16 @@ class RenderWorker(QThread):
                            '-itsoffset', f'{s:.3f}', '-i', c['src']]
             blend = c.get('blend', 'normal')
             full = blend != 'normal'   # blend modes composite full-frame
+            xkfs, ykfs = clip_kfs(c, 'pip_x'), clip_kfs(c, 'pip_y')
+            skfs = clip_kfs(c, 'pip_scale') if not full else []
             sw, sh = (W, H) if full else (ow, oh)
+            if skfs:   # animated scale: fit to full frame, then rescale per-frame below
+                sw, sh = W, H
             cpre = (crop_vf(c) + ',') if (c['kind'] in ('video', 'image') and c.get('crop')) else ''
             pre = f"[{idx}:v]{cpre}scale={sw}:{sh}:force_original_aspect_ratio={'disable' if full else 'decrease'},setsar=1"
+            if skfs:   # per-frame scale: v is the scale fraction (1.0 = full frame)
+                sexpr = kf_expr(skfs, var='t', t0=s)
+                pre += (f",scale=w='trunc(iw*({sexpr})/2)*2':h='trunc(ih*({sexpr})/2)*2':eval=frame")
             if speed != 1.0 and c['kind'] == 'video':
                 pre += f",setpts=PTS/{speed:.4f}"
             for frag in clip_extra_vf(c):
@@ -1145,7 +1240,14 @@ class RenderWorker(QThread):
             # alpha: constant opacity and/or fade in/out (real overlay opacity animation)
             op = float(c.get('opacity', 1.0) or 1.0)
             fi, fo = float(c.get('fade_in', 0)), float(c.get('fade_out', 0))
-            if op < 1.0 or fi > 0 or fo > 0:
+            opkfs = clip_kfs(c, 'opacity')
+            if opkfs:   # N-point opacity keyframes supersede constant + fades.
+                # colorchannelmixer can't take a time expr -> drive the alpha plane via
+                # geq (T = frame time in seconds); multiply the existing alpha by the kf.
+                oe = kf_expr(opkfs, var='T', t0=s)
+                pre += (",format=yuva420p,geq=lum='lum(X,Y)':cb='cb(X,Y)':cr='cr(X,Y)':"
+                        f"a='alpha(X,Y)*({oe})'")
+            elif op < 1.0 or fi > 0 or fo > 0:
                 pre += ",format=yuva420p"
                 if op < 1.0:
                     pre += f",colorchannelmixer=aa={op:.3f}"
@@ -1159,16 +1261,25 @@ class RenderWorker(QThread):
             if full:
                 fc.append(f"{cur}{plbl}blend=all_mode={blend}:{enable}{lbl}")
             else:
-                # position, optionally animated start -> end across the clip ('to')
+                # position: N-point keyframes (pip_x/pip_y) supersede the 2-point 'to',
+                # which supersedes the constant. x/y keyframe values are 0..1 fractions.
                 to = pip.get('to')
                 px0, py0 = float(pip.get('x', 0.5)), float(pip.get('y', 0.5))
-                if to:
-                    px1, py1 = float(to.get('x', px0)), float(to.get('y', py0))
+                if xkfs:
+                    x = f"(W-w)*({kf_expr(xkfs, var='t', t0=s)})"
+                elif to:
+                    px1 = float(to.get('x', px0))
                     frac = f"clip((t-{s:.3f})/{max(0.05,c['dur']):.3f},0,1)"
                     x = f"(W-w)*({px0:.4f}+({px1-px0:.4f})*{frac})"
-                    y = f"(H-h)*({py0:.4f}+({py1-py0:.4f})*{frac})"
                 else:
                     x = f"(W-w)*{px0:.4f}"
+                if ykfs:
+                    y = f"(H-h)*({kf_expr(ykfs, var='t', t0=s)})"
+                elif to:
+                    py1 = float(to.get('y', py0))
+                    frac = f"clip((t-{s:.3f})/{max(0.05,c['dur']):.3f},0,1)"
+                    y = f"(H-h)*({py0:.4f}+({py1-py0:.4f})*{frac})"
+                else:
                     y = f"(H-h)*{py0:.4f}"
                 fc.append(f"{cur}{plbl}overlay=x='{x}':y='{y}':{enable}{lbl}")
             cur = lbl
@@ -1214,7 +1325,10 @@ class RenderWorker(QThread):
             if hold > 0:
                 # pad with silence so the frozen tail stays in sync with the video
                 chain += f",apad=pad_dur={hold:.3f}"
-            if vol != 1.0:
+            volkfs = clip_kfs(c, 'volume')
+            if volkfs:   # N-point volume keyframes (t relative to clip body start)
+                chain += f",volume='{kf_expr(volkfs, var='t', t0=0.0)}':eval=frame"
+            elif vol != 1.0:
                 chain += f",volume={vol:.3f}"
             if pan:  # -1 full left .. +1 full right
                 l = max(0.0, 1 - max(0, pan)); r = max(0.0, 1 + min(0, pan))
@@ -1794,6 +1908,113 @@ class AudioFxEditor(QWidget):
             self.entries[i][k] = wdg.value()
 
 
+# ===================================================================== keyframe editor
+# Property metadata for the keyframe editor: label, value range, step, decimals.
+KF_META = {
+    'opacity':   ('Overlay opacity', 0.0, 1.0, 0.05, 3),
+    'pip_x':     ('PiP x (0–1)',     0.0, 1.0, 0.05, 3),
+    'pip_y':     ('PiP y (0–1)',     0.0, 1.0, 0.05, 3),
+    'pip_scale': ('PiP size (0–1)',  0.05, 1.0, 0.05, 3),
+    'volume':    ('Volume ×',        0.0, 4.0, 0.1, 3),
+    'kb_zoom':   ('Ken Burns zoom',  1.0, 4.0, 0.1, 3),
+}
+
+
+def kf_props_for(clip):
+    """Which keyframe props make sense for this clip (by kind + track role)."""
+    k = clip['kind']
+    props = []
+    if k in ('video', 'image', 'color'):
+        props += ['opacity', 'pip_x', 'pip_y', 'pip_scale']
+    if k == 'image':
+        props += ['kb_zoom']
+    if k in ('video', 'audio'):
+        props += ['volume']
+    return props
+
+
+class KeyframeDialog(QDialog):
+    """Per-property keyframe editor: pick a property, edit (time, value, ease) rows.
+    A full timeline-strip UI is future work — this is the table-based editor."""
+
+    def __init__(self, clip, parent=None):
+        super().__init__(parent)
+        self.clip = clip
+        self.setWindowTitle(f"Keyframes — {clip['name']}")
+        self.setMinimumWidth(460)
+        # working copy of the keyframe model (committed on OK)
+        src = clip.get('keyframes') if isinstance(clip.get('keyframes'), dict) else {}
+        self.model = {}
+        for p in kf_props_for(clip):
+            self.model[p] = [{'t': t, 'v': v, 'ease': e} for (t, v, e) in kf_sorted(src.get(p))]
+        v = QVBoxLayout(self)
+        v.addWidget(QLabel('Animate a property with N keyframes. Time is seconds from the '
+                           'clip start; leave a property empty to keep its fixed value.'))
+        self.pick = QComboBox()
+        for p in kf_props_for(clip):
+            self.pick.addItem(KF_META[p][0], p)
+        v.addWidget(self.pick)
+        self.table = QTableWidget(0, 3)
+        self.table.setHorizontalHeaderLabels(['Time (s)', 'Value', 'Ease'])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setMaximumHeight(220)
+        v.addWidget(self.table)
+        row = QHBoxLayout()
+        self.t_in = QDoubleSpinBox(); self.t_in.setRange(0, 36000); self.t_in.setDecimals(3); self.t_in.setSuffix(' s')
+        self.v_in = QDoubleSpinBox(); self.v_in.setDecimals(3)
+        self.e_in = QComboBox(); self.e_in.addItems(list(KF_EASES))
+        add = QPushButton('Add / update'); add.clicked.connect(self._add)
+        rem = QPushButton('Remove selected'); rem.clicked.connect(self._remove)
+        for w in (QLabel('t'), self.t_in, QLabel('v'), self.v_in, self.e_in, add, rem):
+            row.addWidget(w)
+        v.addLayout(row)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
+        v.addWidget(bb)
+        self.pick.currentIndexChanged.connect(self._reload)
+        self._reload()
+
+    def _cur_prop(self):
+        return self.pick.currentData()
+
+    def _reload(self):
+        p = self._cur_prop()
+        lo, hi, step, dec = KF_META[p][1], KF_META[p][2], KF_META[p][3], KF_META[p][4]
+        self.v_in.setRange(lo, hi); self.v_in.setSingleStep(step); self.v_in.setDecimals(dec)
+        rows = self.model.get(p, [])
+        self.table.setRowCount(len(rows))
+        for i, k in enumerate(rows):
+            self.table.setItem(i, 0, QTableWidgetItem(f"{k['t']:.3f}"))
+            self.table.setItem(i, 1, QTableWidgetItem(f"{k['v']:.3f}"))
+            self.table.setItem(i, 2, QTableWidgetItem(k.get('ease', 'linear')))
+
+    def _add(self):
+        p = self._cur_prop()
+        t, val, ease = self.t_in.value(), self.v_in.value(), self.e_in.currentText()
+        rows = [k for k in self.model.get(p, []) if abs(k['t'] - t) > 1e-6]   # replace same-time
+        rows.append({'t': t, 'v': val, 'ease': ease})
+        rows.sort(key=lambda k: k['t'])
+        self.model[p] = rows
+        self._reload()
+
+    def _remove(self):
+        p = self._cur_prop()
+        i = self.table.currentRow()
+        rows = self.model.get(p, [])
+        if 0 <= i < len(rows):
+            rows.pop(i); self._reload()
+
+    def result(self):
+        """Build the clip['keyframes'] dict (props with <2 kfs are dropped, so a single
+        or empty list never overrides the fixed-value render path). None if nothing set."""
+        out = {}
+        for p, rows in self.model.items():
+            if len(rows) >= 2:
+                out[p] = [{'t': float(k['t']), 'v': float(k['v']),
+                           'ease': k.get('ease', 'linear')} for k in rows]
+        return out or None
+
+
 # ===================================================================== clip properties dialog
 class ClipDialog(QDialog):
     def __init__(self, clip, main, parent=None):
@@ -1961,10 +2182,31 @@ class ClipDialog(QDialog):
             self.blend.setCurrentText(clip.get('blend', 'normal').capitalize())
             form.addRow('Blend mode (overlay)', self.blend)
 
+        # keyframe / envelope animation (N-point) — supersedes the fixed fields above
+        self._kf_pending = '__unset__'   # set to a dict/None only when the user edits
+        if kf_props_for(clip):
+            self.kf_btn = QPushButton('Keyframe animation…')
+            self.kf_btn.setToolTip('Animate opacity / PiP position & size / volume / zoom '
+                                   'with multiple keyframes over the clip.')
+            self.kf_btn.clicked.connect(self._edit_keyframes)
+            form.addRow('Animation', self.kf_btn)
+            self._kf_refresh_btn()
+
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(self.accept); bb.rejected.connect(self.reject)
         outer.addWidget(bb)
         self.resize(430, min(680, 120 + form.rowCount() * 34))
+
+    def _kf_refresh_btn(self):
+        kf = self._kf_pending if self._kf_pending != '__unset__' else self.clip.get('keyframes')
+        n = len([p for p in (kf or {}) if (kf or {}).get(p)]) if isinstance(kf, dict) else 0
+        self.kf_btn.setText(f'Keyframe animation… ({n} animated)' if n else 'Keyframe animation…')
+
+    def _edit_keyframes(self):
+        dlg = KeyframeDialog(self.clip, self)
+        if dlg.exec() == QDialog.Accepted:
+            self._kf_pending = dlg.result()   # dict or None; committed in apply()
+            self._kf_refresh_btn()
 
     def _pair(self, a, b):
         w = QWidget(); h = QHBoxLayout(w); h.setContentsMargins(0, 0, 0, 0)
@@ -2036,6 +2278,8 @@ class ClipDialog(QDialog):
                 c['chroma'] = None
             c['opacity'] = self.opacity.value()
             c['blend'] = self.blend.currentData()
+        if getattr(self, '_kf_pending', '__unset__') != '__unset__':
+            c['keyframes'] = self._kf_pending   # dict of N-point envelopes, or None
 
 
 # ===================================================================== main window
