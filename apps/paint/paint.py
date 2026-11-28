@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.18-00"
+VERSION = "1.19-00"
 
 
 # ===================================================================== font grouping
@@ -334,6 +334,57 @@ def pil2q(pil):
 def _merge_a(src, rgb):
     """Put an RGB result back together with the source's alpha channel."""
     return Image.merge('RGBA', rgb.convert('RGB').split() + (src.split()[3],))
+
+
+def _largest_content_rect(mask, max_dim=1000):
+    """Largest axis-aligned rectangle that covers only True cells of 2-D bool `mask`.
+    Returns (x0, y0, x1, y1) half-open in the ORIGINAL coordinates, or None.
+
+    This is PanoramaPlus's "Auto Min Crop": a stitch warps the frames onto a wider
+    canvas and leaves ragged black wedges around the content, so the biggest gap-free
+    rectangle is what squares the panorama off. The search runs on a copy down-scaled
+    to `max_dim` (a few-thousand-px pano would make the per-row scan crawl otherwise),
+    then maps the result back and insets by one source step so the crop never bites
+    into the black. Needs NumPy."""
+    import numpy as np
+    h, w = mask.shape
+    scale = 1.0
+    small = mask
+    if max(h, w) > max_dim:
+        scale = max_dim / float(max(h, w))
+        sh, sw = max(1, int(round(h * scale))), max(1, int(round(w * scale)))
+        ys = (np.arange(sh) / scale).astype(np.int64).clip(0, h - 1)
+        xs = (np.arange(sw) / scale).astype(np.int64).clip(0, w - 1)
+        small = mask[ys][:, xs]
+    sh, sw = small.shape
+    heights = np.zeros(sw, dtype=np.int64)
+    best = (0, 0, 0, 0, 0)                 # area, x0, y0, x1, y1 in small coords
+    for y in range(sh):
+        heights = np.where(small[y], heights + 1, 0)
+        hh = heights.tolist(); hh.append(0)     # sentinel flushes the stack
+        stack = []                              # (start_col, bar_height), heights ascending
+        for i in range(sw + 1):
+            cur = hh[i]; start = i
+            while stack and stack[-1][1] > cur:
+                idx, ph = stack.pop()
+                area = ph * (i - idx)
+                if area > best[0]:
+                    best = (area, idx, y - ph + 1, i, y + 1)
+                start = idx
+            stack.append((start, cur))
+    if best[0] <= 0:
+        return None
+    _, x0, y0, x1, y1 = best
+    if scale != 1.0:
+        inv = 1.0 / scale
+        pad = int(np.ceil(inv))
+        x0 = int(np.floor(x0 * inv)) + pad; y0 = int(np.floor(y0 * inv)) + pad
+        x1 = int(np.ceil(x1 * inv)) - pad;  y1 = int(np.ceil(y1 * inv)) - pad
+    x0 = max(0, min(x0, w)); x1 = max(0, min(x1, w))
+    y0 = max(0, min(y0, h)); y1 = max(0, min(y1, h))
+    if x1 - x0 < 2 or y1 - y0 < 2:
+        return None
+    return (x0, y0, x1, y1)
 
 
 def apply_mask(img, mask):
@@ -5500,10 +5551,37 @@ class Main(QMainWindow):
             self.statusBar().showMessage('Stitch cancelled.', 4000)
             return
         rgb = _cv2.cvtColor(pano, _cv2.COLOR_BGR2RGB)
+        full_h, full_w = rgb.shape[:2]
+        # Auto Min Crop (PanoramaPlus): offer to trim the ragged black border the
+        # warp leaves to the largest gap-free rectangle, instead of making the user
+        # do it by hand. Content = any channel above 0 (the stitcher fills gaps pure black).
+        cropped = False
+        rect = None
+        if HAS_PIL:
+            QApplication.setOverrideCursor(Qt.WaitCursor)
+            self.statusBar().showMessage('Finding the best crop…'); QApplication.processEvents()
+            try:
+                rect = _largest_content_rect(rgb.max(axis=2) > 0)
+            finally:
+                QApplication.restoreOverrideCursor()
+        if rect and (rect[2] - rect[0] < full_w or rect[3] - rect[1] < full_h):
+            ans = QMessageBox.question(
+                self, APP,
+                'Square off the ragged edges automatically?\n\n'
+                'Stitching leaves uneven black borders. Auto Min Crop trims the picture to '
+                'the largest rectangle with no gaps. Choose No to keep the full stitched '
+                'image and crop it yourself.',
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes)
+            if ans == QMessageBox.Yes:
+                x0, y0, x1, y1 = rect
+                rgb = _np.ascontiguousarray(rgb[y0:y1, x0:x1])
+                cropped = True
         h, w = rgb.shape[:2]
         qi = QImage(rgb.tobytes(), w, h, 3 * w, QImage.Format_RGB888).convertToFormat(QImage.Format_ARGB32).copy()
         self.canvas.load(qi); self.path = None; self.update_title()
-        self.statusBar().showMessage(f'Stitched {len(imgs)} photos → {w}×{h}. Crop the ragged edges, then Save.', 8000)
+        msg = (f'Stitched {len(imgs)} photos → {w}×{h}, auto-cropped. Adjust and Save.' if cropped
+               else f'Stitched {len(imgs)} photos → {w}×{h}. Crop the ragged edges, then Save.')
+        self.statusBar().showMessage(msg, 8000)
 
     def save(self):
         if not self.path or not self.path.lower().endswith(('.png', '.jpg', '.jpeg')):
