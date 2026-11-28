@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.27-00"
+VERSION = "1.28-00"
 
 
 # ===================================================================== font grouping
@@ -1642,18 +1642,29 @@ def obj_pen(o):
         pn.setJoinStyle(Qt.MiterJoin); return pn
     return QPen(Qt.NoPen)
 
+def grad_stops(g):
+    """Normalised colour stops for a gradient dict → [(pos 0..1, '#rrggbb'), …].
+    Prefers g['stops'] (multi-stop); falls back to the old 2-colour c1/c2 pair so
+    documents saved before multi-stop gradients still render."""
+    ss = g.get('stops')
+    if ss:
+        out = [(max(0.0, min(1.0, float(s.get('pos', 0)))), s.get('color', '#000000')) for s in ss]
+        return sorted(out, key=lambda s: s[0]) or [(0, g.get('c1', '#ffffff')), (1, g.get('c2', '#000000'))]
+    return [(0.0, g.get('c1', '#ffffff')), (1.0, g.get('c2', '#000000'))]
+
+
 def obj_brush(o):
     g = o.get('grad')
     if g:
-        w, h = o['w'], o['h']
+        w, h = o['w'], o['h']; stops = grad_stops(g)
         if g.get('type') == 'radial':
             rg = QRadialGradient(w / 2, h / 2, max(w, h) / 2)
-            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            for pos, col in stops: rg.setColorAt(pos, QColor(col))
             return QBrush(rg)
         ang = math.radians(g.get('angle', 90))
         cx, cy, dx, dy = w / 2, h / 2, math.cos(ang), math.sin(ang)
         lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
-        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        for pos, col in stops: lg.setColorAt(pos, QColor(col))
         return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
@@ -1789,17 +1800,15 @@ def shape_svg(o):
     g = o.get('grad'); defs = ''; fill = 'none'
     if g:
         gid = 'qsg_' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', 'x')))
+        stps = ''.join(f'<stop offset="{pos * 100:.1f}%" stop-color="{col}"/>' for pos, col in grad_stops(g))
         if g.get('type') == 'radial':
-            defs = (f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">'
-                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></radialGradient>')
+            defs = f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">{stps}</radialGradient>'
         else:
             rad = math.radians(g.get('angle', 90))
             x1, y1 = 50 - 50 * math.cos(rad), 50 - 50 * math.sin(rad)
             x2, y2 = 50 + 50 * math.cos(rad), 50 + 50 * math.sin(rad)
             defs = (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
-                    f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-                    f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+                    f'{stps}</linearGradient>')
         fill = f'url(#{gid})'
     elif o.get('fill'):
         fill = o['fill']
@@ -1847,6 +1856,50 @@ def _fx_image(path, w, h, color, blur, pad):
     small = base.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
+def _box_blur(a, r):
+    """Separable box blur of a float32 (H, W) array, radius r (no SciPy needed)."""
+    import numpy as np
+    if r <= 0:
+        return a
+    k = 2 * r + 1
+    for axis in (0, 1):
+        n = a.shape[axis]
+        pad = [(0, 0), (0, 0)]; pad[axis] = (r + 1, r)
+        c = np.cumsum(np.pad(a, pad, mode='edge'), axis=axis)
+        lo = np.take(c, range(0, n), axis=axis)
+        hi = np.take(c, range(k, k + n), axis=axis)
+        a = (hi - lo) / k
+    return a
+
+def _obj_layer(o, site, page, hide_text, edit, pad=0):
+    """Render an object's body to its own transparent QImage, with `pad` px of
+    transparent margin all round (so edges have room to blur into for feather). The
+    object sits at (pad,pad). 1:1 logical px — plenty for reflection/feather/bevel."""
+    w, h = max(1, int(math.ceil(o['w']))), max(1, int(math.ceil(o['h'])))
+    W, H = w + 2 * pad, h + 2 * pad
+    img = QImage(W, H, QImage.Format_ARGB32_Premultiplied); img.fill(Qt.transparent)
+    lp = QPainter(img); lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+    lp.translate(pad, pad)
+    # Draw the body WITHOUT its own behind-effects (shadow/glow/reflection) — just the object.
+    o2 = {k: v for k, v in o.items() if k not in ('shadow', 'glow', 'reflect', 'feather', 'bevel', 'agrad')}
+    _paint_obj_body(lp, o2, site, page, hide_text, edit)
+    lp.end()
+    return img
+
+def _blur_alpha_img(img, radius):
+    """Return a copy of `img` whose ALPHA channel is box-blurred by `radius` (colour
+    kept, premultiplied by the softened alpha). Uses _box_blur — no new deps."""
+    import numpy as np
+    if radius <= 0: return img
+    src = img.convertToFormat(QImage.Format_ARGB32)   # un-premultiplied, straight ARGB
+    W, H = src.width(), src.height()
+    ptr = src.constBits(); arr = np.frombuffer(ptr, np.uint8).reshape((H, W, 4)).copy()  # BGRA on little-endian
+    a = arr[:, :, 3].astype(np.float32)
+    a = _box_blur(a, int(radius))
+    arr[:, :, 3] = np.clip(a, 0, 255).astype(np.uint8)
+    out = QImage(arr.data, W, H, QImage.Format_ARGB32).copy()
+    return out
+
 def draw_object_fx(p, o):
     """Draw outer glow and/or drop shadow behind an object (canvas + PDF)."""
     sh = o.get('shadow'); gl = o.get('glow')
@@ -1865,8 +1918,72 @@ def draw_object_fx(p, o):
         p.save(); p.setOpacity(p.opacity() * sh.get('opacity', 45) / 100.0)
         p.drawImage(QPointF(sh.get('dx', 6) - pad, sh.get('dy', 6) - pad), img); p.restore()
 
+def draw_object_reflect(p, o, site, page, hide_text, edit):
+    """A mirrored copy of the object fading downward below it (PagePlus Reflection).
+    Rendered BEHIND/below the object, so it sits under the real object's bottom edge."""
+    rf = o.get('reflect')
+    if not rf: return
+    w, h = o['w'], o['h']
+    img = _obj_layer(o, site, page, hide_text, edit)
+    gap = float(rf.get('gap', 4)); op = max(0, min(100, rf.get('opacity', 50))) / 100.0
+    fall = max(1.0, min(100, rf.get('falloff', 60))) / 100.0   # fraction of the height over which it fades to 0
+    # top→bottom alpha fade, applied to the flipped copy with DestinationIn
+    ref = QImage(img.size(), QImage.Format_ARGB32_Premultiplied); ref.fill(Qt.transparent)
+    rp = QPainter(ref); rp.drawImage(0, 0, img.mirrored(False, True))   # vertical flip
+    mg = QLinearGradient(0, 0, 0, h)                               # top of the reflection = object's edge
+    mg.setColorAt(0.0, QColor(0, 0, 0, int(round(op * 255))))
+    mg.setColorAt(min(1.0, fall), QColor(0, 0, 0, 0))
+    if fall < 1.0: mg.setColorAt(1.0, QColor(0, 0, 0, 0))
+    rp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    rp.fillRect(QRectF(0, 0, img.width(), img.height()), QBrush(mg)); rp.end()
+    p.save(); p.drawImage(QRectF(0, h + gap, w, h), ref); p.restore()
+
+def draw_object_fx_over(p, o, site, page, hide_text, edit):
+    """Feather and bevel/emboss — drawn as an OVERLAY after the object body, because
+    they modify the object's own pixels/edges rather than sitting behind it."""
+    fe = o.get('feather'); bv = o.get('bevel')
+    if not fe and not bv: return
+    w, h = o['w'], o['h']
+    sil = obj_silhouette_path(o)
+    if fe and fe.get('radius', 0) > 0:
+        # Soft edges: re-render the body into a padded layer, blur its alpha, knock out
+        # the crisp original within the silhouette, then stamp the feathered copy on top.
+        rad = max(1, int(round(fe.get('radius', 6))))
+        pad = rad + 2                                  # room for the edge to blur into
+        img = _obj_layer(o, site, page, hide_text, edit, pad=pad)
+        soft = _blur_alpha_img(img, rad)
+        p.save()
+        if sil is not None:
+            p.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+            p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 255)); p.drawPath(sil)
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.drawImage(QRectF(-pad, -pad, w + 2 * pad, h + 2 * pad), soft)
+        p.restore()
+    if bv:
+        # Bevel/Emboss: a cheap inner 3-D edge. Clip to the silhouette, then draw a
+        # light stroke offset toward the light and a dark stroke offset away from it.
+        depth = max(1.0, float(bv.get('depth', 4))); soft = max(0.0, float(bv.get('soft', 2)))
+        light = max(0, min(100, bv.get('light', 70))) / 100.0; ang = math.radians(bv.get('dir', 135))
+        dx, dy = math.cos(ang), -math.sin(ang)   # screen y is down; dir measured maths-style
+        if sil is None:
+            sil = QPainterPath(); sil.addRect(QRectF(0, 0, w, h))
+        p.save(); p.setClipPath(sil)
+        pen_w = depth + soft
+        hi = QColor(255, 255, 255, int(round(light * 170)))
+        lo = QColor(0, 0, 0, int(round(light * 150)))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(hi, pen_w)); p.translate(dx * depth, dy * depth); p.drawPath(sil)
+        p.translate(-2 * dx * depth, -2 * dy * depth)
+        p.setPen(QPen(lo, pen_w)); p.drawPath(sil)
+        p.restore()
+
 def fx_css(o):
-    """CSS `filter` implementing an object's drop-shadow/glow at publish."""
+    """CSS implementing an object's filter effects at publish:
+      shadow/glow → `filter: drop-shadow(...)`
+      reflection  → `-webkit-box-reflect: below <gap> <fade-gradient>`
+      bevel       → two `inset` box-shadows (an approximation of the 3-D edge)
+    Feather is canvas/PDF-only (no faithful CSS), so it emits nothing here."""
+    out = ''
     parts = []; sh = o.get('shadow'); gl = o.get('glow')
     if sh:
         parts.append(f"drop-shadow({sh.get('dx', 6):g}px {sh.get('dy', 6):g}px "
@@ -1874,7 +1991,34 @@ def fx_css(o):
     if gl:
         c = _rgba(gl.get('color', '#ffe08a'), gl.get('opacity', 70)); b = max(1, gl.get('blur', 12))
         parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
-    return ('filter:' + ' '.join(parts) + ';') if parts else ''
+    if parts: out += 'filter:' + ' '.join(parts) + ';'
+    rf = o.get('reflect')
+    if rf:
+        op = max(0, min(100, rf.get('opacity', 50))) / 100.0
+        fall = max(1, min(100, rf.get('falloff', 60)))   # % of height before fully faded
+        gap = rf.get('gap', 4)
+        grad = (f"linear-gradient(transparent 0%, transparent {max(0, 100 - fall):g}%, "
+                f"rgba(255,255,255,{op:g}) 100%)")
+        out += f"-webkit-box-reflect:below {gap:g}px {grad};"
+    bv = o.get('bevel')
+    if bv:
+        depth = max(1, bv.get('depth', 4)); soft = max(0, bv.get('soft', 2))
+        light = max(0, min(100, bv.get('light', 70))) / 100.0; ang = math.radians(bv.get('dir', 135))
+        dx = math.cos(ang) * depth; dy = -math.sin(ang) * depth   # CSS y is down
+        hi = f"rgba(255,255,255,{light * 0.7:g})"; lo = f"rgba(0,0,0,{light * 0.6:g})"
+        out += (f"box-shadow:inset {dx:g}px {dy:g}px {soft:g}px {hi},"
+                f"inset {-dx:g}px {-dy:g}px {soft:g}px {lo};")
+    return out
+
+def mask_css(o):
+    """CSS mask-image implementing an object's transparency gradient (o['agrad']) at
+    publish — a linear black→transparent fade whose alpha is the a1..a2 opacity."""
+    ag = o.get('agrad')
+    if not ag: return ''
+    a1 = max(0, min(100, ag.get('a1', 100))) / 100.0; a2 = max(0, min(100, ag.get('a2', 0))) / 100.0
+    deg = (90 - ag.get('angle', 0)) % 360   # maths CCW-from-+x → CSS CW-from-up
+    grad = f"linear-gradient({deg:g}deg, rgba(0,0,0,{a1:g}) 0%, rgba(0,0,0,{a2:g}) 100%)"
+    return f"-webkit-mask-image:{grad};mask-image:{grad};"
 
 def anim_attr(o):
     """A `data-animate` attribute for an object's scroll-into-view animation ('' if none).
@@ -1905,9 +2049,37 @@ def _svg_poly(pts, color):
     return f'<polygon points="{" ".join(f"{a:g},{b:g}" for a, b in pts)}" fill="{color}"/>'
 
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
+    # Transparency gradient (o['agrad']): render the object to a temp layer, multiply
+    # its alpha by a linear a1→a2 fade across `angle`, then draw the masked layer back.
+    # Composes with flat opacity because we draw the layer at the painter's opacity.
+    ag = o.get('agrad')
+    if ag and o['type'] in ('shape', 'text', 'artistic', 'button', 'picture'):
+        w, h = o['w'], o['h']
+        sx = math.hypot(p.worldTransform().m11(), p.worldTransform().m12()) or 1  # device px per logical px
+        sx = max(0.5, min(sx, 8))
+        W, H = max(1, int(math.ceil(w * sx))), max(1, int(math.ceil(h * sx)))
+        layer = QImage(W, H, QImage.Format_ARGB32_Premultiplied); layer.fill(Qt.transparent)
+        lp = QPainter(layer)
+        lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+        lp.scale(sx, sx)
+        _paint_obj_body(lp, o, site, page, hide_text, edit)   # object drawn opaque into the layer
+        # alpha mask: a1..a2 opacity across the gradient angle, applied with DestinationIn
+        ang = math.radians(ag.get('angle', 0)); dx, dy = math.cos(ang), math.sin(ang)
+        mg = QLinearGradient(w / 2 - dx * w / 2, h / 2 - dy * h / 2, w / 2 + dx * w / 2, h / 2 + dy * h / 2)
+        mg.setColorAt(0, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a1', 100))) * 2.55))))
+        mg.setColorAt(1, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a2', 0))) * 2.55))))
+        lp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+        lp.setPen(Qt.NoPen); lp.setBrush(QBrush(mg)); lp.drawRect(QRectF(0, 0, w, h))
+        lp.end()
+        p.drawImage(QRectF(0, 0, w, h), layer)              # at the painter's current opacity
+        return
+    _paint_obj_body(p, o, site, page, hide_text, edit)
+
+def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
     rad = o.get('radius', 0)
+    if o.get('reflect'): draw_object_reflect(p, o, site, page, hide_text, edit)
     draw_object_fx(p, o)
     def box():
         sw = o.get('strokeW', 0) if o.get('stroke') else 0
@@ -2696,6 +2868,9 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         if edit:
             mode = 'global' if o.get('mode') == 'service' else 'this browser'
             _badge(p, w, '👁 counter · %s' % mode)
+    # Feather / bevel overlays — after the body, modifying the object's own edges.
+    if o.get('feather') or o.get('bevel'):
+        draw_object_fx_over(p, o, site, page, hide_text, edit)
 
 def _q_align(a):
     return {'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(a, Qt.AlignLeft)
@@ -3058,13 +3233,18 @@ def text_css(o):
             f"font-style:{'italic' if o.get('italic') else 'normal'};text-decoration:{'underline' if o.get('underline') else 'none'};"
             f"line-height:{o.get('lh', 1.4)};")
 
+def grad_css(g):
+    """A CSS linear-/radial-gradient() for a gradient dict, all stops included."""
+    stops = ', '.join(f"{col} {pos * 100:.0f}%" for pos, col in grad_stops(g))
+    if g.get('type') == 'radial':
+        return f"radial-gradient(circle at 50% 50%, {stops})"
+    # CSS angles run clockwise from "up"; our angle is maths-style (CCW from +x), so convert.
+    return f"linear-gradient({(90 - g.get('angle', 90)) % 360:g}deg, {stops})"
+
 def box_css(o):
     s = ''
     g = o.get('grad')
-    if g and g.get('type') == 'radial':
-        s += f"background:radial-gradient(circle, {g.get('c1', '#fff')}, {g.get('c2', '#000')});"
-    elif g:
-        s += f"background:linear-gradient({90 - g.get('angle', 90)}deg, {g.get('c1', '#fff')}, {g.get('c2', '#000')});"
+    if g: s += f"background:{grad_css(g)};"
     elif o.get('fill'): s += f"background:{o['fill']};"
     if o.get('strokeW', 0) > 0 and o.get('stroke'): s += f"border:{o['strokeW']}px {o.get('dash', 'solid')} {o['stroke']};"
     if o.get('radius'): s += f"border-radius:{o['radius']}px;"
@@ -3275,7 +3455,7 @@ def obj_html(o, site, page, img):
     st = f"left:{o['x']:g}px;top:{o['y']:g}px;width:{o['w']:g}px;height:{o['h']:g}px;"
     if o.get('rot'): st += f"transform:rotate({o['rot']:g}deg);"
     if o.get('opacity', 1) < 1: st += f"opacity:{o['opacity']:g};"
-    st += fx_css(o)
+    st += fx_css(o); st += mask_css(o)
     tag, attrs = 'div', ''
     L = o.get('link')
     if L and t not in ('nav', 'form'):
@@ -6619,9 +6799,15 @@ class ObjItem(QGraphicsItem):
         sh = self.o.get('shadow'); gl = self.o.get('glow')
         if sh: pad = max(pad, abs(sh.get('dx', 6)) + sh.get('blur', 8) + 8, abs(sh.get('dy', 6)) + sh.get('blur', 8) + 8)
         if gl: pad = max(pad, gl.get('blur', 12) + 8)
+        fe = self.o.get('feather')
+        if fe: pad = max(pad, fe.get('radius', 6) + 4)
         if self.o['type'] == 'line' and self.o.get('arrow', 'none') != 'none':
             pad = max(pad, 10 + self.o.get('strokeW', 2) * 2.5)
-        return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad)
+        # Reflection extends only DOWNWARD (object height + gap below), so widen the
+        # bottom of the bounding rect rather than padding all four sides.
+        rf = self.o.get('reflect'); bottom = 0.0
+        if rf: bottom = self.o['h'] + rf.get('gap', 4) + 2
+        return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad + bottom)
 
     def shape(self):
         path = QPainterPath(); path.addRect(QRectF(0, 0, self.o['w'], self.o['h'])); return path
@@ -8875,6 +9061,10 @@ class MainWindow(QMainWindow):
             fm.addAction('Solid colour…', self.fill_solid)
             fm.addAction('Linear gradient…', lambda: self.gradient_dialog('linear'))
             fm.addAction('Radial (circular) gradient…', lambda: self.gradient_dialog('radial'))
+            fm.addAction('Remove gradient', self.remove_gradient)
+            fm.addSeparator()
+            fm.addAction('Transparency gradient…', self.transparency_gradient_dialog)
+            fm.addAction('Remove transparency gradient', self.remove_transparency_gradient)
             fm.addSeparator(); fm.addAction('No fill', self.fill_none)
             fb.setMenu(fm); add(fb)
         if types & {'shape', 'text', 'button', 'picture', 'line'}:
@@ -8886,7 +9076,7 @@ class MainWindow(QMainWindow):
             dcb.setToolTip('Line / border style'); dcb.activated.connect(lambda i: self.set_prop('dash', _dashes[i])); add(dcb)
             tb.addSeparator()
         if types & set(self.FX_OBJ):
-            btn(['tools-wizard', 'adjustlevels', 'image-adjust'], 'Effects — drop shadow & glow…', self.effects_dialog, glyph='✦')
+            btn(['tools-wizard', 'adjustlevels', 'image-adjust'], 'Filter effects — shadow, glow, reflection, feather & bevel…', self.effects_dialog, glyph='✦')
             tb.addSeparator()
         if objs:
             btn(['transform-move', 'transform-scale', 'object-rotate-right'], 'Transform — exact position, size & rotation…', self.transform_dialog, glyph='⤢')
@@ -11555,12 +11745,34 @@ class MainWindow(QMainWindow):
         gop = QSpinBox(); gop.setRange(0, 100); gop.setSuffix(' %'); gop.setValue(int(g0.get('opacity', 70)))
         gcol = [g0.get('color', '#ffd54a')]
         gcb = ColorButton(gcol[0], lambda c: gcol.__setitem__(0, c or '#ffd54a'), 'Glow colour')
+        # --- Reflection (mirrored fading copy below the object) ---
+        r0 = o0.get('reflect') or {}
+        r_on = QCheckBox('Enable reflection'); r_on.setChecked(bool(o0.get('reflect')))
+        rop = QSpinBox(); rop.setRange(0, 100); rop.setSuffix(' %'); rop.setValue(int(r0.get('opacity', 50)))
+        rfall = QSpinBox(); rfall.setRange(1, 100); rfall.setSuffix(' %'); rfall.setValue(int(r0.get('falloff', 60)))
+        rgap = QSpinBox(); rgap.setRange(0, 100); rgap.setSuffix(' px'); rgap.setValue(int(r0.get('gap', 4)))
+        # --- Feather (soft-blurred edges) ---
+        f0 = o0.get('feather') or {}
+        f_on = QCheckBox('Enable feather (soft edge)'); f_on.setChecked(bool(o0.get('feather')))
+        frad = QSpinBox(); frad.setRange(1, 60); frad.setSuffix(' px'); frad.setValue(int(f0.get('radius', 6)))
+        # --- Bevel / Emboss (approximate inner 3-D edge) ---
+        b0 = o0.get('bevel') or {}
+        b_on = QCheckBox('Enable bevel / emboss'); b_on.setChecked(bool(o0.get('bevel')))
+        bdep = QSpinBox(); bdep.setRange(1, 40); bdep.setSuffix(' px'); bdep.setValue(int(b0.get('depth', 4)))
+        bsoft = QSpinBox(); bsoft.setRange(0, 40); bsoft.setSuffix(' px'); bsoft.setValue(int(b0.get('soft', 2)))
+        blight = QSpinBox(); blight.setRange(0, 100); blight.setSuffix(' %'); blight.setValue(int(b0.get('light', 70)))
+        bdir = QSpinBox(); bdir.setRange(0, 359); bdir.setSuffix(' °'); bdir.setValue(int(b0.get('dir', 135)))
         rows = [('', s_on), ('Offset across:', sdx), ('Offset down:', sdy), ('Shadow blur:', sbl),
                 ('Shadow strength:', sop), ('Shadow colour:', scb),
-                ('', g_on), ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb)]
-        dlg = form_dialog(self, 'Effects — Shadow & Glow', rows,
-                          QLabel('Drop shadow and outer glow lift an object off the page. They preview live '
-                                 'and publish as CSS filters on the web.'))
+                ('', g_on), ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb),
+                ('', r_on), ('Reflection strength:', rop), ('Reflection fade:', rfall), ('Reflection gap:', rgap),
+                ('', f_on), ('Feather radius:', frad),
+                ('', b_on), ('Bevel depth:', bdep), ('Bevel softness:', bsoft),
+                ('Bevel light:', blight), ('Light direction:', bdir)]
+        dlg = form_dialog(self, 'Filter Effects', rows,
+                          QLabel('Shadow and glow lift an object off the page; reflection mirrors it below; '
+                                 'feather softens the edges; bevel adds a 3-D edge. All preview live. '
+                                 'Shadow/glow/reflection/bevel also publish as CSS; feather is print/PDF only.'))
         if not dlg.exec(): return
         self.commit()
         for o in objs:
@@ -11571,6 +11783,16 @@ class MainWindow(QMainWindow):
             if g_on.isChecked():
                 o['glow'] = {'blur': gbl.value(), 'opacity': gop.value(), 'color': gcol[0]}
             else: o.pop('glow', None)
+            if r_on.isChecked():
+                o['reflect'] = {'opacity': rop.value(), 'falloff': rfall.value(), 'gap': rgap.value()}
+            else: o.pop('reflect', None)
+            if f_on.isChecked():
+                o['feather'] = {'radius': frad.value()}
+            else: o.pop('feather', None)
+            if b_on.isChecked():
+                o['bevel'] = {'depth': bdep.value(), 'soft': bsoft.value(),
+                              'light': blight.value(), 'dir': bdir.value()}
+            else: o.pop('bevel', None)
         self.refresh()
 
     def _collect_misspellings(self):
@@ -11670,21 +11892,85 @@ class MainWindow(QMainWindow):
         self.refresh()
 
     def gradient_dialog(self, kind='linear'):
-        from PySide6.QtWidgets import QSpinBox
-        if not isinstance(kind, str): kind = 'linear'
+        from PySide6.QtWidgets import (QSpinBox, QDoubleSpinBox, QVBoxLayout, QHBoxLayout,
+                                       QScrollArea, QWidget, QPushButton)
+        if not isinstance(kind, str): kind = 'linear'          # guard against QAction's checked bool
         objs = [o for o in self.sel_objs() if o['type'] in self.FILL_OBJ]
         if not objs: return
         g0 = objs[0].get('grad') or {}
-        c1 = [g0.get('c1', '#ffffff')]; c2 = [g0.get('c2', '#2a7d6b')]
-        b1 = ColorButton(c1[0], lambda c: c1.__setitem__(0, c or '#ffffff'), 'Start colour')
-        b2 = ColorButton(c2[0], lambda c: c2.__setitem__(0, c or '#000000'), 'End colour')
+        stops = list(grad_stops(g0))                            # [(pos, '#rrggbb'), …] incl. 2-stop fallback
+        dlg = QDialog(self); dlg.setWindowTitle(('Radial' if kind == 'radial' else 'Linear') + ' Gradient'); dlg.resize(420, 420)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('Add, move or recolour the gradient stops. Position runs 0 (start) to 1 (end).'))
+        # Scrollable list of stop rows; each holds a mutable [pos, color] model entry.
+        model = [[p, c] for p, c in stops]
+        host = QWidget(); vl = QVBoxLayout(host); vl.setContentsMargins(0, 0, 0, 0)
+        sa = QScrollArea(); sa.setWidgetResizable(True); sa.setWidget(host); v.addWidget(sa, 1)
+        def rebuild():
+            while vl.count():
+                it = vl.takeAt(0); w = it.widget()
+                if w: w.setParent(None)
+            for i, ent in enumerate(model):
+                row = QWidget(); hl = QHBoxLayout(row); hl.setContentsMargins(0, 0, 0, 0)
+                ps = QDoubleSpinBox(); ps.setRange(0.0, 1.0); ps.setSingleStep(0.05); ps.setDecimals(2); ps.setValue(ent[0])
+                ps.valueChanged.connect(lambda val, e=ent: e.__setitem__(0, val))
+                cb = ColorButton(ent[1], lambda c, e=ent: e.__setitem__(1, c or '#000000'), 'Stop colour')
+                rm = QPushButton('✕'); rm.setFixedWidth(30); rm.setToolTip('Remove this stop')
+                rm.setEnabled(len(model) > 2)
+                rm.clicked.connect(lambda _=False, e=ent: (model.remove(e), rebuild()))
+                hl.addWidget(QLabel(f'{i + 1}.')); hl.addWidget(ps); hl.addWidget(cb); hl.addWidget(rm); hl.addStretch()
+                vl.addWidget(row)
+            vl.addStretch()
+        rebuild()
+        add = QPushButton('＋ Add stop')
+        add.clicked.connect(lambda: (model.append([1.0, '#000000']), rebuild()))
+        v.addWidget(add)
         ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
-        rows = [('Start colour:', b1), ('End colour:', b2)] + ([('Angle:', ang)] if kind == 'linear' else [])
-        dlg = form_dialog(self, ('Radial' if kind == 'radial' else 'Linear') + ' Gradient',
-                          rows, QLabel(f'A {kind} gradient between two colours.'))
+        if kind == 'linear':
+            arow = QHBoxLayout(); arow.addWidget(QLabel('Angle:')); arow.addWidget(ang); arow.addStretch(); v.addLayout(arow)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if not dlg.exec(): return
+        norm = sorted(([max(0.0, min(1.0, p)), c] for p, c in model), key=lambda s: s[0]) or [[0, '#fff'], [1, '#000']]
+        self.commit()
+        for o in objs:
+            o['grad'] = {'type': kind, 'angle': ang.value(),
+                         'stops': [{'pos': round(p, 4), 'color': c} for p, c in norm],
+                         'c1': norm[0][1], 'c2': norm[-1][1]}   # keep c1/c2 for old-reader fallback
+        self.refresh()
+
+    def remove_gradient(self):
+        objs = [o for o in self.sel_objs() if o.get('grad')]
+        if not objs: return
+        self.commit()
+        for o in objs: o.pop('grad', None)
+        self.refresh()
+
+    # Transparency gradient (o['agrad']) — a linear alpha fade across the object.
+    # Works on pictures, shapes and text frames; composes with the flat opacity.
+    AGRAD_OBJ = ('shape', 'text', 'artistic', 'button', 'picture')
+
+    def transparency_gradient_dialog(self):
+        from PySide6.QtWidgets import QSpinBox
+        objs = [o for o in self.sel_objs() if o['type'] in self.AGRAD_OBJ]
+        if not objs: return
+        a0 = objs[0].get('agrad') or {}
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(a0.get('angle', 0)))
+        a1 = QSpinBox(); a1.setRange(0, 100); a1.setSuffix(' %'); a1.setValue(int(a0.get('a1', 100)))
+        a2 = QSpinBox(); a2.setRange(0, 100); a2.setSuffix(' %'); a2.setValue(int(a0.get('a2', 0)))
+        dlg = form_dialog(self, 'Transparency Gradient',
+                          [('Angle:', ang), ('Start opacity:', a1), ('End opacity:', a2)],
+                          QLabel('Fades the object across the angle, from the start opacity to the end opacity.'))
         if not dlg.exec(): return
         self.commit()
-        for o in objs: o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind}
+        for o in objs: o['agrad'] = {'type': 'linear', 'angle': ang.value(), 'a1': a1.value(), 'a2': a2.value()}
+        self.refresh()
+
+    def remove_transparency_gradient(self):
+        objs = [o for o in self.sel_objs() if o.get('agrad')]
+        if not objs: return
+        self.commit()
+        for o in objs: o.pop('agrad', None)
         self.refresh()
 
     def fill_solid(self):
@@ -12739,7 +13025,7 @@ class MainWindow(QMainWindow):
                     m.addAction(ticon(['draw-brush', 'krita'], '🖌'), 'Edit in PAINTcanvas', lambda: self.edit_in_paint(o['src']))
                     self._pic_adjust_menu(m, o['src'])
             if o['type'] in ('table', 'form', 'html'): m.addAction('Edit…', lambda: self.edit_object(o))
-            if o['type'] in self.FX_OBJ: m.addAction('Effects — Shadow & Glow…', self.effects_dialog)
+            if o['type'] in self.FX_OBJ: m.addAction('Filter Effects…', self.effects_dialog)
             m.addAction(ticon(['chronometer', 'media-playback-start'], '✦'),
                         'Animate on Scroll…' + ('  (' + ANIM_LABELS.get(o.get('anim', ''), '') + ')' if o.get('anim') else ''),
                         self.anim_dialog)
