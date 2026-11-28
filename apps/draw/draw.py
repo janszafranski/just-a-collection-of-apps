@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.10-00"
+VERSION = "1.11-00"
 
 
 # ===================================================================== font grouping
@@ -727,6 +727,99 @@ def draw_object_fx(p, o):
     if sh: stamp(sh.get('color', '#000000'), max(0, sh.get('blur', 8)), sh.get('dx', 6), sh.get('dy', 6), sh.get('opacity', 45))
 
 
+def _obj_layer_img(o, pad=0):
+    """Render an object's body (no behind/over effects) to its own transparent QImage, at
+    the object's world bounding-box size + `pad` px of transparent margin all round. The
+    object sits at (pad - ox, pad - oy) so its world-space geometry lands correctly. Returns
+    (img, ox, oy) where (ox,oy) is the world top-left of the object's bounding box. Ported
+    from PAGEcreator's _obj_layer, adapted to DRAWmaster's world-coordinate objects."""
+    r = obj_rect(o)
+    ox, oy = r.x(), r.y()
+    w = max(1, int(math.ceil(r.width()))); h = max(1, int(math.ceil(r.height())))
+    W, H = w + 2 * pad, h + 2 * pad
+    img = QImage(W, H, QImage.Format_ARGB32_Premultiplied); img.fill(Qt.transparent)
+    lp = QPainter(img); lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+    lp.translate(pad - ox, pad - oy)
+    # Draw the body WITHOUT its own effects (shadow/glow/reflect/feather/bevel/agrad) — just the object.
+    o2 = {k: v for k, v in o.items()
+          if k not in ('shadow', 'glow', 'reflect', 'feather', 'bevel', 'agrad', 'rot', 'opacity', 'blend')}
+    _paint_object_body(lp, o2)
+    lp.end()
+    return img, ox, oy, w, h
+
+
+def _blur_alpha_img(img, radius):
+    """A copy of img whose ALPHA channel is box-blurred by radius (colour kept). Uses the
+    module _box_blur — no new deps. Ported from PAGEcreator."""
+    import numpy as np
+    if radius <= 0: return img
+    src = img.convertToFormat(QImage.Format_ARGB32)
+    W, H = src.width(), src.height()
+    arr = np.frombuffer(memoryview(src.constBits()), np.uint8).reshape((H, W, 4)).copy()
+    a = arr[:, :, 3].astype(np.float32)
+    a = _box_blur(a, int(radius))
+    arr[:, :, 3] = np.clip(a, 0, 255).astype(np.uint8)
+    return QImage(arr.tobytes(), W, H, QImage.Format_ARGB32).copy()
+
+
+def draw_object_reflect(p, o):
+    """A mirrored copy of the object fading downward below it (DrawPlus Reflection).
+    Painted BEHIND the object so it sits under the real object's bottom edge. Ported from
+    PAGEcreator, adapted to world coordinates."""
+    rf = o.get('reflect')
+    if not rf: return
+    img, ox, oy, w, h = _obj_layer_img(o)
+    gap = float(rf.get('gap', 4)); op = max(0, min(100, rf.get('opacity', 50))) / 100.0
+    fall = max(0.01, min(1.0, rf.get('falloff', 60) / 100.0))   # fraction of height the fade spans
+    ref = QImage(img.size(), QImage.Format_ARGB32_Premultiplied); ref.fill(Qt.transparent)
+    rp = QPainter(ref); rp.drawImage(0, 0, img.mirrored(False, True))   # vertical flip
+    mg = QLinearGradient(0, 0, 0, h)                                    # top = object's bottom edge
+    mg.setColorAt(0.0, QColor(0, 0, 0, int(round(op * 255))))
+    mg.setColorAt(fall, QColor(0, 0, 0, 0))
+    if fall < 1.0: mg.setColorAt(1.0, QColor(0, 0, 0, 0))
+    rp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    rp.fillRect(QRectF(0, 0, img.width(), img.height()), QBrush(mg)); rp.end()
+    p.save(); p.drawImage(QRectF(ox, oy + h + gap, w, h), ref); p.restore()
+
+
+def draw_object_fx_over(p, o):
+    """Feather and bevel/emboss — drawn as an OVERLAY after the object body, because they
+    modify the object's own pixels/edges rather than sitting behind it. Ported from
+    PAGEcreator, adapted to world coordinates."""
+    fe = o.get('feather'); bv = o.get('bevel')
+    if not fe and not bv: return
+    sil, sox, soy, sw, sh = obj_silhouette(o)   # local-0-based path + world top-left
+    if fe and fe.get('radius', 0) > 0:
+        rad = max(1, int(round(fe.get('radius', 6)))); pad = rad + 2
+        img, ox, oy, w, h = _obj_layer_img(o, pad=pad)
+        soft = _blur_alpha_img(img, rad)
+        p.save()
+        if sil is not None:
+            # knock out the crisp original within the silhouette so only the soft copy shows
+            p.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+            p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 255))
+            p.save(); p.translate(sox, soy); p.drawPath(sil); p.restore()
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.drawImage(QRectF(ox - pad, oy - pad, w + 2 * pad, h + 2 * pad), soft)
+        p.restore()
+    if bv:
+        depth = max(1.0, float(bv.get('depth', 4))); soft = max(0.0, float(bv.get('soft', 2)))
+        light = max(0, min(100, bv.get('light', 70))) / 100.0; ang = math.radians(bv.get('dir', 135))
+        dx, dy = math.cos(ang), -math.sin(ang)   # screen y is down; dir measured maths-style
+        if sil is None:
+            r = obj_rect(o); sil = QPainterPath(); sil.addRect(QRectF(0, 0, r.width(), r.height()))
+            sox, soy = r.x(), r.y()
+        p.save(); p.translate(sox, soy); p.setClipPath(sil)
+        pen_w = depth + soft
+        hi = QColor(255, 255, 255, int(round(light * 170)))
+        lo = QColor(0, 0, 0, int(round(light * 150)))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(hi, pen_w)); p.translate(dx * depth, dy * depth); p.drawPath(sil)
+        p.translate(-2 * dx * depth, -2 * dy * depth)
+        p.setPen(QPen(lo, pen_w)); p.drawPath(sil)
+        p.restore()
+
+
 def text_font(o):
     """The QFont for a text object (family + pixel size, optional bold/italic)."""
     f = QFont(o.get('family', 'Noto Sans')); f.setPixelSize(max(1, int(o.get('size', 48))))
@@ -926,6 +1019,21 @@ def obj_bounds(o):
     return QRectF(min(xs), min(ys), max(xs) - min(xs) or 1, max(ys) - min(ys) or 1)
 
 
+def obj_fx_bounds(o):
+    """obj_bounds expanded to include reflection (below) and feather (all round) so the
+    visual extent isn't clipped (e.g. when exporting a selection). Conservative; ignores
+    rotation of the reflection offset (reflection is unrotated-frame-relative here)."""
+    r = obj_bounds(o)
+    rf = o.get('reflect'); fe = o.get('feather')
+    if rf:
+        gap = float(rf.get('gap', 4))
+        r = r.united(QRectF(r.x(), r.y() + gap, r.width(), 2 * r.height() + gap))
+    if fe and fe.get('radius', 0) > 0:
+        m = int(fe['radius']) + 2
+        r = r.adjusted(-m, -m, m, m)
+    return r
+
+
 def obj_hit(o, pt):
     """True if canvas point pt (x, y) is inside the object, honouring its rotation.
     The point is rotated back into the object's local (unrotated) frame, then tested
@@ -940,41 +1048,55 @@ def obj_hit(o, pt):
     return r.contains(QPointF(px, py))
 
 
+def grad_stops(g):
+    """Normalised colour stops for a gradient dict → [(pos 0..1, '#rrggbb'), …].
+    Prefers g['stops'] (multi-stop); falls back to the old 2-colour c1/c2 pair so
+    drawings saved before multi-stop gradients still render. Ported from PAGEcreator."""
+    ss = g.get('stops')
+    if ss:
+        out = [(max(0.0, min(1.0, float(s.get('pos', 0)))), s.get('color', '#000000')) for s in ss]
+        out = sorted(out, key=lambda s: s[0])
+        if out:
+            return out
+    return [(0.0, g.get('c1', '#ffffff')), (1.0, g.get('c2', '#000000'))]
+
+
 def fill_brush(o):
     """The fill brush for an object — a texture/pattern, a gradient (grad dict) or a flat
     colour. A texture fill wins over a gradient, which wins over a flat colour. Gradients
     and textures are mapped across the object's bounding box, so they render the same on
-    screen, in PNG and (via the SVG defs) in a browser. Mirrors PAGEdesigner."""
+    screen, in PNG and (via the SVG defs) in a browser. Mirrors PAGEdesigner. The gradient
+    supports any number of stops (grad['stops']=[{pos,color}]) with a 2-colour c1/c2 fallback."""
     tb = texfill_brush(o)
     if tb is not None:
         return tb
     g = o.get('grad')
     if g:
-        r = obj_rect(o); w = r.width() or 1; h = r.height() or 1
+        r = obj_rect(o); w = r.width() or 1; h = r.height() or 1; stops = grad_stops(g)
         if g.get('type') == 'radial':
             rg = QRadialGradient(r.x() + w / 2, r.y() + h / 2, max(w, h) / 2)
-            rg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); rg.setColorAt(1, QColor(g.get('c2', '#000000')))
+            for pos, col in stops: rg.setColorAt(pos, QColor(col))
             return QBrush(rg)
         ang = math.radians(g.get('angle', 90)); cx, cy = r.x() + w / 2, r.y() + h / 2
         dx, dy = math.cos(ang), math.sin(ang)
         lg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
-        lg.setColorAt(0, QColor(g.get('c1', '#ffffff'))); lg.setColorAt(1, QColor(g.get('c2', '#000000')))
+        for pos, col in stops: lg.setColorAt(pos, QColor(col))
         return QBrush(lg)
     return QBrush(QColor(o['fill'])) if o.get('fill') else QBrush(Qt.NoBrush)
 
 
 def svg_grad_def(g, gid):
-    """A <linearGradient>/<radialGradient> def (objectBoundingBox) for the given grad dict."""
+    """A <linearGradient>/<radialGradient> def (objectBoundingBox) for the given grad dict —
+    one <stop> per colour stop (multi-stop, with a 2-colour c1/c2 fallback)."""
+    stops = ''.join(f'<stop offset="{pos * 100:.1f}%" stop-color="{col}"/>'
+                    for pos, col in grad_stops(g))
     if g.get('type') == 'radial':
-        return (f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">'
-                f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-                f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></radialGradient>')
+        return f'<radialGradient id="{gid}" cx="50%" cy="50%" r="50%">{stops}</radialGradient>'
     rad = math.radians(g.get('angle', 90))
     x1, y1 = 50 - 50 * math.cos(rad), 50 - 50 * math.sin(rad)
     x2, y2 = 50 + 50 * math.cos(rad), 50 + 50 * math.sin(rad)
     return (f'<linearGradient id="{gid}" x1="{x1:.1f}%" y1="{y1:.1f}%" x2="{x2:.1f}%" y2="{y2:.1f}%">'
-            f'<stop offset="0%" stop-color="{g.get("c1", "#fff")}"/>'
-            f'<stop offset="100%" stop-color="{g.get("c2", "#000")}"/></linearGradient>')
+            f'{stops}</linearGradient>')
 
 
 def svg_texfill_def(o, pid):
@@ -1238,16 +1360,53 @@ def paint_object(p, o, selected=False, skip_text=False):
         # for shapes (text is spliced separately with its own rotate()).
         cx, cy = obj_center(o)
         p.save(); p.translate(cx, cy); p.rotate(a); p.translate(-cx, -cy)
-    _paint_object_body(p, o, selected, skip_text)
+    if o.get('agrad'):
+        _paint_object_agrad(p, o, selected, skip_text)
+    else:
+        _paint_object_body(p, o, selected, skip_text)
     if rotated:
         p.restore()
     if faded:
         p.restore()
 
 
+def _paint_object_agrad(p, o, selected=False, skip_text=False):
+    """Transparency gradient (o['agrad']): render the object to a temp layer, multiply its
+    alpha by a linear a1→a2 fade across the gradient angle, then draw the masked layer back
+    at the painter's current opacity (so it composes with the flat opacity). Ported from
+    PAGEcreator's paint_obj agrad wrapper, adapted to DRAWmaster's world coordinates.
+    The layer spans the object's bounding box + margin so behind/over effects are kept."""
+    ag = o['agrad']; r = obj_rect(o)
+    ox, oy = r.x(), r.y(); w = r.width() or 1; h = r.height() or 1
+    try:
+        sx = math.hypot(p.worldTransform().m11(), p.worldTransform().m12()) or 1
+    except Exception:
+        sx = 1
+    sx = max(0.5, min(sx, 8))
+    pad = 48   # room for shadow/glow/reflection to live inside the layer
+    W = max(1, int(math.ceil((w + 2 * pad) * sx))); H = max(1, int(math.ceil((h + 2 * pad) * sx)))
+    layer = QImage(W, H, QImage.Format_ARGB32_Premultiplied); layer.fill(Qt.transparent)
+    lp = QPainter(layer)
+    lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+    lp.scale(sx, sx); lp.translate(pad - ox, pad - oy)
+    _paint_object_body(lp, o, selected, skip_text)
+    # alpha mask: a1..a2 opacity across the gradient angle, applied with DestinationIn
+    ang = math.radians(ag.get('angle', 0)); dx, dy = math.cos(ang), math.sin(ang)
+    cx, cy = ox + w / 2, oy + h / 2
+    mg = QLinearGradient(cx - dx * w / 2, cy - dy * h / 2, cx + dx * w / 2, cy + dy * h / 2)
+    mg.setColorAt(0, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a1', 100))) * 2.55))))
+    mg.setColorAt(1, QColor(0, 0, 0, int(round(max(0, min(100, ag.get('a2', 0))) * 2.55))))
+    lp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    lp.setPen(Qt.NoPen); lp.setBrush(QBrush(mg))
+    lp.drawRect(QRectF(ox - pad, oy - pad, w + 2 * pad, h + 2 * pad))
+    lp.end()
+    p.drawImage(QRectF(ox - pad, oy - pad, w + 2 * pad, h + 2 * pad), layer)
+
+
 def _paint_object_body(p, o, selected=False, skip_text=False):
     if skip_text and o.get('type') == 'text' and not o.get('pathpts'):
         draw_object_fx(p, o); return   # keep shadow/glow; the SVG <text> draws the glyphs
+    draw_object_reflect(p, o)   # mirrored copy sits behind/below the object
     draw_object_fx(p, o)
     pen = QPen(QColor(o['stroke']), o.get('sw', 2)) if o.get('stroke') else QPen(Qt.NoPen)
     pen.setJoinStyle(Qt.RoundJoin); pen.setCapStyle(Qt.RoundCap)
@@ -1301,6 +1460,7 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
         else:
             p.drawPolyline(poly) if not o.get('closed') else p.drawPolygon(poly)
         draw_arrowheads(p, o)
+    draw_object_fx_over(p, o)   # feather / bevel modify the object's own edges, drawn on top
     if selected:
         r = obj_rect(o).adjusted(-3, -3, 3, 3)
         sp = QPen(QColor('#2a7df0'), 1, Qt.DashLine); sp.setCosmetic(True)
@@ -1904,7 +2064,8 @@ class Canvas(QWidget):
         new = dict(type='nodes', nodes=nodes, closed=closed,
                    stroke=o.get('stroke'), sw=o.get('sw', 2),
                    fill=o.get('fill'), layer=self.obj_layer(o))
-        for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'blend', 'gid', 'dash', 'arrow'):
+        for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'blend', 'gid', 'dash', 'arrow',
+                  'agrad', 'reflect', 'feather', 'bevel'):
             if o.get(k) is not None:
                 new[k] = copy.deepcopy(o[k])
         i = self.objs.index(o); self.objs[i] = new
@@ -3216,9 +3377,11 @@ class Main(QMainWindow):
         if o is None:
             QMessageBox.information(self, APP, 'Select an object first (the Select tool), then add effects.')
             return
-        from PySide6.QtWidgets import QCheckBox, QFormLayout, QDialogButtonBox
+        from PySide6.QtWidgets import QCheckBox, QFormLayout, QDialogButtonBox, QGroupBox
         s0 = o.get('shadow') or {}; g0 = o.get('glow') or {}
-        dlg = QDialog(self); dlg.setWindowTitle('Effects — Shadow & Glow'); lay = QVBoxLayout(dlg)
+        r0 = o.get('reflect') or {}; f0 = o.get('feather') or {}; b0 = o.get('bevel') or {}
+        dlg = QDialog(self); dlg.setWindowTitle('Effects — Shadow, Glow, Reflection, Feather & Bevel')
+        lay = QVBoxLayout(dlg)
         form = QFormLayout(); lay.addLayout(form)
         s_on = QCheckBox('Enable drop shadow'); s_on.setChecked(bool(o.get('shadow')))
         sdx = QSpinBox(); sdx.setRange(-100, 100); sdx.setSuffix(' px'); sdx.setValue(int(s0.get('dx', 6)))
@@ -3241,6 +3404,28 @@ class Main(QMainWindow):
                          ('Shadow strength:', sop), ('Shadow colour:', scb), ('', g_on),
                          ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb)):
             form.addRow(lbl, wdg)
+        # Reflection
+        r_on = QCheckBox('Enable reflection'); r_on.setChecked(bool(o.get('reflect')))
+        rop = QSpinBox(); rop.setRange(0, 100); rop.setSuffix(' %'); rop.setValue(int(r0.get('opacity', 50)))
+        rfall = QSpinBox(); rfall.setRange(1, 100); rfall.setSuffix(' %'); rfall.setValue(int(r0.get('falloff', 60)))
+        rgap = QSpinBox(); rgap.setRange(0, 100); rgap.setSuffix(' px'); rgap.setValue(int(r0.get('gap', 4)))
+        rf_form = QFormLayout(); rg_box = QGroupBox('Reflection'); rg_box.setLayout(rf_form)
+        rf_form.addRow('', r_on); rf_form.addRow('Strength:', rop)
+        rf_form.addRow('Fade over:', rfall); rf_form.addRow('Gap:', rgap); lay.addWidget(rg_box)
+        # Feather
+        f_on = QCheckBox('Enable soft (feathered) edges'); f_on.setChecked(bool(o.get('feather')))
+        frad = QSpinBox(); frad.setRange(1, 60); frad.setSuffix(' px'); frad.setValue(int(f0.get('radius', 6)))
+        ff_form = QFormLayout(); fg_box = QGroupBox('Feather'); fg_box.setLayout(ff_form)
+        ff_form.addRow('', f_on); ff_form.addRow('Radius:', frad); lay.addWidget(fg_box)
+        # Bevel
+        b_on = QCheckBox('Enable bevel / emboss'); b_on.setChecked(bool(o.get('bevel')))
+        bdep = QSpinBox(); bdep.setRange(1, 40); bdep.setSuffix(' px'); bdep.setValue(int(b0.get('depth', 4)))
+        bsoft = QSpinBox(); bsoft.setRange(0, 40); bsoft.setSuffix(' px'); bsoft.setValue(int(b0.get('soft', 2)))
+        blight = QSpinBox(); blight.setRange(0, 100); blight.setSuffix(' %'); blight.setValue(int(b0.get('light', 70)))
+        bdir = QSpinBox(); bdir.setRange(0, 360); bdir.setSuffix('°'); bdir.setValue(int(b0.get('dir', 135)))
+        bf_form = QFormLayout(); bg_box = QGroupBox('Bevel / Emboss'); bg_box.setLayout(bf_form)
+        bf_form.addRow('', b_on); bf_form.addRow('Depth:', bdep); bf_form.addRow('Softness:', bsoft)
+        bf_form.addRow('Light strength:', blight); bf_form.addRow('Light angle:', bdir); lay.addWidget(bg_box)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
         if not dlg.exec(): return
@@ -3248,8 +3433,12 @@ class Main(QMainWindow):
         o['shadow'] = {'dx': sdx.value(), 'dy': sdy.value(), 'blur': sbl.value(),
                        'opacity': sop.value(), 'color': scol[0]} if s_on.isChecked() else None
         o['glow'] = {'blur': gbl.value(), 'opacity': gop.value(), 'color': gcol[0]} if g_on.isChecked() else None
-        if not o['shadow']: o.pop('shadow', None)
-        if not o['glow']: o.pop('glow', None)
+        o['reflect'] = {'opacity': rop.value(), 'falloff': rfall.value(), 'gap': rgap.value()} if r_on.isChecked() else None
+        o['feather'] = {'radius': frad.value()} if f_on.isChecked() else None
+        o['bevel'] = {'depth': bdep.value(), 'soft': bsoft.value(),
+                      'light': blight.value(), 'dir': bdir.value()} if b_on.isChecked() else None
+        for k in ('shadow', 'glow', 'reflect', 'feather', 'bevel'):
+            if not o.get(k): o.pop(k, None)
         self.canvas.update()
 
     # ---------------------------------------------------------------- text (artistic)
@@ -3405,43 +3594,107 @@ class Main(QMainWindow):
 
     # ---------------------------------------------------------------- gradient fill
     def gradient_dialog(self):
-        """Linear or radial gradient fill for the selected shape — two colours + angle.
-        Mirrors PAGEdesigner's 'grad' dict ({c1,c2,angle,type}). Cleared via Remove."""
+        """Linear or radial gradient fill for the selected shape — a multi-stop colour ramp
+        (grad['stops']=[{pos,color}]) plus type + angle. Add/remove/reposition stops. Writes
+        back a 2-colour c1/c2 pair too so older DRAWmaster builds still render. Cleared via Remove."""
         o = self.canvas.sel
         if o is None or o.get('type') not in ('rect', 'ellipse', 'quick', 'poly', 'nodes', 'text'):
             QMessageBox.information(self, APP, 'Select a shape first (rectangle, ellipse, QuickShape, '
                                    'a closed pen shape or text), then add a gradient fill.')
             return
-        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        from PySide6.QtWidgets import (QFormLayout, QDialogButtonBox, QGroupBox, QScrollArea,
+                                       QWidget, QHBoxLayout, QDoubleSpinBox)
         g0 = o.get('grad') or {}
-        c1 = [g0.get('c1', '#ffd54a')]; c2 = [g0.get('c2', '#2a7d6b')]
-        dlg = QDialog(self); dlg.setWindowTitle('Gradient Fill'); lay = QVBoxLayout(dlg)
+        dlg = QDialog(self); dlg.setWindowTitle('Gradient Fill'); dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(dlg)
         form = QFormLayout(); lay.addLayout(form)
         kind = QComboBox(); kind.addItem('Linear', 'linear'); kind.addItem('Radial', 'radial')
         kind.setCurrentIndex(1 if g0.get('type') == 'radial' else 0)
-        b1 = QPushButton('Start colour'); b2 = QPushButton('End colour')
         ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(g0.get('angle', 90)))
+        form.addRow('Type:', kind); form.addRow('Angle (linear):', ang)
+        # Stop editor — one row per stop: position + colour + remove.
+        stops = [dict(pos=p, color=c) for p, c in grad_stops(g0)] if g0 else \
+                [dict(pos=0.0, color='#ffd54a'), dict(pos=1.0, color='#2a7d6b')]
+        box = QGroupBox('Colour stops'); bl = QVBoxLayout(box)
+        rows_host = QWidget(); rows_lay = QVBoxLayout(rows_host); rows_lay.setContentsMargins(0, 0, 0, 0)
+        bl.addWidget(rows_host); lay.addWidget(box)
         def tint(btn, holder):
             c = QColor(holder[0]); btn.setStyleSheet(f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"}')
-        def pick(holder, btn):
-            c = QColorDialog.getColor(QColor(holder[0]), self, 'Gradient colour')
-            if c.isValid(): holder[0] = c.name(); tint(btn, holder)
-        b1.clicked.connect(lambda: pick(c1, b1)); b2.clicked.connect(lambda: pick(c2, b2))
-        tint(b1, c1); tint(b2, c2)
-        form.addRow('Type:', kind); form.addRow('Start colour:', b1)
-        form.addRow('End colour:', b2); form.addRow('Angle (linear):', ang)
+        def rebuild():
+            while rows_lay.count():
+                it = rows_lay.takeAt(0); w = it.widget()
+                if w: w.setParent(None)
+            for i, st in enumerate(stops):
+                row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0)
+                pos = QDoubleSpinBox(); pos.setRange(0.0, 1.0); pos.setSingleStep(0.05); pos.setDecimals(2)
+                pos.setValue(float(st['pos']))
+                pos.valueChanged.connect(lambda v, s=st: s.__setitem__('pos', v))
+                holder = [st['color']]; cb = QPushButton('Colour')
+                def mkpick(h, b, s):
+                    def go():
+                        c = QColorDialog.getColor(QColor(h[0]), self, 'Gradient colour')
+                        if c.isValid(): h[0] = c.name(); s['color'] = c.name(); tint(b, h)
+                    return go
+                cb.clicked.connect(mkpick(holder, cb, st)); tint(cb, holder)
+                rm = QPushButton('✕'); rm.setFixedWidth(28); rm.setEnabled(len(stops) > 2)
+                def mkremove(s):
+                    def go():
+                        if len(stops) > 2: stops.remove(s); rebuild()
+                    return go
+                rm.clicked.connect(mkremove(st))
+                rl.addWidget(QLabel(f'{i + 1}.')); rl.addWidget(pos, 1); rl.addWidget(cb, 1); rl.addWidget(rm)
+                rows_lay.addWidget(row)
+        rebuild()
+        add = QPushButton('Add stop')
+        def add_stop():
+            stops.append(dict(pos=0.5, color='#ffffff')); rebuild()
+        add.clicked.connect(add_stop); bl.addWidget(add)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         rm = QPushButton('Remove gradient'); bb.addButton(rm, QDialogButtonBox.ResetRole)
         rm.clicked.connect(lambda: (self._remove_gradient(o), dlg.reject()))
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
         if not dlg.exec(): return
         self.canvas.snapshot()
-        o['grad'] = {'c1': c1[0], 'c2': c2[0], 'angle': ang.value(), 'type': kind.currentData()}
+        ss = sorted(({'pos': max(0.0, min(1.0, float(s['pos']))), 'color': s['color']} for s in stops),
+                    key=lambda s: s['pos'])
+        o['grad'] = {'stops': ss, 'c1': ss[0]['color'], 'c2': ss[-1]['color'],
+                     'angle': ang.value(), 'type': kind.currentData()}
         self.canvas.update()
 
     def _remove_gradient(self, o):
         if o.get('grad'):
             self.canvas.snapshot(); o.pop('grad', None); self.canvas.update()
+
+    # ---------------------------------------------------------------- transparency gradient
+    def transparency_gradient_dialog(self):
+        """A linear alpha fade across the selected object (o['agrad']), start→end opacity
+        across an angle; composes with the flat opacity. Ported from PAGEcreator. Remove
+        clears it. Works on any fillable object."""
+        o = self.canvas.sel
+        if o is None:
+            QMessageBox.information(self, APP, 'Select an object first (the Select tool), then add a transparency gradient.')
+            return
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox
+        a0 = o.get('agrad') or {}
+        dlg = QDialog(self); dlg.setWindowTitle('Transparency Gradient'); lay = QVBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form)
+        ang = QSpinBox(); ang.setRange(0, 360); ang.setSuffix('°'); ang.setValue(int(a0.get('angle', 0)))
+        a1 = QSpinBox(); a1.setRange(0, 100); a1.setSuffix(' %'); a1.setValue(int(a0.get('a1', 100)))
+        a2 = QSpinBox(); a2.setRange(0, 100); a2.setSuffix(' %'); a2.setValue(int(a0.get('a2', 0)))
+        form.addRow(QLabel('Fades the object across the angle, from the start opacity to the end opacity.'))
+        form.addRow('Angle:', ang); form.addRow('Start opacity:', a1); form.addRow('End opacity:', a2)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        rm = QPushButton('Remove'); bb.addButton(rm, QDialogButtonBox.ResetRole)
+        rm.clicked.connect(lambda: (self._remove_agrad(o), dlg.reject()))
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        self.canvas.snapshot()
+        o['agrad'] = {'type': 'linear', 'angle': ang.value(), 'a1': a1.value(), 'a2': a2.value()}
+        self.canvas.update()
+
+    def _remove_agrad(self, o):
+        if o.get('agrad'):
+            self.canvas.snapshot(); o.pop('agrad', None); self.canvas.update()
 
     # ---------------------------------------------------------------- texture / pattern fill
     def _scan_texture_lib(self):
@@ -3720,6 +3973,8 @@ class Main(QMainWindow):
         e.addAction(self.act('Edit &Text…', self.edit_text))
         e.addAction(self.act('&Gradient Fill…', self.gradient_dialog))
         e.addAction(self.act('Te&xture / Pattern Fill…', self.texture_fill_dialog))
+        e.addAction(self.act('&Effects (Shadow, Glow, Reflection…)…', self.effects_dialog))
+        e.addAction(self.act('Trans&parency Gradient…', self.transparency_gradient_dialog))
         e.addAction(self.act('&Opacity…', self.opacity_dialog))
         e.addAction(self.act('&Line Style (Dashes & Arrows)…', self.line_style_dialog))
         e.addSeparator()
@@ -3889,77 +4144,128 @@ class Main(QMainWindow):
         self.canvas.export_png(path)
         _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {path}', 4000)
 
-    def _render_image(self, scale=1.0, transparent=False, selection_only=False):
-        """Rasterise the drawing (or just the selection) to a QImage at `scale`, on a
-        white or transparent ground — the engine behind Export as Picture."""
+    def _export_src_rect(self, selection_only=False):
+        """(ox, oy, w, h) of the area Export as Picture should capture — the whole canvas,
+        or the fx-expanded bounding box of the current selection."""
         c = self.canvas
         sel = c._selection() if selection_only else None
         if sel:
-            rects = [obj_bounds(o) for o in sel]; r = rects[0]
+            rects = [obj_fx_bounds(o) for o in sel]; r = rects[0]
             for rr in rects[1:]: r = r.united(rr)
             r = r.adjusted(-4, -4, 4, 4)
-            ox, oy, ww, hh = r.left(), r.top(), r.width(), r.height()
-        else:
-            ox, oy, ww, hh = 0, 0, c.W, c.H
-        iw, ih = max(1, int(round(ww * scale))), max(1, int(round(hh * scale)))
+            return sel, r.left(), r.top(), r.width(), r.height()
+        return None, 0, 0, c.W, c.H
+
+    def _render_image(self, scale=1.0, transparent=False, selection_only=False,
+                      out_w=None, out_h=None, supersample=False):
+        """Rasterise the drawing (or just the selection) to a QImage on a white or transparent
+        ground — the engine behind Export as Picture. Either give `scale` (× the source px) OR
+        an explicit out_w/out_h. `supersample` renders at 2× then smooth-downscales for crisp edges."""
+        c = self.canvas
+        sel, ox, oy, ww, hh = self._export_src_rect(selection_only)
+        if out_w is None:
+            out_w = max(1, int(round(ww * scale)))
+        if out_h is None:
+            out_h = max(1, int(round(out_w * hh / max(1e-6, ww))))
+        out_w = max(1, int(out_w)); out_h = max(1, int(out_h))
+        ss = 2 if supersample else 1
+        iw, ih = out_w * ss, out_h * ss
         img = QImage(iw, ih, QImage.Format_ARGB32)
         img.fill(Qt.transparent if transparent else QColor('#ffffff'))
-        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing)
-        p.scale(scale, scale); p.translate(-ox, -oy)
+        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+        p.scale(iw / max(1e-6, ww), ih / max(1e-6, hh)); p.translate(-ox, -oy)
         global _PAINT_OBJS; _PAINT_OBJS = c.objs
         objs = sel if sel else c.ordered_objs()
         for o in objs:
             paint_object(p, o, False)
         p.end()
+        if ss != 1:
+            img = img.scaled(out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
         return img
 
     def export_picture_dialog(self):
-        """Export as Picture — choose format, scale and transparency, with a live preview
-        (the DrawPlus 'Export as Picture' dialog)."""
+        """Export as Picture — PNG/JPEG/TIFF/BMP/WebP, sized by scale %, DPI or an explicit
+        pixel width, with JPEG/WebP quality, a 32-bit transparent background, supersampling
+        and a live preview (the DrawPlus 'Export as Picture' dialog). Ported from PAGEcreator."""
+        from PySide6.QtWidgets import QSlider, QWidget, QHBoxLayout, QDialogButtonBox
         c = self.canvas
-        dlg = QDialog(self); dlg.setWindowTitle('Export as Picture'); dlg.setMinimumWidth(560)
+        _, _ox, _oy, sw0, sh0 = self._export_src_rect(False)
+        dlg = QDialog(self); dlg.setWindowTitle('Export as Picture'); dlg.setMinimumWidth(600)
         lay = QHBoxLayout(dlg)
-        form = QFormLayout(); lay.addLayout(form, 0)
-        fmt = QComboBox()
-        for lbl, ext in (('PNG (transparent)', 'png'), ('JPEG', 'jpg'), ('WebP', 'webp'), ('BMP', 'bmp')):
-            fmt.addItem(lbl, ext)
+        form = QFormLayout(); left = QVBoxLayout(); left.addLayout(form); lay.addLayout(left, 0)
         area = QComboBox(); area.addItem('Whole page', False)
         if c._selection(): area.addItem('Selected objects', True)
-        scale = QSpinBox(); scale.setRange(10, 800); scale.setValue(100); scale.setSuffix(' %')
-        transp = QCheckBox('Transparent background'); transp.setChecked(True)
-        size_lbl = QLabel('—')
-        form.addRow('Format:', fmt); form.addRow('Area:', area)
-        form.addRow('Scale:', scale); form.addRow('', transp)
+        fmt = QComboBox()
+        for lbl, ext in (('PNG', 'png'), ('JPEG', 'jpg'), ('TIFF', 'tif'), ('BMP', 'bmp'), ('WebP', 'webp')):
+            fmt.addItem(lbl, ext)
+        method = QComboBox()
+        method.addItem('Scale %', 'scale'); method.addItem('DPI', 'dpi'); method.addItem('Width (pixels)', 'px')
+        scale = QSpinBox(); scale.setRange(5, 800); scale.setSuffix(' %'); scale.setValue(100)
+        dpi = QSpinBox(); dpi.setRange(18, 1200); dpi.setSuffix(' dpi'); dpi.setValue(96)
+        pxw = QSpinBox(); pxw.setRange(16, 20000); pxw.setSuffix(' px'); pxw.setValue(int(sw0))
+        quality = QSlider(Qt.Horizontal); quality.setRange(0, 100); quality.setValue(90); qlbl = QLabel('90')
+        quality.valueChanged.connect(lambda v: qlbl.setText(str(v)))
+        qrow = QHBoxLayout(); qrow.addWidget(quality); qrow.addWidget(qlbl); qwrap = QWidget(); qwrap.setLayout(qrow)
+        transp = QCheckBox('32-bit transparent background'); transp.setChecked(True)
+        ssample = QCheckBox('Supersample (render 2× then downscale)'); ssample.setChecked(True)
+        size_lbl = QLabel('—'); size_lbl.setStyleSheet('color:gray')
+        form.addRow('Area:', area); form.addRow('Format:', fmt); form.addRow('Size by:', method)
+        form.addRow('Scale:', scale); form.addRow('Resolution:', dpi); form.addRow('Pixel width:', pxw)
+        form.addRow('Quality:', qwrap); form.addRow('', transp); form.addRow('', ssample)
         form.addRow('Output size:', size_lbl)
         prev = QLabel(); prev.setFixedSize(300, 300); prev.setAlignment(Qt.AlignCenter)
         prev.setStyleSheet('QLabel{background:#e9edf0;border:1px solid #bbb}')
-        lay.addWidget(prev, 1)
+        pv = QVBoxLayout(); pv.addWidget(QLabel('Preview')); pv.addWidget(prev); pv.addStretch(1); lay.addLayout(pv, 1)
+        def src_size():
+            _, _x, _y, ww, hh = self._export_src_rect(bool(area.currentData()))
+            return ww, hh
+        def out_size():
+            ww, hh = src_size(); m = method.currentData()
+            if m == 'scale': ow = ww * scale.value() / 100.0
+            elif m == 'dpi': ow = ww * dpi.value() / 96.0
+            else: ow = pxw.value()
+            ow = max(1, int(round(ow))); oh = max(1, int(round(ow * hh / max(1e-6, ww))))
+            return ow, oh
+        def can_alpha(): return fmt.currentData() in ('png', 'webp')
         def refresh(*_):
-            ext = fmt.currentData(); tr = transp.isChecked() and ext in ('png', 'webp')
-            img = self._render_image(scale.value() / 100.0, tr, bool(area.currentData()))
-            size_lbl.setText(f'{img.width()} × {img.height()} px')
+            m = method.currentData()
+            for wdg, mm in ((scale, 'scale'), (dpi, 'dpi'), (pxw, 'px')):
+                wdg.setVisible(m == mm); form.labelForField(wdg).setVisible(m == mm)
+            lossy = fmt.currentData() in ('jpg', 'webp')
+            qwrap.setVisible(lossy); form.labelForField(qwrap).setVisible(lossy)
+            transp.setEnabled(can_alpha())
+            if not can_alpha(): transp.setChecked(False)
+            ow, oh = out_size(); size_lbl.setText(f'{ow} × {oh} px')
+            tr = transp.isChecked() and can_alpha()
+            img = self._render_image(transparent=tr, selection_only=bool(area.currentData()),
+                                     out_w=ow, out_h=oh, supersample=False)
             prev.setPixmap(QPixmap.fromImage(img).scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            transp.setEnabled(ext in ('png', 'webp'))
-        fmt.currentIndexChanged.connect(refresh); area.currentIndexChanged.connect(refresh)
-        scale.valueChanged.connect(refresh); transp.toggled.connect(refresh)
+        for wdg in (area, fmt, method): wdg.currentIndexChanged.connect(refresh)
+        for sp in (scale, dpi, pxw): sp.valueChanged.connect(refresh)
+        transp.toggled.connect(refresh)
         refresh()
         bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         bb.button(QDialogButtonBox.Save).setText('Export…')
-        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
-        form.addRow(bb)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); left.addWidget(bb)
         if not dlg.exec(): return
         ext = fmt.currentData()
         start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('pics'), 'drawing')) + '.' + ext
-        path, _ = QFileDialog.getSaveFileName(self, 'Export as Picture', start, f'{ext.upper()} (*.{ext})')
+        filt = {'png': 'PNG image (*.png)', 'jpg': 'JPEG image (*.jpg *.jpeg)', 'tif': 'TIFF image (*.tif *.tiff)',
+                'bmp': 'BMP image (*.bmp)', 'webp': 'WebP image (*.webp)'}[ext]
+        path, _ = QFileDialog.getSaveFileName(self, 'Export as Picture', start, filt)
         if not path: return
-        if not path.lower().endswith('.' + ext): path += '.' + ext
-        tr = transp.isChecked() and ext in ('png', 'webp')
-        img = self._render_image(scale.value() / 100.0, tr, bool(area.currentData()))
-        if not tr and ext in ('jpg', 'jpeg', 'bmp'):
+        if not path.lower().endswith('.' + ext) and not (ext == 'jpg' and path.lower().endswith('.jpeg')):
+            path += '.' + ext
+        ow, oh = out_size(); tr = transp.isChecked() and can_alpha()
+        img = self._render_image(transparent=tr, selection_only=bool(area.currentData()),
+                                 out_w=ow, out_h=oh, supersample=ssample.isChecked())
+        if not tr and ext in ('jpg', 'tif', 'bmp'):
             flat = QImage(img.size(), QImage.Format_RGB32); flat.fill(QColor('#ffffff'))
             pp = QPainter(flat); pp.drawImage(0, 0, img); pp.end(); img = flat
-        if img.save(path):
-            _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {path}', 4000)
+        qual = quality.value() if ext in ('jpg', 'webp') else -1
+        qfmt = {'png': 'PNG', 'jpg': 'JPEG', 'tif': 'TIFF', 'bmp': 'BMP', 'webp': 'WEBP'}[ext]
+        if img.save(path, qfmt, qual):
+            _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {ow}×{oh} to {path}', 4000)
         else:
             QMessageBox.warning(self, APP, "Couldn't save that picture.")
 
