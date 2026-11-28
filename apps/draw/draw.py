@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.11-00"
+VERSION = "1.12-00"
 
 
 # ===================================================================== font grouping
@@ -2571,6 +2571,223 @@ def _box_blur(a, r):
     return a
 
 
+# ---------------------------------------------------------------- AutoTrace / Vectorise
+# Bitmap → editable vector node-paths (the DrawPlus Image Trace). Pure NumPy/PIL, no OpenCV:
+# quantise → per-colour binary masks → flood-fill into blobs → Moore-neighbour boundary
+# trace → Douglas–Peucker simplify → closed corner-node paths. trace_image() is GUI-free
+# so it can be unit-tested; auto_trace() (on the window) wires it to the selected picture.
+
+def _label_blobs(mask):
+    """Label the connected foreground blobs of a bool mask (4-connectivity) with an
+    iterative flood fill. Returns (labels int32 (H,W), count) — 0 is background."""
+    import numpy as np
+    h, w = mask.shape
+    labels = np.zeros((h, w), np.int32)
+    cur = 0
+    ys, xs = np.nonzero(mask)
+    for sy, sx in zip(ys.tolist(), xs.tolist()):
+        if labels[sy, sx]:
+            continue
+        cur += 1
+        stack = [(sy, sx)]; labels[sy, sx] = cur
+        while stack:
+            y, x = stack.pop()
+            for ny, nx in ((y - 1, x), (y + 1, x), (y, x - 1), (y, x + 1)):
+                if 0 <= ny < h and 0 <= nx < w and mask[ny, nx] and not labels[ny, nx]:
+                    labels[ny, nx] = cur; stack.append((ny, nx))
+    return labels, cur
+
+
+def _trace_boundary(mask):
+    """Moore-neighbour boundary trace of a single solid blob (bool mask). Returns an ordered
+    list of (x, y) pixel corner points walking the outer contour clockwise. The contour is
+    traced on the pixel grid so points are integer cell coordinates."""
+    import numpy as np
+    ys, xs = np.nonzero(mask)
+    if len(ys) == 0:
+        return []
+    # start at the top-most, then left-most foreground pixel
+    i0 = int(np.argmin(ys * mask.shape[1] + xs))
+    start = (int(ys[i0]), int(xs[i0]))
+    h, w = mask.shape
+    def fg(y, x):
+        return 0 <= y < h and 0 <= x < w and mask[y, x]
+    # 8-neighbour offsets, clockwise starting from 'west'
+    nb = [(0, -1), (-1, -1), (-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1)]
+    contour = [start]
+    cur = start
+    b_dir = 0  # we entered 'start' coming from the west
+    guard = 0; lim = 4 * int(mask.sum()) + 8
+    first_step = None  # (pixel, b_dir) of the first step away from start — Jacob stop
+    while guard < lim:
+        guard += 1
+        found = False
+        # scan 8 neighbours clockwise beginning just after the backtrack direction
+        for k in range(8):
+            d = (b_dir + k) % 8
+            dy, dx = nb[d]
+            ny, nx = cur[0] + dy, cur[1] + dx
+            if fg(ny, nx):
+                # the new backtrack direction is opposite to the step we just took, +1 cw
+                b_dir = (d + 4 + 1) % 8
+                cur = (ny, nx)
+                found = True
+                break
+        if not found:
+            break  # isolated pixel
+        step = (cur, b_dir)
+        if first_step is None:
+            first_step = step
+        elif step == first_step:
+            break  # Jacob's criterion: back at the start, repeating the first move
+        contour.append(cur)
+    # drop the trailing repeat of the start pixel if present
+    if len(contour) > 1 and contour[-1] == contour[0]:
+        contour.pop()
+    # convert (row,col) → (x,y)
+    return [(float(c[1]), float(c[0])) for c in contour]
+
+
+def _perp_dist(p, a, b):
+    """Perpendicular distance of point p from the line segment a→b."""
+    ax, ay = a; bx, by = b; px, py = p
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return ((px - ax) ** 2 + (py - ay) ** 2) ** 0.5
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    cx, cy = ax + t * dx, ay + t * dy
+    return ((px - cx) ** 2 + (py - cy) ** 2) ** 0.5
+
+
+def _douglas_peucker(pts, tol):
+    """Ramer–Douglas–Peucker simplification of an open polyline (iterative)."""
+    n = len(pts)
+    if n < 3:
+        return list(pts)
+    keep = [False] * n
+    keep[0] = keep[-1] = True
+    stack = [(0, n - 1)]
+    while stack:
+        i, j = stack.pop()
+        if j <= i + 1:
+            continue
+        dmax, idx = 0.0, -1
+        a, b = pts[i], pts[j]
+        for k in range(i + 1, j):
+            d = _perp_dist(pts[k], a, b)
+            if d > dmax:
+                dmax, idx = d, k
+        if dmax > tol and idx != -1:
+            keep[idx] = True
+            stack.append((i, idx)); stack.append((idx, j))
+    return [pts[k] for k in range(n) if keep[k]]
+
+
+def _simplify_closed(pts, tol):
+    """Douglas–Peucker for a CLOSED contour: simplify the open chain then de-dupe endpoints."""
+    if len(pts) < 4:
+        return pts
+    out = _douglas_peucker(pts, tol)
+    # the trace repeats the start as the last point; drop a duplicate tail
+    if len(out) > 1 and abs(out[0][0] - out[-1][0]) < 1e-6 and abs(out[0][1] - out[-1][1]) < 1e-6:
+        out = out[:-1]
+    # DP pins the open chain's first/last vertices; on a closed loop those may be
+    # near-collinear with their wrap-around neighbours — drop any such redundant vertex.
+    changed = True
+    while changed and len(out) > 3:
+        changed = False
+        for i in range(len(out)):
+            a = out[i - 1]; b = out[i]; c = out[(i + 1) % len(out)]
+            if _perp_dist(b, a, c) <= tol:
+                out.pop(i); changed = True; break
+    return out
+
+
+def _poly_area(pts):
+    """Absolute shoelace area of a polygon (pixel units)."""
+    n = len(pts)
+    if n < 3:
+        return 0.0
+    s = 0.0
+    for i in range(n):
+        x1, y1 = pts[i]; x2, y2 = pts[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) * 0.5
+
+
+def trace_image(rgba, mode='logo', n_colors=6, tol=2.0, min_area=16, work_max=700):
+    """Trace an (H,W,3|4) uint8 numpy image into vector regions. PURE (no GUI).
+
+    mode: 'bw' (luminance threshold → foreground mask), 'logo' (quantise to n_colors flat
+    colours), 'photo' (quantise to n_colors, default more). Returns a list of dicts
+    ``{'nodes': [(x,y), ...], 'fill': '#rrggbb', 'area': float}`` in WORKING-pixel coords,
+    ordered back-to-front (largest area first). Caller maps coords onto the canvas object.
+    tol = Douglas–Peucker tolerance (px); min_area = skip blobs smaller than this (px²)."""
+    import numpy as np
+    from PIL import Image
+    arr = np.asarray(rgba)
+    if arr.ndim == 2:
+        arr = np.stack([arr] * 3, -1)
+    rgb = arr[:, :, :3].astype(np.uint8)
+    h0, w0 = rgb.shape[:2]
+    # cap the working resolution for speed; record the scale back to source pixels
+    scale = min(1.0, float(work_max) / max(h0, w0))
+    if scale < 1.0:
+        im = Image.fromarray(rgb, 'RGB').resize((max(1, int(w0 * scale)), max(1, int(h0 * scale))),
+                                                Image.BILINEAR)
+        rgb = np.asarray(im, np.uint8)
+    inv = (1.0 / scale) if scale else 1.0  # working-px → source-px multiplier
+    h, w = rgb.shape[:2]
+
+    regions = []  # (mask bool, fill hex)
+    if mode == 'bw':
+        lum = (0.299 * rgb[:, :, 0] + 0.587 * rgb[:, :, 1] + 0.114 * rgb[:, :, 2])
+        # Otsu threshold (256-bin histogram)
+        hist, _ = np.histogram(lum, bins=256, range=(0, 255))
+        tot = hist.sum() or 1
+        w_b = np.cumsum(hist); w_f = tot - w_b
+        mean_b = np.cumsum(hist * np.arange(256)) / np.maximum(w_b, 1)
+        gtot = (hist * np.arange(256)).sum()
+        mean_f = (gtot - np.cumsum(hist * np.arange(256))) / np.maximum(w_f, 1)
+        var = w_b * w_f * (mean_b - mean_f) ** 2
+        thr = int(np.argmax(var[:-1])) if tot > 1 else 128
+        dark = lum <= thr
+        for m, fill in ((dark, '#000000'), (~dark, '#ffffff')):
+            regions.append((m, fill))
+    else:
+        pim = Image.fromarray(rgb, 'RGB').quantize(colors=max(2, int(n_colors)),
+                                                   method=Image.MEDIANCUT)
+        idx = np.asarray(pim, np.int32)
+        pal = pim.getpalette() or []
+        used = np.unique(idx)
+        for ci in used.tolist():
+            m = idx == ci
+            r, g, b = pal[ci * 3:ci * 3 + 3] if ci * 3 + 2 < len(pal) else (0, 0, 0)
+            regions.append((m, '#%02x%02x%02x' % (int(r), int(g), int(b))))
+
+    out = []
+    for mask, fill in regions:
+        if mask.sum() * (inv * inv) < min_area:
+            continue
+        labels, cnt = _label_blobs(mask)
+        for lab in range(1, cnt + 1):
+            blob = labels == lab
+            a_src = int(blob.sum()) * inv * inv
+            if a_src < min_area:
+                continue
+            contour = _trace_boundary(blob)
+            if len(contour) < 3:
+                continue
+            simp = _simplify_closed(contour, tol)
+            if len(simp) < 3:
+                continue
+            # map working-pixel coords → source-pixel coords
+            nodes = [(x * inv, y * inv) for (x, y) in simp]
+            out.append({'nodes': nodes, 'fill': fill, 'area': _poly_area(nodes)})
+    out.sort(key=lambda d: d['area'], reverse=True)
+    return out
+
+
 class _CutoutView(QWidget):
     """The zoomable canvas inside Cutout Studio; forwards events to the dialog."""
     def __init__(self, dlg):
@@ -3344,6 +3561,8 @@ class Main(QMainWindow):
         self.grad_btn.clicked.connect(self.gradient_dialog); top.addWidget(self.grad_btn)
         self.cutout_btn = QPushButton('Cutout…'); self.cutout_btn.setToolTip('Cutout Studio — remove the background from the selected picture')
         self.cutout_btn.clicked.connect(self.cutout_studio); top.addWidget(self.cutout_btn)
+        self.trace_btn = QPushButton('AutoTrace…'); self.trace_btn.setToolTip('AutoTrace / Vectorise — trace the selected picture into editable vector paths')
+        self.trace_btn.clicked.connect(self.auto_trace); top.addWidget(self.trace_btn)
         top.addSeparator()
         for txt, slot in (('Zoom +', lambda: self.canvas.set_zoom(self.canvas.zoom * 1.25)),
                           ('Zoom −', lambda: self.canvas.set_zoom(self.canvas.zoom / 1.25)),
@@ -3579,6 +3798,95 @@ class Main(QMainWindow):
         _IMG_CACHE.pop(o.get('src', ''), None)
         o['src'] = uri
         self.canvas.update()
+
+    # ---------------------------------------------------------------- AutoTrace / Vectorise
+    def _autotrace_core(self, o, mode, n_colors, tol, min_area, keep):
+        """GUI-free core: trace image object ``o`` and append the resulting node-paths to the
+        canvas (grouped, registered over the image). Returns the list of new node objects.
+        ``keep`` leaves the original picture in place; otherwise it is removed."""
+        qi = obj_image(o)
+        if qi.isNull():
+            return []
+        rgba = qimage_to_rgba(qi)
+        src_h, src_w = rgba.shape[:2]
+        regions = trace_image(rgba, mode=mode, n_colors=n_colors, tol=tol, min_area=min_area)
+        if not regions:
+            return []
+        # source-pixel → canvas: scale by object w/h ÷ source size, offset by object x/y
+        sx = o['w'] / max(1, src_w); sy = o['h'] / max(1, src_h)
+        ox, oy = o['x'], o['y']; lyr = o.get('layer', self.canvas.active_layer)
+        gid = self.canvas._next_gid; self.canvas._next_gid += 1
+        new = []
+        for reg in regions:  # already back-to-front (largest first)
+            nodes = [dict(x=ox + px * sx, y=oy + py * sy, hin=[0.0, 0.0], hout=[0.0, 0.0],
+                          smooth=False) for (px, py) in reg['nodes']]
+            no = dict(type='nodes', nodes=nodes, closed=True, stroke=None, sw=0,
+                      fill=reg['fill'], layer=lyr, gid=gid)
+            new.append(no)
+        idx = self.canvas.objs.index(o) if o in self.canvas.objs else len(self.canvas.objs)
+        if keep:
+            for k, no in enumerate(new):
+                self.canvas.objs.insert(idx + 1 + k, no)
+        else:
+            self.canvas.objs.pop(idx)
+            _IMG_CACHE.pop(o.get('src', ''), None)
+            for k, no in enumerate(new):
+                self.canvas.objs.insert(idx + k, no)
+        return new
+
+    def auto_trace(self):
+        """Trace the selected picture into editable vector paths — the DrawPlus AutoTrace."""
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox, QGroupBox
+        o = self._selected_image('AutoTrace / Vectorise')
+        if o is None: return
+        if obj_image(o).isNull():
+            QMessageBox.warning(self, APP, 'Could not read that picture.'); return
+        dlg = QDialog(self); dlg.setWindowTitle('AutoTrace / Vectorise')
+        v = QVBoxLayout(dlg); form = QFormLayout()
+        mode_cb = QComboBox()
+        mode_cb.addItem('Black & White', 'bw')
+        mode_cb.addItem('Logo / flat colour', 'logo')
+        mode_cb.addItem('Photo', 'photo')
+        mode_cb.setCurrentIndex(1)
+        form.addRow('Mode:', mode_cb)
+        cols = QSpinBox(); cols.setRange(2, 64); cols.setValue(6)
+        form.addRow('Colours:', cols)
+        detail = QSlider(Qt.Horizontal); detail.setRange(0, 100); detail.setValue(60)
+        detail.setToolTip('Higher = more detail (less smoothing)')
+        form.addRow('Detail:', detail)
+        minspeck = QSpinBox(); minspeck.setRange(0, 5000); minspeck.setValue(16); minspeck.setSuffix(' px²')
+        form.addRow('Min. region:', minspeck)
+        v.addLayout(form)
+        keep_cb = QCheckBox('Keep the original picture underneath'); keep_cb.setChecked(False)
+        v.addWidget(keep_cb)
+        def _sync():
+            m = mode_cb.currentData()
+            cols.setEnabled(m != 'bw')
+            if m == 'photo' and cols.value() < 16: cols.setValue(16)
+            elif m == 'logo' and cols.value() > 12: cols.setValue(6)
+        mode_cb.currentIndexChanged.connect(_sync); _sync()
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Trace')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        v.addWidget(bb)
+        if not dlg.exec(): return
+        mode = mode_cb.currentData()
+        n_colors = cols.value()
+        # detail 0..100 → tolerance ~6..0.3 px (more detail = smaller tolerance)
+        tol = 0.3 + (100 - detail.value()) / 100.0 * 5.7
+        min_area = minspeck.value()
+        keep = keep_cb.isChecked()
+        self.canvas.snapshot()
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            new = self._autotrace_core(o, mode, n_colors, tol, min_area, keep)
+        finally:
+            QApplication.restoreOverrideCursor()
+        if not new:
+            QMessageBox.information(self, APP, 'AutoTrace produced no regions — try fewer '
+                                    'colours or a smaller minimum region.'); return
+        self.canvas.set_selection(new); self.canvas.update(); self.refresh_layers()
+        self.statusBar().showMessage(f'AutoTrace: {len(new)} path(s) created.', 4000)
 
     def edit_text(self):
         """Re-open the text dialog on the selected text object to change its words/font/size."""
@@ -3986,6 +4294,7 @@ class Main(QMainWindow):
         pm = m.addMenu('&Picture')
         pm.addAction(self.act('&Insert Picture…', self.import_image))
         pm.addAction(self.act('&Cutout Studio…', self.cutout_studio))
+        pm.addAction(self.act('&AutoTrace / Vectorise…', self.auto_trace))
         pm.addAction(self.act('&Replace Picture…', self.replace_image))
         pm.addSeparator()
         pm.addAction(self.act('Edit in &PAINTcanvas…', self.edit_in_paint))
