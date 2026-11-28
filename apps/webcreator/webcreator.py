@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.26-00"
+VERSION = "1.27-00"
 
 
 # ===================================================================== font grouping
@@ -457,7 +457,9 @@ DEF = {
                      send='netlify', formspree='', email='', formname='contact', thanks='Thank you — your message has been sent.'),
     'search':   dict(w=360, h=46, font='Noto Sans', size=14, color='#2b2b2b', accent='#2a7d6b', placeholder='Search this site…', submit='Search', provider='google', scope='site'),
     'youtube':  dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
-    'audio':    dict(w=320, h=54, font='Noto Sans', size=13, src='', url='', title='', fill='#eef1f4', color='#2b2b2b', accent='#2a7d6b', radius=8),
+    # Audio player — single track via src/url/title (old docs), OR a PLAYLIST via tracks=[{src,title}].
+    # When tracks is present it publishes as a playlist (clickable list, auto-advance on ended).
+    'audio':    dict(w=320, h=54, font='Noto Sans', size=13, src='', url='', title='', tracks=[], fill='#eef1f4', color='#2b2b2b', accent='#2a7d6b', radius=8),
     'map':      dict(w=480, h=320, font='Noto Sans', size=13, place='', zoom=14, marker='', radius=0),
     'vimeo':    dict(w=560, h=315, font='Noto Sans', size=13, video='', title='', radius=0),
     'newsfeed': dict(w=480, h=560, source=None, accent='#2a7d6b', cardbg='#ffffff', ink='#1f2a30',
@@ -536,6 +538,13 @@ DEF = {
     'portfolio': dict(w=640, h=420, items=[], cols=3, gap=10, alllabel='All', fit='cover',
                       showtitles=True, lightbox=True, font='Noto Sans', size=14, color='#2b2b2b',
                       accent='#2a7d6b', fill='', radius=6, strokeW=0, stroke='#333333'),
+    # Hit / Visitor Counter — the classic WebPlus gadget, server-free.
+    #   mode='local'  → honest PER-BROWSER count via localStorage (no global total, no service).
+    #   mode='service'→ GLOBAL count via a CountAPI-style GET (user gives namespace+key); fetched+shown.
+    # 'digits' pads the number; label text wraps the figure. Fully honest about what it counts.
+    'hitcounter': dict(w=220, h=48, mode='local', label='Visitors: {n}', namespace='', key='',
+                       api='https://api.countapi.xyz', digits=0, font='Noto Sans', size=16, bold=True,
+                       color='#2b2b2b', fill='#eef1f4', accent='#2a7d6b', radius=8, strokeW=0, stroke='#333333'),
 }
 # A SLIDE in a slider object: heading / caption text over an image, with an optional button.
 SLIDE_DEF = dict(image=None, heading='', caption='', btn='', link='')
@@ -2191,7 +2200,11 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
         p.save(); p.setPen(QPen(QColor(o.get('color', '#2b2b2b')), 2)); p.setOpacity(0.2)
         p.drawLine(QPointF(lx, cy), QPointF(w - 12, cy)); p.restore()
         p.setPen(QColor(o.get('color', '#2b2b2b'))); p.setFont(qfont(o))
-        cap = o.get('title') or ('Audio' if (o.get('src') or o.get('url')) else 'Audio — double-click to add a file or link')
+        trks = o.get('tracks') or []
+        if trks:   # playlist mode — show track count, not a single-track caption
+            cap = f'♪ Playlist · {len(trks)} track' + ('' if len(trks) == 1 else 's')
+        else:
+            cap = o.get('title') or ('Audio' if (o.get('src') or o.get('url')) else 'Audio — double-click to add a file or link')
         p.drawText(QRectF(lx, 2, w - lx - 10, h - 4), Qt.AlignLeft | Qt.AlignVCenter, cap)
     elif t == 'youtube':
         vid = re.sub(r'[^A-Za-z0-9_-]', '', o.get('video', ''))[:11]
@@ -2667,6 +2680,22 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
             p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
         if edit:
             _badge(p, w, '▦ portfolio · %d' % len(items))
+    elif t == 'hitcounter':
+        # Visitor/hit counter — canvas shows a styled placeholder figure (1234).
+        p.setPen(Qt.NoPen)
+        if o.get('fill'): p.setBrush(QColor(o['fill'])); p.drawRoundedRect(r, rad, rad)
+        if o.get('strokeW', 0) > 0:
+            p.setPen(obj_pen(o)); p.setBrush(Qt.NoBrush); p.drawRoundedRect(r, rad, rad)
+        f = qfont(o); f.setBold(bool(o.get('bold', True))); p.setFont(f)
+        n = '1234'
+        d = int(o.get('digits', 0) or 0)
+        if d > 0: n = n.rjust(d, '0')
+        txt = (o.get('label') or 'Visitors: {n}').replace('{n}', n)
+        p.setPen(QColor(o.get('color', '#2b2b2b')))
+        p.drawText(QRectF(8, 0, w - 16, h), Qt.AlignCenter, txt)
+        if edit:
+            mode = 'global' if o.get('mode') == 'service' else 'this browser'
+            _badge(p, w, '👁 counter · %s' % mode)
 
 def _q_align(a):
     return {'center': Qt.AlignHCenter, 'right': Qt.AlignRight, 'justify': Qt.AlignJustify}.get(a, Qt.AlignLeft)
@@ -3408,16 +3437,50 @@ def obj_html(o, site, page, img):
                 f'<input type="text" name="q" placeholder="{esc(o.get("placeholder", "Search…"))}" aria-label="Search">'
                 f'<button type="submit">{esc(o.get("submit", "Search"))}</button></form>')
     elif t == 'audio':
-        src = img(o['src']) if (o.get('src') and o['src'] in site.get('assets', {})) else (o.get('url') or '')
+        # Resolve a track's src (an asset key becomes a copied-in file; otherwise a raw URL).
+        def _asrc(k):
+            return img(k) if (k and k in site.get('assets', {})) else (k or '')
+        cf = css_font(o.get('font', 'Noto Sans')); col = o.get('color', '#2b2b2b'); acc = o.get('accent', '#2a7d6b')
         st += (f"border-radius:{o.get('radius', 8):g}px;background:{o.get('fill', '#eef1f4')};"
                "display:flex;flex-direction:column;justify-content:center;gap:4px;padding:6px 12px;box-sizing:border-box;")
-        ttl = ''
-        if o.get('title'):
-            cf = css_font(o.get('font', 'Noto Sans')); col = o.get('color', '#2b2b2b')
-            ttl = f'<div style="font:600 13px {cf};color:{col}">{esc(o["title"])}</div>'
-        body = (f'<audio controls preload="none" style="width:100%" src="{esc(src)}"></audio>' if src
-                else '<span style="color:#888;font:13px sans-serif">No audio set</span>')
-        return f'<div class="obj obj-audio" style="{st}">{ttl}{body}</div>'
+        # Build the track list: explicit playlist, else synthesise a 1-item list from the old src/url/title.
+        tracks = []
+        for tr in (o.get('tracks') or []):
+            s = _asrc(tr.get('src', ''))
+            if s: tracks.append((s, tr.get('title', '') or 'Track'))
+        if not tracks:   # fallback — old single-track doc (src/url/title, no tracks)
+            s = _asrc(o.get('src', '')) or (o.get('url') or '')
+            if s: tracks.append((s, o.get('title', '') or ''))
+        if not tracks:
+            return (f'<div class="obj obj-audio" style="{st}">'
+                    f'<span style="color:#888;font:13px sans-serif">No audio set</span></div>')
+        if len(tracks) == 1:
+            # Single track → simple player (identical to the old output: optional title + one <audio>).
+            s, tt = tracks[0]
+            ttl = f'<div style="font:600 13px {cf};color:{col}">{esc(tt)}</div>' if tt else ''
+            return (f'<div class="obj obj-audio" style="{st}">{ttl}'
+                    f'<audio controls preload="none" style="width:100%" src="{esc(s)}"></audio></div>')
+        # Multi-track → playlist: one <audio> with N <source>s (and a JS-driven list below).
+        uid_ = 'ap' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', '')))[:10]
+        sources = ''.join(f'<source src="{esc(s)}">' for s, _ in tracks)
+        items = ''.join(
+            f'<li data-src="{esc(s)}" style="padding:6px 8px;border-radius:5px;cursor:pointer;'
+            f'font:14px {cf};color:{col}">{esc(tt or ("Track %d" % (i + 1)))}</li>'
+            for i, (s, tt) in enumerate(tracks))
+        data = json.dumps([s for s, _ in tracks])
+        script = (
+            f'<script>(function(){{var r=document.getElementById("{uid_}"),a=r.querySelector("audio"),'
+            f'L=[].slice.call(r.querySelectorAll("li[data-src]")),src={data},i=0,A="{esc(acc)}";'
+            'function hi(){L.forEach(function(x,n){x.style.background=n===i?A:"";'
+            'x.style.color=n===i?"#fff":"";});}'
+            'function play(n){i=(n+src.length)%src.length;a.src=src[i];hi();a.play();}'
+            'L.forEach(function(x,n){x.addEventListener("click",function(){play(n);});});'
+            'a.addEventListener("ended",function(){if(i<src.length-1)play(i+1);});'
+            'hi();})();</script>')
+        return (f'<div class="obj obj-audio obj-audio-playlist" id="{uid_}" style="{st}">'
+                f'<audio controls preload="none" style="width:100%">{sources}</audio>'
+                f'<ol style="list-style:none;margin:4px 0 0;padding:0;max-height:100%;overflow:auto">{items}</ol>'
+                f'{script}</div>')
     elif t == 'youtube':
         vid = re.sub(r'[^A-Za-z0-9_-]', '', o.get('video', ''))[:11]
         st += f"border-radius:{o.get('radius', 0):g}px;overflow:hidden;background:#000;"
@@ -4137,6 +4200,43 @@ def obj_html(o, site, page, img):
         return (f'<div class="obj obj-portfolio" style="{st}"{anim_attr(o)}>'
                 f'<div class="pg-filters">{"".join(fbtns)}</div>'
                 f'<div class="pg-grid">{"".join(cells)}</div>{lb_overlay}{script}</div>')
+    elif t == 'hitcounter':
+        # Visitor/hit counter — server-free, two honest modes:
+        #   'local'   — counts THIS BROWSER's visits via localStorage (NOT a global total).
+        #   'service' — a GLOBAL count via a CountAPI-style GET (namespace+key); fetched + shown.
+        # The number is written into the label where {n} appears (default "Visitors: {n}").
+        cf = css_font(o.get('font', 'Noto Sans')); col = o.get('color', '#2b2b2b')
+        weight = '700' if o.get('bold', True) else '400'
+        st += (f"border-radius:{o.get('radius', 8):g}px;background:{o.get('fill', '#eef1f4')};"
+               "display:flex;align-items:center;justify-content:center;box-sizing:border-box;padding:4px 10px;"
+               f"font:{weight} {o.get('size', 16):g}px {cf};color:{col};")
+        if o.get('strokeW', 0) > 0:
+            st += f"border:{o.get('strokeW')}px solid {o.get('stroke', '#333333')};"
+        label = o.get('label') or 'Visitors: {n}'
+        parts = label.split('{n}', 1)
+        pre, post = (esc(parts[0]), esc(parts[1])) if len(parts) == 2 else (esc(label) + ' ', '')
+        digits = int(o.get('digits', 0) or 0)
+        oid = 'hc' + re.sub(r'[^A-Za-z0-9]', '', str(o.get('id', '')))[:10]
+        # The figure starts at the placeholder until JS updates it (no-JS visitors see the dash).
+        inner_fig = f'<span class="hc-n" id="{oid}-n">—</span>'
+        if o.get('mode') == 'service' and (o.get('namespace') or '').strip() and (o.get('key') or '').strip():
+            api = (o.get('api') or 'https://api.countapi.xyz').rstrip('/')
+            ns = re.sub(r'[^A-Za-z0-9_.\-]', '', (o.get('namespace') or '').strip())
+            ky = re.sub(r'[^A-Za-z0-9_.\-]', '', (o.get('key') or '').strip())
+            url = f'{api}/hit/{ns}/{ky}'
+            # GLOBAL per-site hit (counts every page view across all visitors).
+            script = (f'<script>(function(){{var e=document.getElementById("{oid}-n"),p={digits};'
+                      f'fetch("{esc(url)}").then(function(r){{return r.json();}}).then(function(d){{'
+                      'var v=(d&&d.value!=null)?d.value:0;e.textContent=p>0?String(v).padStart(p,"0"):String(v);'
+                      '}).catch(function(){e.textContent="";});})();</script>')
+        else:
+            # LOCAL (honest): per-browser visit count via localStorage — NOT a global total.
+            script = (f'<script>(function(){{var e=document.getElementById("{oid}-n"),p={digits},'
+                      f'k="wc_hits_{oid}",v=0;try{{v=(parseInt(localStorage.getItem(k),10)||0)+1;'
+                      'localStorage.setItem(k,v);}catch(_){v=1;}'
+                      'e.textContent=p>0?String(v).padStart(p,"0"):String(v);})();</script>')
+        return (f'<div class="obj obj-hitcounter" id="{oid}" style="{st}"{anim_attr(o)}>'
+                f'<span>{pre}{inner_fig}{post}</span>{script}</div>')
     return f'<{tag} class="obj obj-{t}{extra_cls}" style="{st}"{attrs}{anim_attr(o)}>{inner}</{tag}>'
 
 def _page_text(page):
@@ -6472,6 +6572,7 @@ TOOLS = [
     ('ticker', 'News Ticker', ['application-rss+xml', 'media-seek-forward', 'view-list-details'], '≋', 'Drag to place a horizontal scrolling news ticker — a strip of headlines (each optionally linking somewhere) with an optional bold label on the left. Set the speed, direction and pause-on-hover.'),
     ('videoplayer', 'Video Player', ['video-x-generic', 'applications-multimedia', 'media-playback-start'], '▶', 'Drag to place an HTML5 video player with a poster image and native controls. Choose an MP4/WebM file or paste a link; options for autoplay, loop and responsive 16:9. No Flash, no external player.'),
     ('portfolio', 'Portfolio Grid', ['view-presentation', 'folder-pictures', 'view-filter'], '▦', 'Drag to place a filterable portfolio grid. Add items (picture + title + category); visitors use filter buttons to show only matching items, with a smooth transition. Items can open in a lightbox.'),
+    ('hitcounter', 'Visitor Counter', ['view-statistics', 'office-chart-line', 'appointment-new'], '👁', 'Drag to place a classic visitor / hit counter — server-free. By default it counts visits from THIS browser (honest, per-device, via localStorage). Switch to “global” to show a shared total from a free CountAPI-style counter (give it a namespace and key).'),
 ]
 
 class LinelessTree(QTreeWidget):
@@ -9139,6 +9240,7 @@ class MainWindow(QMainWindow):
         elif kind == 'ticker': self.ticker_dialog(o)
         elif kind == 'videoplayer': self.videoplayer_dialog(o)
         elif kind == 'portfolio': self.portfolio_dialog(o)
+        elif kind == 'hitcounter': self.hitcounter_dialog(o)
 
     def launch_app(self, cmd, label):
         """Launch a sibling 'just a...' app, or explain how to install it."""
@@ -9363,6 +9465,7 @@ class MainWindow(QMainWindow):
         elif t == 'ticker': self.ticker_dialog(o)
         elif t == 'videoplayer': self.videoplayer_dialog(o)
         elif t == 'portfolio': self.portfolio_dialog(o)
+        elif t == 'hitcounter': self.hitcounter_dialog(o)
 
     def start_edit(self, o, select_all=False):
         it = self.items.get(o['id'])
@@ -11254,30 +11357,139 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, APP, "That doesn't look like a Vimeo link, so nothing was changed."); return
             self.commit(); o['video'] = vid; o['title'] = title.text().strip(); self.refresh()
 
+    def _choose_audio_asset(self):
+        """Pop the file chooser for an audio file; embed it as an asset and return (key, name)
+        or (None, None) if cancelled. Shared by the single-track and playlist editors."""
+        path, _ = QFileDialog.getOpenFileName(self, 'Choose audio', os.path.expanduser('~'),
+                                              'Audio (*.mp3 *.ogg *.wav *.m4a *.aac *.flac);;All files (*)')
+        if not path: return None, None
+        with open(path, 'rb') as fh: data = fh.read()
+        ext = os.path.splitext(path)[1].lower().lstrip('.')
+        mime = {'mp3': 'mpeg', 'm4a': 'mp4', 'aac': 'aac', 'ogg': 'ogg', 'wav': 'wav', 'flac': 'flac'}.get(ext, ext)
+        key = add_asset(self.site, f'data:audio/{mime};base64,' + base64.b64encode(data).decode())
+        self.site.setdefault('assetnames', {})[key] = os.path.basename(path)
+        return key, os.path.basename(path)
+
     def audio_dialog(self, o):
-        url = QLineEdit(o.get('url', '')); url.setPlaceholderText('https://example.com/clip.mp3')
-        title = QLineEdit(o.get('title', ''))
-        chosen = [o.get('src', '')]
-        pick = QPushButton(ticon(['document-open', 'folder-open'], ''),
-                           self.site.get('assetnames', {}).get(chosen[0], 'Choose audio file…') if chosen[0] else 'Choose audio file…')
-        def choose():
-            path, _ = QFileDialog.getOpenFileName(self, 'Choose audio', os.path.expanduser('~'),
-                                                  'Audio (*.mp3 *.ogg *.wav *.m4a *.aac *.flac);;All files (*)')
-            if not path: return
-            with open(path, 'rb') as fh: data = fh.read()
-            ext = os.path.splitext(path)[1].lower().lstrip('.')
-            mime = {'mp3': 'mpeg', 'm4a': 'mp4', 'aac': 'aac', 'ogg': 'ogg', 'wav': 'wav', 'flac': 'flac'}.get(ext, ext)
-            key = add_asset(self.site, f'data:audio/{mime};base64,' + base64.b64encode(data).decode())
-            self.site.setdefault('assetnames', {})[key] = os.path.basename(path)
-            chosen[0] = key; pick.setText(os.path.basename(path)); url.clear()
-        pick.clicked.connect(choose)
-        dlg = form_dialog(self, 'Audio', [('Audio file:', pick), ('…or link (URL):', url), ('Title (optional):', title)],
-                          QLabel('Place an audio player. Choose a file to embed it in the site, or paste a link.\n'
-                                 'It plays with the browser’s built-in audio controls when published.'))
+        """Edit the audio player. A PLAYLIST of tracks (title + file/URL) with add/remove/reorder;
+        an old single-track doc (src/url/title, no tracks) loads as a one-item list and still
+        publishes as a simple one-track player when left with a single track."""
+        from PySide6.QtWidgets import QWidget
+        # Seed the working list from tracks, else synthesise one from the old src/url/title.
+        tracks = [dict(src=tr.get('src', ''), title=tr.get('title', '')) for tr in (o.get('tracks') or [])]
+        if not tracks and (o.get('src') or o.get('url') or o.get('title')):
+            tracks = [dict(src=(o.get('src') or o.get('url') or ''), title=o.get('title', ''))]
+        dlg = QDialog(self); dlg.setWindowTitle('Audio Player / Playlist'); dlg.resize(620, 480); lay = QVBoxLayout(dlg)
+        lay.addWidget(QLabel('An HTML5 audio player. Add one track for a simple player, or several for a '
+                             'playlist — visitors click a track to play it and it auto-advances to the next '
+                             'when one ends. Choose a file to embed it, or paste a link.'))
+        bodyl = QHBoxLayout(); lay.addLayout(bodyl, 1)
+        lst = QListWidget(); lst.setMaximumWidth(240); bodyl.addWidget(lst)
+        panel = QWidget(); pform = QFormLayout(panel); bodyl.addWidget(panel, 1)
+        cur = {'src': ''}
+        srcname = QLabel('No file / link'); pickbtn = QPushButton('Choose file…')
+        url = QLineEdit(); url.setPlaceholderText('…or paste a URL (mp3/ogg/wav)')
+        title = QLineEdit()
+        def set_srcname():
+            k = cur['src']
+            srcname.setText(self.site.get('assetnames', {}).get(k, 'File embedded') if (k and k in self.site.get('assets', {}))
+                            else ('No file / link' if not k else 'Link set'))
+        def pick_file():
+            key, name = self._choose_audio_asset()
+            if key: cur['src'] = key; url.clear(); set_srcname()
+        pickbtn.clicked.connect(pick_file)
+        srow = QHBoxLayout(); srow.addWidget(srcname, 1); srow.addWidget(pickbtn); sw = QWidget(); sw.setLayout(srow)
+        pform.addRow('Title:', title); pform.addRow('Audio file:', sw); pform.addRow('…or URL:', url); panel.setEnabled(False)
+        def url_changed():
+            if url.text().strip(): cur['src'] = url.text().strip(); set_srcname()
+        url.textChanged.connect(lambda *_: url_changed())
+        active = {'i': -1}
+        def label_for(it): return it.get('title') or self.site.get('assetnames', {}).get(it.get('src'), '') or (it.get('src') or 'Track')
+        def save_active():
+            i = active['i']
+            if 0 <= i < len(tracks):
+                tracks[i] = dict(src=cur['src'], title=title.text().strip())
+                lst.item(i).setText(f'{i + 1}. ' + label_for(tracks[i]))
+        def load(i):
+            active['i'] = i
+            if not (0 <= i < len(tracks)): panel.setEnabled(False); return
+            panel.setEnabled(True); it = tracks[i]
+            cur['src'] = it.get('src', '')
+            k = it.get('src', '')
+            if k and k not in self.site.get('assets', {}): url.setText(k)
+            else: url.clear()
+            set_srcname(); title.setText(it.get('title', ''))
+        def on_row(nr):
+            if active['i'] != nr: save_active()
+            load(nr)
+        lst.currentRowChanged.connect(on_row)
+        for i, it in enumerate(tracks): lst.addItem(f'{i + 1}. ' + label_for(it))
+        row = QHBoxLayout(); lay.addLayout(row)
+        def renumber():
+            for i in range(lst.count()): lst.item(i).setText(f'{i + 1}. ' + label_for(tracks[i]))
+        def add_it():
+            save_active(); tracks.append(dict(src='', title='New track')); lst.addItem(f'{lst.count() + 1}. New track'); lst.setCurrentRow(lst.count() - 1)
+        def del_it():
+            save_active(); i = lst.currentRow()
+            if 0 <= i < len(tracks): tracks.pop(i); lst.takeItem(i); renumber(); active['i'] = -1; load(lst.currentRow())
+        def mv(d):
+            save_active(); i = lst.currentRow(); j = i + d
+            if 0 <= i < len(tracks) and 0 <= j < len(tracks):
+                tracks[i], tracks[j] = tracks[j], tracks[i]; it = lst.takeItem(i); lst.insertItem(j, it); lst.setCurrentRow(j); renumber()
+        for text_, ic, fn in (('Add', 'list-add', add_it), ('Remove', 'list-remove', del_it), ('Up', 'go-up', lambda: mv(-1)), ('Down', 'go-down', lambda: mv(1))):
+            b = QPushButton(ticon([ic], ''), text_); b.clicked.connect(fn); row.addWidget(b)
+        row.addStretch()
+        bbx = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel); bbx.accepted.connect(dlg.accept); bbx.rejected.connect(dlg.reject); lay.addWidget(bbx)
+        if tracks: lst.setCurrentRow(0)
+        else: QTimer.singleShot(0, add_it)
+        if dlg.exec():
+            save_active(); self.commit()
+            keep = [t for t in tracks if t.get('src')]
+            o['tracks'] = keep
+            # Keep the old single fields in sync for a 1-track list so old-doc round-trips stay clean.
+            if len(keep) == 1:
+                s = keep[0]['src']
+                o['src'] = s if s in self.site.get('assets', {}) else ''
+                o['url'] = '' if s in self.site.get('assets', {}) else s
+                o['title'] = keep[0].get('title', '')
+            else:
+                o['src'] = ''; o['url'] = ''; o['title'] = ''
+            self.refresh()
+
+    def hitcounter_dialog(self, o):
+        """Properties for the visitor/hit counter. Honest about what it counts: 'This browser only'
+        is a per-device localStorage count; 'Global' uses a free CountAPI-style service (namespace+key)."""
+        from PySide6.QtWidgets import QComboBox, QSpinBox
+        mode = QComboBox(); mode.addItem('This browser only (private, per-device)', 'local')
+        mode.addItem('Global total (free CountAPI service)', 'service')
+        mode.setCurrentIndex(1 if o.get('mode') == 'service' else 0)
+        label = QLineEdit(o.get('label', 'Visitors: {n}')); label.setPlaceholderText('Visitors: {n}')
+        ns = QLineEdit(o.get('namespace', '')); ns.setPlaceholderText('e.g. mysite.com')
+        key = QLineEdit(o.get('key', '')); key.setPlaceholderText('e.g. homepage_visits')
+        api = QLineEdit(o.get('api', 'https://api.countapi.xyz'))
+        digits = QSpinBox(); digits.setRange(0, 12); digits.setValue(int(o.get('digits', 0) or 0))
+        acc = [o.get('color', '#2b2b2b')]; accb = ColorButton(acc[0], lambda c: acc.__setitem__(0, c or '#2b2b2b'), 'Text colour')
+        fill = [o.get('fill', '#eef1f4')]; fillb = ColorButton(fill[0], lambda c: fill.__setitem__(0, c or ''), 'Background')
+        note = QLabel()
+        def on_mode():
+            svc = mode.currentData() == 'service'
+            ns.setEnabled(svc); key.setEnabled(svc); api.setEnabled(svc)
+            note.setText('Counts a shared TOTAL across all visitors via a free counter service — give it '
+                         'a unique namespace and key.' if svc else
+                         'Counts visits from THIS browser only (stored on the visitor’s own device). It is '
+                         'NOT a global total — each device keeps its own number.')
+        mode.currentIndexChanged.connect(lambda *_: on_mode()); on_mode()
+        note.setWordWrap(True)
+        dlg = form_dialog(self, 'Visitor Counter',
+                          [('Counts:', mode), ('Label (use {n}):', label), ('Namespace:', ns), ('Key:', key),
+                           ('Service URL:', api), ('Pad to digits:', digits), ('Text colour:', accb), ('Background:', fillb)],
+                          note)
         if dlg.exec():
             self.commit()
-            o['src'] = chosen[0] if chosen[0] in self.site.get('assets', {}) else ''
-            o['url'] = url.text().strip(); o['title'] = title.text().strip()
+            o.update(mode=mode.currentData(), label=label.text() or 'Visitors: {n}',
+                     namespace=ns.text().strip(), key=key.text().strip(),
+                     api=api.text().strip() or 'https://api.countapi.xyz', digits=digits.value(),
+                     color=acc[0], fill=fill[0])
             self.refresh()
 
     def embed_dialog(self):
