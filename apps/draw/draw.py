@@ -9,7 +9,10 @@ try:
     from PySide6.QtWidgets import (QApplication, QMainWindow, QWidget, QToolBar, QColorDialog,
                                    QFileDialog, QMessageBox, QSpinBox, QLabel, QDialog, QVBoxLayout,
                                    QHBoxLayout, QPushButton, QComboBox, QScrollArea, QDockWidget,
-                                   QListWidget, QListWidgetItem, QLineEdit, QInputDialog)
+                                   QListWidget, QListWidgetItem, QLineEdit, QInputDialog,
+                                   QGridLayout, QSlider, QFormLayout, QDoubleSpinBox, QToolButton,
+                                   QButtonGroup, QRadioButton, QCheckBox, QDialogButtonBox, QFrame,
+                                   QSizePolicy)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QFont, QFontMetricsF, QPainterPath, QActionGroup, QPolygonF,
                                QLinearGradient, QRadialGradient, QPdfWriter, QPageSize, QPageLayout)
@@ -23,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.8-00"
+VERSION = "1.9-00"
 
 
 # ===================================================================== font grouping
@@ -184,28 +187,127 @@ QUICKSHAPES = [
     ('darrow', 'Double arrow'), ('chevron', 'Chevron'), ('plus', 'Cross'),
     ('parallelogram', 'Parallelogram'), ('trapezoid', 'Trapezoid'), ('heart', 'Heart'),
     ('lightning', 'Lightning bolt'), ('speech', 'Speech bubble'), ('cloud', 'Cloud'),
+    ('moon', 'Moon'), ('sun', 'Sun'), ('gear', 'Gear'),
 ]
+
+# QuickShapes whose geometry has an adjustable parameter, surfaced as one draggable
+# "cog" handle on the canvas (à la DrawPlus): key -> (param, label, lo, hi, default).
+# 'points' = number of points/sides, 'inner' = star waist, 'phase' = moon fullness,
+# 'teeth' = gear teeth. The value is stored on the object as o['qp'][param].
+ADJUSTABLE_QS = {
+    'star5':   ('inner', 'Star waist', 0.15, 0.85, 0.42),
+    'star6':   ('inner', 'Star waist', 0.20, 0.90, 0.50),
+    'pentagon':('points', 'Sides', 3, 12, 5),
+    'hexagon': ('points', 'Sides', 3, 12, 6),
+    'octagon': ('points', 'Sides', 3, 12, 8),
+    'moon':    ('phase', 'Moon phase', 0.05, 0.95, 0.5),
+    'sun':     ('points', 'Rays', 6, 24, 12),
+    'gear':    ('teeth', 'Teeth', 5, 18, 9),
+}
+
+# Blend (compositing) modes for the Transparency panel: label -> (QPainter mode key,
+# CSS mix-blend-mode name for SVG). The painter mode is resolved lazily (needs QPainter).
+BLEND_MODES = [
+    ('Normal', 'SourceOver', 'normal'), ('Multiply', 'Multiply', 'multiply'),
+    ('Screen', 'Screen', 'screen'), ('Overlay', 'Overlay', 'overlay'),
+    ('Darken', 'Darken', 'darken'), ('Lighten', 'Lighten', 'lighten'),
+    ('Colour Dodge', 'ColorDodge', 'color-dodge'), ('Colour Burn', 'ColorBurn', 'color-burn'),
+    ('Hard Light', 'HardLight', 'hard-light'), ('Soft Light', 'SoftLight', 'soft-light'),
+    ('Difference', 'Difference', 'difference'), ('Exclusion', 'Exclusion', 'exclusion'),
+]
+BLEND_CSS = {k: css for _, k, css in BLEND_MODES}
+
+# Named colour palettes for the Swatches panel (mirrors DrawPlus's swatch tabs).
+SWATCH_PALETTES = {
+    'Standard': ['#000000', '#444444', '#888888', '#bbbbbb', '#ffffff', '#e01b24',
+                 '#ff7800', '#f6d32d', '#33d17a', '#2ec27e', '#3584e4', '#1a5fb4',
+                 '#9141ac', '#e66100', '#c64600', '#613583'],
+    'Mid Tones': ['#5b7a8c', '#6d8a7a', '#8a7a6d', '#8c6d7a', '#7a6d8c', '#6d7a8c',
+                  '#9bae9b', '#aebb9b', '#bb9bae', '#9baebb', '#c0ad8f', '#8fadc0',
+                  '#a89bae', '#aec09b', '#c09ba8', '#9bc0ad'],
+    'Earth': ['#3b2f2f', '#6b4f2f', '#8a6d3b', '#a9814f', '#c6a76b', '#e3cf9e',
+              '#5c6b3b', '#7a8a4f', '#4f6b5c', '#2f4f4f', '#7a5c3b', '#9e7a4f'],
+    'Vivid': ['#ff0040', '#ff6a00', '#ffd400', '#9bff00', '#00ff88', '#00e5ff',
+              '#007bff', '#5a00ff', '#c400ff', '#ff00aa', '#ff2975', '#00ffd0'],
+    'Greyscale': ['#000000', '#1a1a1a', '#333333', '#4d4d4d', '#666666', '#808080',
+                  '#999999', '#b3b3b3', '#cccccc', '#e6e6e6', '#f2f2f2', '#ffffff'],
+}
+
+# Preset object styles for the Styles panel: name -> fill / stroke / width / dash.
+# Clicking one restyles the selection (like dropping a DrawPlus Line/Fill style on it).
+DRAW_STYLES = [
+    ('Ink outline',   dict(fill=None,        stroke='#1f2a30', sw=3, dash='solid')),
+    ('Soft blue',     dict(fill='#cfe3ef',   stroke='#2b6c9c', sw=2, dash='solid')),
+    ('Sunshine',      dict(fill='#ffe08a',   stroke='#e0a500', sw=3, dash='solid')),
+    ('Leaf',          dict(fill='#bfe3b2',   stroke='#3a7d2c', sw=3, dash='solid')),
+    ('Rose',          dict(fill='#f6c6d4',   stroke='#c3456b', sw=2, dash='solid')),
+    ('Night',         dict(fill='#2b3a55',   stroke='#8fa6c9', sw=2, dash='solid')),
+    ('Dashed red',    dict(fill=None,        stroke='#e01b24', sw=3, dash='dash')),
+    ('Fat marker',    dict(fill='#ffffff',   stroke='#111111', sw=8, dash='solid')),
+    ('Dotted grey',   dict(fill=None,        stroke='#666666', sw=2, dash='dot')),
+    ('Mono fill',     dict(fill='#333333',   stroke=None,      sw=0, dash='solid')),
+    ('Sky gradient',  dict(fill='#bfe0ff',   stroke='#3a7bd5', sw=2, dash='solid')),
+    ('Coral',         dict(fill='#ff9478',   stroke='#d23b1f', sw=3, dash='solid')),
+]
+
+
+def _blend_mode(key):
+    """Resolve a BLEND_MODES key to a QPainter.CompositionMode enum."""
+    return getattr(QPainter, 'CompositionMode_' + key, QPainter.CompositionMode_SourceOver)
 QS_KEYS = [k for k, _ in QUICKSHAPES]
 
 def _qs_poly(pts):
     pp = QPainterPath(); pp.addPolygon(QPolygonF([QPointF(x, y) for x, y in pts])); pp.closeSubpath(); return pp
 
-def quickshape_path(name, w, h):
+def quickshape_path(name, w, h, qp=None):
+    """Outline for a QuickShape, optionally adjusted by qp (a dict of parameter values,
+    see ADJUSTABLE_QS). qp lets a star change its waist, a polygon its side-count, the
+    moon its phase, etc."""
+    qp = qp or {}
     cx, cy = w / 2, h / 2
     if name == 'triangle':  return _qs_poly([(cx, 0), (w, h), (0, h)])
     if name == 'rtriangle': return _qs_poly([(0, 0), (0, h), (w, h)])
     if name == 'diamond':   return _qs_poly([(cx, 0), (w, cy), (cx, h), (0, cy)])
     if name in ('pentagon', 'hexagon', 'octagon'):
-        n = {'pentagon': 5, 'hexagon': 6, 'octagon': 8}[name]; off = -math.pi / 2
+        n = int(qp.get('points', {'pentagon': 5, 'hexagon': 6, 'octagon': 8}[name])); off = -math.pi / 2
         return _qs_poly([(cx + cx * math.cos(off + i * 2 * math.pi / n),
                           cy + cy * math.sin(off + i * 2 * math.pi / n)) for i in range(n)])
     if name in ('star5', 'star6'):
-        n = 5 if name == 'star5' else 6; off = -math.pi / 2; inner = 0.42 if n == 5 else 0.5
+        n = 5 if name == 'star5' else 6; off = -math.pi / 2
+        inner = float(qp.get('inner', 0.42 if n == 5 else 0.5))
         pts = []
         for i in range(n * 2):
             k = 1.0 if i % 2 == 0 else inner; a = off + i * math.pi / n
             pts.append((cx + cx * k * math.cos(a), cy + cy * k * math.sin(a)))
         return _qs_poly(pts)
+    if name == 'moon':
+        # A crescent = the big disc minus an offset disc. phase (0..1) sets how much
+        # of the disc stays lit: 0.5 = half, →1 nearly full, →0 a thin sliver.
+        phase = max(0.05, min(0.95, float(qp.get('phase', 0.5))))
+        disc = QPainterPath(); disc.addEllipse(QRectF(0, 0, w, h))
+        cut = QPainterPath(); cut.addEllipse(QRectF(w * (0.9 - 1.8 * phase), 0, w, h))
+        return disc.subtracted(cut)
+    if name == 'sun':
+        rays = int(qp.get('points', 12)); core = 0.55
+        pp = QPainterPath(); pp.addEllipse(QRectF(cx - cx * core, cy - cy * core, w * core, h * core))
+        spike = QPainterPath()
+        for i in range(rays):
+            a = i * 2 * math.pi / rays; a2 = a + math.pi / rays
+            spike.moveTo(cx + cx * core * math.cos(a - math.pi / rays), cy + cy * core * math.sin(a - math.pi / rays))
+            spike.lineTo(cx + cx * math.cos(a), cy + cy * math.sin(a))
+            spike.lineTo(cx + cx * core * math.cos(a2), cy + cy * core * math.sin(a2))
+            spike.closeSubpath()
+        return pp.united(spike).simplified()
+    if name == 'gear':
+        teeth = int(qp.get('teeth', 9)); ro, ri, hub = 1.0, 0.72, 0.28
+        pts = []
+        for i in range(teeth):
+            for frac, rr in ((0.0, ro), (0.28, ro), (0.5, ri), (0.78, ri)):
+                a = (i + frac) * 2 * math.pi / teeth - math.pi / 2
+                pts.append((cx + cx * rr * math.cos(a), cy + cy * rr * math.sin(a)))
+        pp = _qs_poly(pts)
+        hole = QPainterPath(); hole.addEllipse(QRectF(cx - cx * hub, cy - cy * hub, w * hub, h * hub))
+        return pp.subtracted(hole)
     if name == 'arrow':
         return _qs_poly([(0, h * .3), (w * .6, h * .3), (w * .6, 0), (w, cy),
                          (w * .6, h), (w * .6, h * .7), (0, h * .7)])
@@ -311,7 +413,7 @@ def nodes_from_obj(o):
         x, y, w, h = o['x'], o['y'], o['w'], o['h']
         return [corner(x, y), corner(x + w, y), corner(x + w, y + h), corner(x, y + h)], True
     if t == 'quick':
-        pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+        pp = quickshape_path(o['shape'], o['w'], o['h'], o.get('qp')).translated(o['x'], o['y'])
         return _nodes_from_painterpath(pp)
     if t in ('line', 'poly', 'path'):
         pts = o.get('pts') or []
@@ -542,7 +644,7 @@ def obj_silhouette(o):
     if t == 'rect': pp.addRect(QRectF(0, 0, o['w'], o['h']))
     elif t == 'ellipse': pp.addEllipse(QRectF(0, 0, o['w'], o['h']))
     elif t == 'image': pp.addRect(QRectF(0, 0, o['w'], o['h']))
-    elif t == 'quick': pp = quickshape_path(o['shape'], o['w'], o['h'])
+    elif t == 'quick': pp = quickshape_path(o['shape'], o['w'], o['h'], o.get('qp'))
     elif t == 'nodes':
         from PySide6.QtGui import QPainterPathStroker
         base = node_painter_path(o); r = obj_rect(o)
@@ -585,6 +687,31 @@ def _fx_image(path, w, h, color, blur, pad):
     small = base.scaled(max(1, W // f), max(1, H // f), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
+def draw_brush(p, o):
+    """A variable-width ink ribbon from a brush object's points + per-point widths
+    (the 'pressure' is faked from pointer speed when drawn). Each segment quad and each
+    round join is filled separately so overlaps stay solid (a single winding-fill path
+    would leave lattice holes where sub-paths cancel)."""
+    pts = o.get('pts') or []; ws = o.get('widths') or []
+    n = len(pts)
+    if n == 0:
+        return
+    col = QColor(o.get('stroke') or o.get('fill') or '#1f2a30')
+    p.setPen(Qt.NoPen); p.setBrush(col)
+    def wat(i): return max(1.0, ws[i] if i < len(ws) else (ws[-1] if ws else 6.0))
+    for i in range(n - 1):
+        (x1, y1), (x2, y2) = pts[i], pts[i + 1]
+        w1, w2 = wat(i), wat(i + 1)
+        dx, dy = x2 - x1, y2 - y1; L = math.hypot(dx, dy) or 1.0
+        nx, ny = -dy / L, dx / L
+        p.drawPolygon(QPolygonF([QPointF(x1 + nx * w1 / 2, y1 + ny * w1 / 2),
+                                 QPointF(x2 + nx * w2 / 2, y2 + ny * w2 / 2),
+                                 QPointF(x2 - nx * w2 / 2, y2 - ny * w2 / 2),
+                                 QPointF(x1 - nx * w1 / 2, y1 - ny * w1 / 2)]))
+    for i in range(n):
+        x, y = pts[i]; r = wat(i) / 2; p.drawEllipse(QPointF(x, y), r, r)
+
+
 def draw_object_fx(p, o):
     sh = o.get('shadow'); gl = o.get('glow')
     if not sh and not gl: return
@@ -601,8 +728,11 @@ def draw_object_fx(p, o):
 
 
 def text_font(o):
-    """The QFont for a text object (family + pixel size)."""
-    f = QFont(o.get('family', 'Noto Sans')); f.setPixelSize(max(1, int(o.get('size', 48)))); return f
+    """The QFont for a text object (family + pixel size, optional bold/italic)."""
+    f = QFont(o.get('family', 'Noto Sans')); f.setPixelSize(max(1, int(o.get('size', 48))))
+    if o.get('bold'): f.setBold(True)
+    if o.get('italic'): f.setItalic(True)
+    return f
 
 def text_size(o):
     """(width, height) of a text object's drawn box, measured from its font."""
@@ -920,7 +1050,11 @@ def _rot_transform(o):
 
 def _opacity_attr(o):
     op = obj_opacity(o)
-    return f' opacity="{op:.3f}"' if op < 1.0 else ''
+    out = f' opacity="{op:.3f}"' if op < 1.0 else ''
+    blend = o.get('blend')
+    if blend and blend != 'SourceOver':
+        out += f' style="mix-blend-mode:{BLEND_CSS.get(blend, "normal")}"'
+    return out
 
 
 def svg_image_el(o):
@@ -949,7 +1083,7 @@ def svg_shape_el(o, idx=0):
         cx = o['x'] + o['w'] / 2; cy = o['y'] + o['h'] / 2
         el = f'<ellipse cx="{cx:.2f}" cy="{cy:.2f}" rx="{o["w"]/2:.2f}" ry="{o["h"]/2:.2f}" {common}/>'
     elif t == 'quick':
-        pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+        pp = quickshape_path(o['shape'], o['w'], o['h'], o.get('qp')).translated(o['x'], o['y'])
         el = f'<path d="{_painterpath_svg_d(pp)}" {common}/>'
     elif t in ('poly', 'path'):
         pts = ' '.join(f'{x:.2f},{y:.2f}' for x, y in o.get('pts', []))
@@ -1091,9 +1225,13 @@ def paint_object(p, o, selected=False, skip_text=False):
     a = obj_rot(o)
     rotated = bool(a)
     op = obj_opacity(o)
-    faded = op < 1.0
+    blend = o.get('blend')
+    blended = bool(blend) and blend != 'SourceOver'
+    faded = op < 1.0 or blended
     if faded:
         p.save(); p.setOpacity(p.opacity() * op)
+        if blended:
+            p.setCompositionMode(_blend_mode(blend))
     if rotated:
         # Rotate about the object's centre. QPainter transforms are captured by
         # QSvgGenerator as a <g transform="..."> too, so rotation survives SVG export
@@ -1129,7 +1267,7 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
         if o.get('stroke'):
             p.setBrush(Qt.NoBrush); p.drawRect(QRectF(o['x'], o['y'], o['w'], o['h']))
     elif t == 'quick':
-        p.save(); p.translate(o['x'], o['y']); p.drawPath(quickshape_path(o['shape'], o['w'], o['h'])); p.restore()
+        p.save(); p.translate(o['x'], o['y']); p.drawPath(quickshape_path(o['shape'], o['w'], o['h'], o.get('qp'))); p.restore()
     elif t == 'nodes':
         pp = node_painter_path(o)
         if o.get('closed') and o.get('fill'):
@@ -1148,6 +1286,8 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
             tp.addText(o['x'], o['y'] + fm.ascent(), text_font(o), o.get('text', ''))
             if not o.get('stroke'): p.setPen(Qt.NoPen)
             p.drawPath(tp)
+    elif t == 'brush':
+        draw_brush(p, o)
     elif t == 'dim':
         draw_dimension(p, o)
     elif t == 'conn':
@@ -1598,6 +1738,18 @@ class Canvas(QWidget):
     # ---------------------------------------------------------------- transform handles
     HANDLE_PX = 7
 
+    def _qs_adjust(self, o):
+        """If o is an adjustable QuickShape, return (param, lo, hi, current-value); else
+        None. Drives the extra orange control handle (à la DrawPlus's yellow node)."""
+        if o.get('type') != 'quick':
+            return None
+        spec = ADJUSTABLE_QS.get(o.get('shape'))
+        if not spec:
+            return None
+        param, _label, lo, hi, default = spec
+        val = (o.get('qp') or {}).get(param, default)
+        return (param, lo, hi, val)
+
     def _handle_points(self):
         """Screen-space (unscaled) centre points of the 8 resize handles + rotate handle,
         for the single selected object. Returns {name: QPointF} in canvas coords (the
@@ -1610,6 +1762,11 @@ class Canvas(QWidget):
                'e': (r.right(), cy), 'se': (r.right(), r.bottom()), 's': (cx, r.bottom()),
                'sw': (r.left(), r.bottom()), 'w': (r.left(), cy),
                'rot': (cx, r.top() - 26 / max(self.zoom, 0.01))}
+        adj = self._qs_adjust(o)
+        if adj:
+            param, lo, hi, val = adj
+            frac = (val - lo) / (hi - lo) if hi > lo else 0.5
+            pts['qparam'] = (r.left() + frac * r.width(), r.top() + 18 / max(self.zoom, 0.01))
         a = obj_rot(o)
         if a:
             rad = math.radians(a); cosa, sina = math.cos(rad), math.sin(rad)
@@ -1639,6 +1796,12 @@ class Canvas(QWidget):
             if k == 'rot':
                 p.setBrush(QColor('#2ab0e0'))
                 p.drawEllipse(c, hs * .8, hs * .8)
+            elif k == 'qparam':
+                p.setPen(QPen(QColor('#e08000'), 1)); pen.setCosmetic(True)
+                p.setBrush(QColor('#ffb43a'))
+                dm = QPolygonF([QPointF(c.x(), c.y() - hs), QPointF(c.x() + hs, c.y()),
+                                QPointF(c.x(), c.y() + hs), QPointF(c.x() - hs, c.y())])
+                p.drawPolygon(dm)
             else:
                 p.setBrush(QColor('#ffffff'))
                 p.drawRect(QRectF(c.x() - hs / 2, c.y() - hs / 2, hs, hs))
@@ -1736,7 +1899,7 @@ class Canvas(QWidget):
         new = dict(type='nodes', nodes=nodes, closed=closed,
                    stroke=o.get('stroke'), sw=o.get('sw', 2),
                    fill=o.get('fill'), layer=self.obj_layer(o))
-        for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'gid', 'dash', 'arrow'):
+        for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'blend', 'gid', 'dash', 'arrow'):
             if o.get(k) is not None:
                 new[k] = copy.deepcopy(o[k])
         i = self.objs.index(o); self.objs[i] = new
@@ -1785,7 +1948,7 @@ class Canvas(QWidget):
         elif t == 'ellipse':
             pp.addEllipse(QRectF(o['x'], o['y'], o['w'], o['h']))
         elif t == 'quick':
-            pp = quickshape_path(o['shape'], o['w'], o['h']).translated(o['x'], o['y'])
+            pp = quickshape_path(o['shape'], o['w'], o['h'], o.get('qp')).translated(o['x'], o['y'])
         elif t == 'nodes':
             pp = node_painter_path(o)
         elif t in ('poly', 'path'):
@@ -1869,6 +2032,12 @@ class Canvas(QWidget):
             self.win.place_text(pt); return
         if self.tool == 'image':
             self.win.import_image(at=pt); return
+        if self.tool == 'brush':
+            self.snapshot()
+            self._brush_base = self.sw * 3 + 8
+            self.objs.append(dict(type='brush', pts=[pt], widths=[self._brush_base * 0.45],
+                                  stroke=self.stroke.name(), fill=None, layer=self.active_layer))
+            self.update(); return
         if self.tool == 'freehand':
             self.snapshot()
             self.objs.append(dict(type='path', pts=[pt], stroke=self.stroke.name(), sw=self.sw, fill=None,
@@ -1904,6 +2073,14 @@ class Canvas(QWidget):
             self._move_sel(pt); self.update(); return
         if self.tool in ('rect', 'ellipse', 'line', 'quick', 'dim', 'conn') and self.start and (e.buttons() & Qt.LeftButton):
             self.cur = pt; self.update()
+        elif self.tool == 'brush' and (e.buttons() & Qt.LeftButton) and self.objs and self.objs[-1].get('type') == 'brush':
+            o = self.objs[-1]; lx, ly = o['pts'][-1]
+            dist = math.hypot(pt[0] - lx, pt[1] - ly)
+            if dist < 1.2: return
+            base = getattr(self, '_brush_base', self.sw * 3 + 8)
+            w = base * (1.0 - min(1.0, dist / 40.0) * 0.7)      # faster stroke → thinner (fake pressure)
+            w = 0.5 * w + 0.5 * (o['widths'][-1] if o['widths'] else w)
+            o['pts'].append(pt); o['widths'].append(w); self.update()
         elif self.tool == 'freehand' and (e.buttons() & Qt.LeftButton) and self.objs:
             self.objs[-1]['pts'].append(pt); self.update()
         elif self.tool == 'pen' and self.pen_nodes:
@@ -1940,6 +2117,22 @@ class Canvas(QWidget):
         sel = self._selection()
         if len(sel) != 1 or not self.drag_orig: return
         o = sel[0]; orig = self.drag_orig[0]
+        if self.handle == 'qparam':
+            adj = self._qs_adjust(o)
+            if not adj: return
+            param, lo, hi, _ = adj
+            r0 = obj_rect(orig); a = obj_rot(orig)
+            lx = pt[0]
+            if a:
+                cx, cy = r0.center().x(), r0.center().y()
+                rad = math.radians(-a); dx, dy = pt[0] - cx, pt[1] - cy
+                lx = cx + dx * math.cos(rad) - dy * math.sin(rad)
+            frac = max(0.0, min(1.0, (lx - r0.left()) / (r0.width() or 1)))
+            val = lo + frac * (hi - lo)
+            if param in ('points', 'teeth'): val = round(val)
+            o.setdefault('qp', {})[param] = val
+            self.win.sync_props()
+            return
         if self.handle == 'rot':
             cx, cy = obj_center(orig)
             ang = math.degrees(math.atan2(pt[1] - cy, pt[0] - cx)) + 90
@@ -2059,10 +2252,27 @@ class Canvas(QWidget):
         if not sel: return
         self.snapshot()
         for o in sel:
-            if fill is not None: o['fill'] = fill; o.pop('grad', None)  # a solid fill replaces any gradient
-            if stroke is not None: o['stroke'] = stroke
+            if fill is not None: o['fill'] = None if fill == '__none__' else fill; o.pop('grad', None)  # a solid fill replaces any gradient
+            if stroke is not None: o['stroke'] = None if stroke == '__none__' else stroke
             if sw is not None: o['sw'] = sw
         self.update()
+
+    def _scale_obj(self, o, ox, oy, sx, sy):
+        """Scale a single object about the anchor (ox, oy) by (sx, sy) — used by the
+        Transform panel to resize to an exact width/height."""
+        def sp(x, y): return (ox + (x - ox) * sx, oy + (y - oy) * sy)
+        t = o['type']
+        if t in ('rect', 'ellipse', 'quick', 'image'):
+            o['x'], o['y'] = sp(o['x'], o['y']); o['w'] *= sx; o['h'] *= sy
+        elif t == 'text':
+            o['x'], o['y'] = sp(o['x'], o['y']); o['size'] = max(1, o.get('size', 48) * sy)
+        elif t == 'nodes':
+            for nd in o.get('nodes', []):
+                nd['x'], nd['y'] = sp(nd['x'], nd['y'])
+                for k in ('hin', 'hout'):
+                    h = nd.get(k, [0, 0]); nd[k] = [h[0] * sx, h[1] * sy]
+        elif o.get('pts') is not None:
+            o['pts'] = [sp(x, y) for x, y in o['pts']]
 
     def render_to(self, painter, skip_text=False, skip_special=False):
         """Paint every object. For SVG export, skip_special also omits image, node,
@@ -2155,7 +2365,7 @@ class Canvas(QWidget):
 
 class Main(QMainWindow):
     TOOLS = [('select', 'Select', '⬚'), ('node', 'Node (edit curves)', '⌇'),
-             ('freehand', 'Freehand', '✎'), ('pen', 'Pen (Bézier curves)', '✐'),
+             ('freehand', 'Freehand', '✎'), ('brush', 'Brush (pressure)', '🖌'), ('pen', 'Pen (Bézier curves)', '✐'),
              ('line', 'Line', '╱'), ('rect', 'Rectangle', '▭'), ('ellipse', 'Ellipse', '◯'),
              ('quick', 'QuickShape', '★'), ('text', 'Text', 'T'), ('image', 'Image', '🖻'),
              ('dim', 'Dimension line', '↔'), ('conn', 'Connector', '⌐')]
@@ -2169,11 +2379,11 @@ class Main(QMainWindow):
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
         sa.setStyleSheet('QScrollArea{background:#cfd4da;border:none}')
         self.setCentralWidget(sa)
-        self.build_layers_dock()
         self.build_menu(); self.build_tools()
-        self.setWindowTitle(APP); self.resize(1180, 820)
+        self.build_studio()
+        self.setWindowTitle(APP); self.resize(1320, 860)
         self.pos_lbl = QLabel('  '); self.statusBar().addPermanentWidget(self.pos_lbl)
-        self.refresh_layers()
+        self.refresh_layers(); self.sync_props()
 
     def load_bundled_fonts(self):
         """Register the display/script fonts shipped in fonts/ (shared with the rest of
@@ -2185,15 +2395,322 @@ class Main(QMainWindow):
                 if fn.lower().endswith(('.ttf', '.otf')):
                     QFontDatabase.addApplicationFont(os.path.join(d, fn))
 
-    # ---------------------------------------------------------------- Layers panel
-    def build_layers_dock(self):
-        """A dock listing layers top (front) to bottom (back): add, delete, rename,
-        show/hide, reorder, and move the selected object between layers."""
-        from PySide6.QtWidgets import QCheckBox, QWidget as _W
-        self.layers_dock = QDockWidget('Layers', self)
-        self.layers_dock.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable |
-                                     QDockWidget.DockWidgetClosable)
-        body = _W(); v = QVBoxLayout(body); v.setContentsMargins(6, 6, 6, 6)
+    # ==================================================================== Studio docks
+    # The right-hand "studio" mirrors the rest of the just a... suite: a Colour dock on
+    # top, a tabified stack of property panels beneath it (Swatches / Line / Transparency
+    # / Transform / Arrange / Styles / Layers / Text), and an Assets (clipart) dock on the
+    # left. Everything is a QDockWidget, so the user can drag the splitter to resize, tear
+    # a panel off, or re-tab it — exactly like PAGEdesigner & WEBcreator.
+    def _dock(self, title, widget):
+        d = QDockWidget(title, self)
+        d.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable |
+                      QDockWidget.DockWidgetClosable)
+        d.setWidget(widget)
+        return d
+
+    def build_studio(self):
+        self.d_colour = self._dock('Colour', self._colour_panel())
+        self.d_swatch = self._dock('Swatches', self._swatch_panel())
+        self.d_line   = self._dock('Line', self._line_panel())
+        self.d_trans  = self._dock('Transparency', self._transparency_panel())
+        self.d_xform  = self._dock('Transform', self._transform_panel())
+        self.d_arr    = self._dock('Arrange', self._arrange_panel())
+        self.d_styles = self._dock('Styles', self._styles_panel())
+        self.d_layers = self._dock('Layers', self._layers_panel())
+        self.d_fonts  = self._dock('Text', self._fonts_panel())
+        self.layers_dock = self.d_layers           # kept for the View menu + older refs
+        right = [self.d_colour, self.d_swatch, self.d_line, self.d_trans,
+                 self.d_xform, self.d_arr, self.d_styles, self.d_layers, self.d_fonts]
+        for d in right:
+            self.addDockWidget(Qt.RightDockWidgetArea, d)
+        # Colour sits on its own above the tabbed group
+        self.splitDockWidget(self.d_colour, self.d_swatch, Qt.Vertical)
+        for d in right[2:]:
+            self.tabifyDockWidget(self.d_swatch, d)
+        self.d_swatch.raise_()
+        # Assets / clipart Gallery on the left (resizable), beside the tool palette
+        self.d_assets = self._dock('Gallery', self._assets_panel())
+        self.addDockWidget(Qt.LeftDockWidgetArea, self.d_assets)
+        try:
+            self.resizeDocks([self.d_assets, self.d_colour], [210, 250], Qt.Horizontal)
+            self.resizeDocks([self.d_colour], [150], Qt.Vertical)
+        except Exception:
+            pass
+
+    def _panel(self):
+        """A scrollable panel body with a tidy vertical layout."""
+        w = QWidget(); v = QVBoxLayout(w); v.setContentsMargins(8, 8, 8, 8); v.setSpacing(6)
+        sa = QScrollArea(); sa.setWidgetResizable(True); sa.setFrameShape(QFrame.NoFrame); sa.setWidget(w)
+        return sa, v
+
+    # ---- Colour panel -------------------------------------------------------------
+    def _colour_panel(self):
+        sa, v = self._panel()
+        grid = QGridLayout(); grid.setHorizontalSpacing(8)
+        self.col_fill = QPushButton('Fill'); self.col_fill.setMinimumHeight(40)
+        self.col_fill.clicked.connect(self.pick_fill)
+        self.col_line = QPushButton('Line'); self.col_line.setMinimumHeight(40)
+        self.col_line.clicked.connect(self.pick_stroke)
+        swap = QToolButton(); swap.setText('⇄'); swap.setToolTip('Swap fill and line colours')
+        swap.clicked.connect(self._swap_colours)
+        nofill = QToolButton(); nofill.setText('⌀'); nofill.setToolTip('No fill (transparent)')
+        nofill.clicked.connect(lambda: self._apply_colour(None, 'fill'))
+        grid.addWidget(self.col_fill, 0, 0); grid.addWidget(self.col_line, 0, 1)
+        grid.addWidget(swap, 0, 2); grid.addWidget(nofill, 0, 3)
+        v.addLayout(grid)
+        v.addWidget(QLabel('Recent'))
+        self.recent_row = QHBoxLayout(); self.recent_row.setSpacing(3)
+        self._recent_cols = []
+        rw = QWidget(); rw.setLayout(self.recent_row); v.addWidget(rw)
+        v.addStretch(1)
+        return sa
+
+    def _swap_colours(self):
+        self.canvas.fill, self.canvas.stroke = self.canvas.stroke, self.canvas.fill
+        o = self.canvas.sel
+        if o:
+            self.canvas.snapshot()
+            o['fill'], o['stroke'] = o.get('stroke'), o.get('fill')
+            self.canvas.update()
+        self.sync_props()
+
+    def _push_recent(self, hexcol):
+        if not hexcol or hexcol in self._recent_cols: return
+        self._recent_cols.insert(0, hexcol); self._recent_cols = self._recent_cols[:10]
+        while self.recent_row.count():
+            it = self.recent_row.takeAt(0); w = it.widget()
+            if w: w.deleteLater()
+        for c in self._recent_cols:
+            b = QToolButton(); b.setFixedSize(20, 20)
+            b.setStyleSheet(f'QToolButton{{background:{c};border:1px solid #777;border-radius:3px}}')
+            b.clicked.connect(lambda _=0, col=c: self._apply_colour(col, self._swatch_target()))
+            self.recent_row.addWidget(b)
+        self.recent_row.addStretch(1)
+
+    # ---- Swatches panel -----------------------------------------------------------
+    def _swatch_panel(self):
+        sa, v = self._panel()
+        tgt = QHBoxLayout()
+        self.sw_fill_rb = QRadioButton('Fill'); self.sw_fill_rb.setChecked(True)
+        self.sw_line_rb = QRadioButton('Line')
+        grp = QButtonGroup(self); grp.addButton(self.sw_fill_rb); grp.addButton(self.sw_line_rb)
+        tgt.addWidget(QLabel('Apply to:')); tgt.addWidget(self.sw_fill_rb); tgt.addWidget(self.sw_line_rb); tgt.addStretch(1)
+        v.addLayout(tgt)
+        self.pal_cb = QComboBox(); self.pal_cb.addItems(list(SWATCH_PALETTES.keys()))
+        self.pal_cb.currentTextChanged.connect(self._fill_swatch_grid)
+        v.addWidget(self.pal_cb)
+        self.swatch_host = QWidget(); self.swatch_grid = QGridLayout(self.swatch_host)
+        self.swatch_grid.setSpacing(3); v.addWidget(self.swatch_host)
+        v.addStretch(1)
+        self._fill_swatch_grid('Standard')
+        return sa
+
+    def _swatch_target(self):
+        return 'line' if getattr(self, 'sw_line_rb', None) and self.sw_line_rb.isChecked() else 'fill'
+
+    def _fill_swatch_grid(self, name):
+        while self.swatch_grid.count():
+            it = self.swatch_grid.takeAt(0); w = it.widget()
+            if w: w.deleteLater()
+        cols = SWATCH_PALETTES.get(name, SWATCH_PALETTES['Standard'])
+        for i, c in enumerate(cols):
+            b = QToolButton(); b.setFixedSize(26, 26); b.setToolTip(c)
+            b.setStyleSheet(f'QToolButton{{background:{c};border:1px solid #777;border-radius:3px}}')
+            b.clicked.connect(lambda _=0, col=c: self._apply_colour(col, self._swatch_target()))
+            self.swatch_grid.addWidget(b, i // 6, i % 6)
+
+    def _apply_colour(self, hexcol, which):
+        """Set the active fill/line colour and apply it to the current selection."""
+        if which == 'fill':
+            if hexcol: self.canvas.fill = QColor(hexcol)
+            self.canvas.apply_to_sel(fill=hexcol if hexcol else '__none__')
+        else:
+            if hexcol: self.canvas.stroke = QColor(hexcol)
+            self.canvas.apply_to_sel(stroke=hexcol if hexcol else '__none__')
+        self._push_recent(hexcol)
+        self.sync_props()
+
+    # ---- Line panel ---------------------------------------------------------------
+    def _line_panel(self):
+        sa, v = self._panel()
+        form = QFormLayout()
+        self.ln_w = QSpinBox(); self.ln_w.setRange(0, 200); self.ln_w.setSuffix(' px')
+        self.ln_w.setValue(self.canvas.sw); self.ln_w.valueChanged.connect(self.set_sw)
+        self.ln_dash = QComboBox()
+        for k, lbl in (('solid', 'Solid'), ('dash', 'Dashed'), ('dot', 'Dotted'), ('dashdot', 'Dash-dot')):
+            self.ln_dash.addItem(lbl, k)
+        self.ln_dash.activated.connect(lambda _=0: self._set_line_prop('dash', self.ln_dash.currentData()))
+        self.ln_a0 = QComboBox(); self.ln_a1 = QComboBox()
+        for cb in (self.ln_a0, self.ln_a1):
+            for k, lbl in (('none', 'None'), ('arrow', 'Arrow'), ('dot', 'Dot')):
+                cb.addItem(lbl, k)
+        self.ln_a0.activated.connect(lambda _=0: self._set_arrows())
+        self.ln_a1.activated.connect(lambda _=0: self._set_arrows())
+        form.addRow('Width:', self.ln_w); form.addRow('Style:', self.ln_dash)
+        form.addRow('Start:', self.ln_a0); form.addRow('End:', self.ln_a1)
+        v.addLayout(form); v.addStretch(1)
+        return sa
+
+    def _set_line_prop(self, key, val):
+        o = self.canvas.sel
+        if o is None: return
+        self.canvas.snapshot()
+        for s in self.canvas._selection(): s[key] = val
+        self.canvas.update()
+
+    def _set_arrows(self):
+        o = self.canvas.sel
+        if o is None: return
+        a0 = self.ln_a0.currentData(); a1 = self.ln_a1.currentData()
+        start = a0 if a0 != 'none' else None; end = a1 if a1 != 'none' else None
+        self.canvas.snapshot()
+        for s in self.canvas._selection():
+            s['arrow_start'] = start; s['arrow_end'] = end
+            if start and end: s['arrow'] = 'both'
+            elif end: s['arrow'] = 'end'
+            elif start: s['arrow'] = 'start'
+            else: s.pop('arrow', None)
+        self.canvas.update()
+
+    # ---- Transparency panel -------------------------------------------------------
+    def _transparency_panel(self):
+        sa, v = self._panel()
+        v.addWidget(QLabel('Opacity'))
+        row = QHBoxLayout()
+        self.op_slider = QSlider(Qt.Horizontal); self.op_slider.setRange(0, 100); self.op_slider.setValue(100)
+        self.op_slider.valueChanged.connect(self._op_changed)
+        self.op_lbl = QLabel('100%'); self.op_lbl.setFixedWidth(42)
+        row.addWidget(self.op_slider, 1); row.addWidget(self.op_lbl); v.addLayout(row)
+        v.addWidget(QLabel('Blend mode'))
+        self.blend_cb = QComboBox()
+        for lbl, key, _css in BLEND_MODES: self.blend_cb.addItem(lbl, key)
+        self.blend_cb.activated.connect(self._blend_changed)
+        v.addWidget(self.blend_cb)
+        v.addStretch(1)
+        return sa
+
+    def _op_changed(self, val):
+        self.op_lbl.setText(f'{val}%')
+        o = self.canvas.sel
+        if o is None: return
+        for s in self.canvas._selection():
+            if val >= 100: s.pop('opacity', None)
+            else: s['opacity'] = val / 100.0
+        self.canvas.update()
+
+    def _blend_changed(self, _i):
+        key = self.blend_cb.currentData()
+        o = self.canvas.sel
+        if o is None: return
+        self.canvas.snapshot()
+        for s in self.canvas._selection():
+            if key == 'SourceOver': s.pop('blend', None)
+            else: s['blend'] = key
+        self.canvas.update()
+
+    # ---- Transform panel ----------------------------------------------------------
+    def _transform_panel(self):
+        sa, v = self._panel()
+        form = QFormLayout()
+        self.tf_x = QDoubleSpinBox(); self.tf_y = QDoubleSpinBox()
+        self.tf_w = QDoubleSpinBox(); self.tf_h = QDoubleSpinBox()
+        self.tf_r = QDoubleSpinBox()
+        for s in (self.tf_x, self.tf_y, self.tf_w, self.tf_h):
+            s.setRange(-10000, 10000); s.setSuffix(' px'); s.setDecimals(0)
+        self.tf_w.setRange(1, 10000); self.tf_h.setRange(1, 10000)
+        self.tf_r.setRange(-360, 360); self.tf_r.setSuffix('°'); self.tf_r.setDecimals(1)
+        for s in (self.tf_x, self.tf_y, self.tf_w, self.tf_h, self.tf_r):
+            s.editingFinished.connect(self._apply_transform)
+        form.addRow('X:', self.tf_x); form.addRow('Y:', self.tf_y)
+        form.addRow('Width:', self.tf_w); form.addRow('Height:', self.tf_h)
+        form.addRow('Rotation:', self.tf_r)
+        v.addLayout(form); v.addStretch(1)
+        return sa
+
+    def _apply_transform(self):
+        o = self.canvas.sel
+        if o is None: return
+        r = obj_rect(o)
+        nx, ny, nw, nh = self.tf_x.value(), self.tf_y.value(), self.tf_w.value(), self.tf_h.value()
+        self.canvas.snapshot()
+        # translate so the bounding box top-left lands on (nx, ny)
+        self.canvas._shift_obj(o, nx - r.left(), ny - r.top())
+        # then scale about that top-left to the requested size
+        sx = nw / (r.width() or 1); sy = nh / (r.height() or 1)
+        if abs(sx - 1) > 1e-6 or abs(sy - 1) > 1e-6:
+            self.canvas._scale_obj(o, nx, ny, sx, sy)
+        o['rot'] = self.tf_r.value() if abs(self.tf_r.value()) > 1e-6 else None
+        if o['rot'] is None: o.pop('rot', None)
+        self.canvas.update(); self.sync_props()
+
+    # ---- Arrange panel ------------------------------------------------------------
+    def _arrange_panel(self):
+        sa, v = self._panel()
+        def brow(items):
+            row = QHBoxLayout()
+            for txt, tip, slot in items:
+                b = QPushButton(txt); b.setToolTip(tip); b.clicked.connect(slot); row.addWidget(b)
+            v.addLayout(row)
+        v.addWidget(QLabel('Order'))
+        brow([('⤒', 'Bring to front', lambda: self.canvas.z_order('front')),
+              ('↑', 'Bring forward', lambda: self.canvas.z_order('forward')),
+              ('↓', 'Send backward', lambda: self.canvas.z_order('backward')),
+              ('⤓', 'Send to back', lambda: self.canvas.z_order('back'))])
+        v.addWidget(QLabel('Flip'))
+        brow([('⇆ H', 'Flip horizontal', lambda: self.flip('h')),
+              ('⇅ V', 'Flip vertical', lambda: self.flip('v'))])
+        v.addWidget(QLabel('Align'))
+        brow([('⊢', 'Align left', lambda: self.canvas.align_selection('left')),
+              ('centre', 'Align centres', lambda: self.canvas.align_selection('hcenter')),
+              ('⊣', 'Align right', lambda: self.canvas.align_selection('right'))])
+        brow([('⊤', 'Align top', lambda: self.canvas.align_selection('top')),
+              ('middle', 'Align middles', lambda: self.canvas.align_selection('vcenter')),
+              ('⊥', 'Align bottom', lambda: self.canvas.align_selection('bottom'))])
+        v.addWidget(QLabel('Distribute / group'))
+        brow([('↔ dist', 'Distribute horizontally', lambda: self.canvas.distribute_selection('h')),
+              ('↕ dist', 'Distribute vertically', lambda: self.canvas.distribute_selection('v'))])
+        brow([('Group', 'Group selection', self.canvas.group_selection),
+              ('Ungroup', 'Ungroup', self.canvas.ungroup_selection)])
+        v.addStretch(1)
+        return sa
+
+    # ---- Styles panel -------------------------------------------------------------
+    def _styles_panel(self):
+        sa, v = self._panel()
+        host = QWidget(); grid = QGridLayout(host); grid.setSpacing(6)
+        for i, (name, st) in enumerate(DRAW_STYLES):
+            b = QToolButton(); b.setToolTip(name); b.setIconSize(QSize(54, 40))
+            b.setIcon(QIcon(self._style_thumb(st))); b.setAutoRaise(True)
+            b.clicked.connect(lambda _=0, s=st: self._apply_style(s))
+            grid.addWidget(b, i // 3, i % 3)
+        v.addWidget(host); v.addStretch(1)
+        return sa
+
+    def _style_thumb(self, st):
+        pm = QPixmap(56, 42); pm.fill(QColor('#f4f4f4'))
+        p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+        pen = QPen(QColor(st['stroke']), min(6, st.get('sw', 2))) if st.get('stroke') else QPen(Qt.NoPen)
+        if st.get('stroke') and st.get('dash', 'solid') != 'solid':
+            apply_dash(pen, st['dash'])
+        p.setPen(pen)
+        p.setBrush(QColor(st['fill']) if st.get('fill') else Qt.NoBrush)
+        p.drawRoundedRect(QRectF(8, 8, 40, 26), 5, 5); p.end()
+        return pm
+
+    def _apply_style(self, st):
+        sel = self.canvas._selection()
+        if not sel:
+            QMessageBox.information(self, APP, 'Select one or more objects, then click a style to apply it.')
+            return
+        self.canvas.snapshot()
+        for o in sel:
+            o['fill'] = st.get('fill'); o['stroke'] = st.get('stroke')
+            o['sw'] = st.get('sw', 2); o['dash'] = st.get('dash', 'solid')
+        self.canvas.update(); self.sync_props()
+
+    # ---- Layers panel (same controls as before, now a tab) ------------------------
+    def _layers_panel(self):
+        body = QWidget(); v = QVBoxLayout(body); v.setContentsMargins(6, 6, 6, 6)
         self.layer_list = QListWidget()
         self.layer_list.currentRowChanged.connect(self._layer_row_changed)
         self.layer_list.itemChanged.connect(self._layer_item_changed)
@@ -2210,8 +2727,103 @@ class Main(QMainWindow):
         self.move_to_cb = QComboBox(); self.move_to_cb.setToolTip('Move the selected object to this layer')
         self.move_to_cb.activated.connect(self._ui_move_sel_to_layer); mv.addWidget(self.move_to_cb, 1)
         v.addLayout(mv)
-        self.layers_dock.setWidget(body)
-        self.addDockWidget(Qt.RightDockWidgetArea, self.layers_dock)
+        return body
+
+    # ---- Text / Fonts panel -------------------------------------------------------
+    def _fonts_panel(self):
+        sa, v = self._panel()
+        self.font_combo = GroupedFontCombo(); self.font_combo.setCurrentFamily('Noto Sans')
+        self.font_combo.familyChanged.connect(self._font_apply)
+        v.addWidget(QLabel('Font')); v.addWidget(self.font_combo)
+        row = QHBoxLayout()
+        self.font_size = QSpinBox(); self.font_size.setRange(4, 800); self.font_size.setSuffix(' px'); self.font_size.setValue(48)
+        self.font_size.valueChanged.connect(self._font_apply)
+        row.addWidget(QLabel('Size')); row.addWidget(self.font_size, 1); v.addLayout(row)
+        bi = QHBoxLayout()
+        self.font_bold = QToolButton(); self.font_bold.setText('B'); self.font_bold.setCheckable(True)
+        self.font_italic = QToolButton(); self.font_italic.setText('I'); self.font_italic.setCheckable(True)
+        self.font_bold.clicked.connect(self._font_apply); self.font_italic.clicked.connect(self._font_apply)
+        bi.addWidget(self.font_bold); bi.addWidget(self.font_italic); bi.addStretch(1); v.addLayout(bi)
+        addb = QPushButton('Add text…'); addb.clicked.connect(lambda: self._add_text_centre())
+        v.addWidget(addb)
+        v.addStretch(1)
+        return sa
+
+    def _add_text_centre(self):
+        self.canvas.tool = 'text'
+        self.place_text((self.canvas.W / 2 - 100, self.canvas.H / 2 - 30))
+
+    def _font_apply(self, *a):
+        o = self.canvas.sel
+        if o is None or o.get('type') != 'text': return
+        self.canvas.snapshot()
+        o['family'] = self.font_combo.currentFamily()
+        o['size'] = self.font_size.value()
+        o['bold'] = self.font_bold.isChecked()
+        o['italic'] = self.font_italic.isChecked()
+        self.canvas.update()
+
+    # ---- Assets / clipart Gallery (left dock) -------------------------------------
+    def _assets_panel(self):
+        sa, v = self._panel()
+        v.addWidget(QLabel('Click a shape to drop it on the page:'))
+        host = QWidget(); grid = QGridLayout(host); grid.setSpacing(5)
+        for i, (key, label) in enumerate(QUICKSHAPES):
+            b = QToolButton(); b.setToolTip(label); b.setIconSize(QSize(40, 40)); b.setAutoRaise(True)
+            b.setIcon(QIcon(self._clip_thumb(key))); b.clicked.connect(lambda _=0, k=key: self._insert_clip(k))
+            grid.addWidget(b, i // 3, i % 3)
+        v.addWidget(host); v.addStretch(1)
+        return sa
+
+    def _clip_thumb(self, key):
+        pm = QPixmap(44, 44); pm.fill(Qt.transparent)
+        p = QPainter(pm); p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(QPen(QColor('#1f2a30'), 1.5)); p.setBrush(QColor('#cfe3ef'))
+        p.translate(5, 5); p.drawPath(quickshape_path(key, 34, 34)); p.end()
+        return pm
+
+    def _insert_clip(self, key):
+        c = self.canvas; c.snapshot()
+        w = h = 160
+        x = (c.W - w) / 2; y = (c.H - h) / 2
+        o = dict(type='quick', shape=key, x=x, y=y, w=w, h=h,
+                 fill=c.fill.name(), stroke=c.stroke.name(), sw=c.sw, layer=c.active_layer)
+        if key in ADJUSTABLE_QS:
+            param, _lbl, _lo, _hi, default = ADJUSTABLE_QS[key]
+            o['qp'] = {param: default}
+        c.objs.append(o); c.set_selection([o])
+        c.tool = 'select'; self.tool_acts['select'].setChecked(True)
+        c.update(); self.refresh_layers()
+
+    # ---- keep the panels in step with the current selection -----------------------
+    def _sync_studio(self):
+        o = self.canvas.sel
+        widgets = [getattr(self, n, None) for n in
+                   ('op_slider', 'blend_cb', 'tf_x', 'tf_y', 'tf_w', 'tf_h', 'tf_r',
+                    'ln_w', 'ln_dash', 'font_combo', 'font_size', 'font_bold', 'font_italic')]
+        for w in widgets:
+            if w is not None: w.blockSignals(True)
+        try:
+            if o is not None:
+                if hasattr(self, 'op_slider'):
+                    op = int(round(obj_opacity(o) * 100)); self.op_slider.setValue(op); self.op_lbl.setText(f'{op}%')
+                if hasattr(self, 'blend_cb'):
+                    key = o.get('blend', 'SourceOver')
+                    idx = next((i for i in range(self.blend_cb.count()) if self.blend_cb.itemData(i) == key), 0)
+                    self.blend_cb.setCurrentIndex(idx)
+                if hasattr(self, 'tf_x'):
+                    r = obj_rect(o)
+                    self.tf_x.setValue(r.left()); self.tf_y.setValue(r.top())
+                    self.tf_w.setValue(max(1, r.width())); self.tf_h.setValue(max(1, r.height()))
+                    self.tf_r.setValue(obj_rot(o))
+                if hasattr(self, 'ln_w'): self.ln_w.setValue(int(o.get('sw', 2)))
+                if hasattr(self, 'font_combo') and o.get('type') == 'text':
+                    self.font_combo.setCurrentFamily(o.get('family', 'Noto Sans'))
+                    self.font_size.setValue(int(o.get('size', 48)))
+                    self.font_bold.setChecked(bool(o.get('bold'))); self.font_italic.setChecked(bool(o.get('italic')))
+        finally:
+            for w in widgets:
+                if w is not None: w.blockSignals(False)
 
     def refresh_layers(self):
         """Rebuild the layers list to match the canvas. The list shows layers front→back
@@ -2728,7 +3340,8 @@ class Main(QMainWindow):
         f.addAction(self.act('&New…', self.new, QKeySequence.New))
         f.addAction(self.act('&Open SVG…', self.open_svg, QKeySequence.Open))
         f.addAction(self.act('&Save as SVG…', self.save_svg, QKeySequence.Save))
-        f.addAction(self.act('&Export PNG…', self.export_png))
+        f.addAction(self.act('Export as &Picture…', self.export_picture_dialog, 'Ctrl+Shift+E'))
+        f.addAction(self.act('&Export PNG (quick)…', self.export_png))
         f.addAction(self.act('Export P&DF…', self.export_pdf))
         f.addAction(self.act('&Import Image…', self.import_image))
         f.addAction(self.act('&Print…', self.print_drawing, QKeySequence.Print))
@@ -2868,6 +3481,12 @@ class Main(QMainWindow):
             if o.get('stroke'): self.canvas.stroke = QColor(o['stroke'])
             self.sw_spin.blockSignals(True); self.sw_spin.setValue(int(o.get('sw', 2))); self.sw_spin.blockSignals(False)
             self._paint_btns()
+        # colour-panel swatch labels follow the active fill/line
+        if hasattr(self, 'col_fill'):
+            for btn, col in ((self.col_fill, self.canvas.fill), (self.col_line, self.canvas.stroke)):
+                btn.setStyleSheet(f'QPushButton{{background:{col.name()};color:{"#fff" if col.lightness()<140 else "#000"};'
+                                  'border:1px solid #888;border-radius:5px;font-weight:600}}')
+        self._sync_studio()
 
     def new(self):
         w, ok = 1000, True
@@ -2899,6 +3518,80 @@ class Main(QMainWindow):
         if not path.lower().endswith('.png'): path += '.png'
         self.canvas.export_png(path)
         _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {path}', 4000)
+
+    def _render_image(self, scale=1.0, transparent=False, selection_only=False):
+        """Rasterise the drawing (or just the selection) to a QImage at `scale`, on a
+        white or transparent ground — the engine behind Export as Picture."""
+        c = self.canvas
+        sel = c._selection() if selection_only else None
+        if sel:
+            rects = [obj_bounds(o) for o in sel]; r = rects[0]
+            for rr in rects[1:]: r = r.united(rr)
+            r = r.adjusted(-4, -4, 4, 4)
+            ox, oy, ww, hh = r.left(), r.top(), r.width(), r.height()
+        else:
+            ox, oy, ww, hh = 0, 0, c.W, c.H
+        iw, ih = max(1, int(round(ww * scale))), max(1, int(round(hh * scale)))
+        img = QImage(iw, ih, QImage.Format_ARGB32)
+        img.fill(Qt.transparent if transparent else QColor('#ffffff'))
+        p = QPainter(img); p.setRenderHint(QPainter.Antialiasing)
+        p.scale(scale, scale); p.translate(-ox, -oy)
+        global _PAINT_OBJS; _PAINT_OBJS = c.objs
+        objs = sel if sel else c.ordered_objs()
+        for o in objs:
+            paint_object(p, o, False)
+        p.end()
+        return img
+
+    def export_picture_dialog(self):
+        """Export as Picture — choose format, scale and transparency, with a live preview
+        (the DrawPlus 'Export as Picture' dialog)."""
+        c = self.canvas
+        dlg = QDialog(self); dlg.setWindowTitle('Export as Picture'); dlg.setMinimumWidth(560)
+        lay = QHBoxLayout(dlg)
+        form = QFormLayout(); lay.addLayout(form, 0)
+        fmt = QComboBox()
+        for lbl, ext in (('PNG (transparent)', 'png'), ('JPEG', 'jpg'), ('WebP', 'webp'), ('BMP', 'bmp')):
+            fmt.addItem(lbl, ext)
+        area = QComboBox(); area.addItem('Whole page', False)
+        if c._selection(): area.addItem('Selected objects', True)
+        scale = QSpinBox(); scale.setRange(10, 800); scale.setValue(100); scale.setSuffix(' %')
+        transp = QCheckBox('Transparent background'); transp.setChecked(True)
+        size_lbl = QLabel('—')
+        form.addRow('Format:', fmt); form.addRow('Area:', area)
+        form.addRow('Scale:', scale); form.addRow('', transp)
+        form.addRow('Output size:', size_lbl)
+        prev = QLabel(); prev.setFixedSize(300, 300); prev.setAlignment(Qt.AlignCenter)
+        prev.setStyleSheet('QLabel{background:#e9edf0;border:1px solid #bbb}')
+        lay.addWidget(prev, 1)
+        def refresh(*_):
+            ext = fmt.currentData(); tr = transp.isChecked() and ext in ('png', 'webp')
+            img = self._render_image(scale.value() / 100.0, tr, bool(area.currentData()))
+            size_lbl.setText(f'{img.width()} × {img.height()} px')
+            prev.setPixmap(QPixmap.fromImage(img).scaled(300, 300, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            transp.setEnabled(ext in ('png', 'webp'))
+        fmt.currentIndexChanged.connect(refresh); area.currentIndexChanged.connect(refresh)
+        scale.valueChanged.connect(refresh); transp.toggled.connect(refresh)
+        refresh()
+        bb = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Save).setText('Export…')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject)
+        form.addRow(bb)
+        if not dlg.exec(): return
+        ext = fmt.currentData()
+        start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('pics'), 'drawing')) + '.' + ext
+        path, _ = QFileDialog.getSaveFileName(self, 'Export as Picture', start, f'{ext.upper()} (*.{ext})')
+        if not path: return
+        if not path.lower().endswith('.' + ext): path += '.' + ext
+        tr = transp.isChecked() and ext in ('png', 'webp')
+        img = self._render_image(scale.value() / 100.0, tr, bool(area.currentData()))
+        if not tr and ext in ('jpg', 'jpeg', 'bmp'):
+            flat = QImage(img.size(), QImage.Format_RGB32); flat.fill(QColor('#ffffff'))
+            pp = QPainter(flat); pp.drawImage(0, 0, img); pp.end(); img = flat
+        if img.save(path):
+            _justapps_recent('paint', path); self.statusBar().showMessage(f'Exported {path}', 4000)
+        else:
+            QMessageBox.warning(self, APP, "Couldn't save that picture.")
 
     def open_svg(self):
         path, _ = QFileDialog.getOpenFileName(self, 'Open SVG', _just_dir('docs'), 'SVG drawings (*.svg);;All files (*)')
