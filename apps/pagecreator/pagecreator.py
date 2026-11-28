@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.39-00"
+VERSION = "1.40-00"
 
 
 def _just_dir(kind):
@@ -2118,8 +2118,40 @@ def _fx_image(path, w, h, color, blur, pad):
     small = base.scaled(sw, sh, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
+def _obj_layer(o, site, page, hide_text, edit, pad=0):
+    """Render an object's body to its own transparent QImage, with `pad` px of
+    transparent margin all round (so edges have room to blur into for feather). The
+    object sits at (pad,pad). 1:1 logical px — plenty for reflection/feather/bevel.
+    Reuses the temp-layer trick from paint_obj."""
+    w, h = max(1, int(math.ceil(o['w']))), max(1, int(math.ceil(o['h'])))
+    W, H = w + 2 * pad, h + 2 * pad
+    img = QImage(W, H, QImage.Format_ARGB32_Premultiplied); img.fill(Qt.transparent)
+    lp = QPainter(img); lp.setRenderHint(QPainter.Antialiasing); lp.setRenderHint(QPainter.SmoothPixmapTransform)
+    lp.translate(pad, pad)
+    # Draw the body WITHOUT its own behind-effects (shadow/glow/reflection) — just the object.
+    o2 = {k: v for k, v in o.items() if k not in ('shadow', 'glow', 'reflect', 'feather', 'bevel', 'agrad')}
+    _paint_obj_body(lp, o2, site, page, hide_text, edit)
+    lp.end()
+    return img
+
+def _blur_alpha_img(img, radius):
+    """Return a copy of `img` whose ALPHA channel is box-blurred by `radius` (colour
+    kept, premultiplied by the softened alpha). Uses _box_blur — no new deps."""
+    import numpy as np
+    if radius <= 0: return img
+    src = img.convertToFormat(QImage.Format_ARGB32)   # un-premultiplied, straight ARGB
+    W, H = src.width(), src.height()
+    ptr = src.constBits(); arr = np.frombuffer(ptr, np.uint8).reshape((H, W, 4)).copy()  # BGRA on little-endian
+    a = arr[:, :, 3].astype(np.float32)
+    a = _box_blur(a, int(radius))
+    arr[:, :, 3] = np.clip(a, 0, 255).astype(np.uint8)
+    out = QImage(arr.data, W, H, QImage.Format_ARGB32).copy()
+    return out
+
 def draw_object_fx(p, o):
-    """Draw outer glow and/or drop shadow behind an object (canvas + PDF)."""
+    """Draw reflection, outer glow and/or drop shadow BEHIND an object (canvas + PDF).
+    (Reflection/feather/bevel need the object rendered to a layer — those branches are
+    only taken when a `site`/`page` aren't needed, i.e. they re-render the body here.)"""
     sh = o.get('shadow'); gl = o.get('glow')
     if not sh and not gl: return
     sil = obj_silhouette_path(o)
@@ -2136,8 +2168,75 @@ def draw_object_fx(p, o):
         p.save(); p.setOpacity(p.opacity() * sh.get('opacity', 45) / 100.0)
         p.drawImage(QPointF(sh.get('dx', 6) - pad, sh.get('dy', 6) - pad), img); p.restore()
 
+def draw_object_reflect(p, o, site, page, hide_text, edit):
+    """A mirrored copy of the object fading downward below it (PagePlus Reflection).
+    Rendered BEHIND/below the object, so it sits under the real object's bottom edge."""
+    rf = o.get('reflect')
+    if not rf: return
+    w, h = o['w'], o['h']
+    img = _obj_layer(o, site, page, hide_text, edit)
+    gap = float(rf.get('gap', 4)); op = max(0, min(100, rf.get('opacity', 50))) / 100.0
+    fall = max(1.0, min(100, rf.get('falloff', 60))) / 100.0   # fraction of the height over which it fades to 0
+    # top→bottom alpha fade, applied to the flipped copy with DestinationIn
+    ref = QImage(img.size(), QImage.Format_ARGB32_Premultiplied); ref.fill(Qt.transparent)
+    rp = QPainter(ref); rp.drawImage(0, 0, img.mirrored(False, True))   # vertical flip
+    mg = QLinearGradient(0, 0, 0, h)                               # top of the reflection = object's edge
+    mg.setColorAt(0.0, QColor(0, 0, 0, int(round(op * 255))))
+    mg.setColorAt(min(1.0, fall), QColor(0, 0, 0, 0))
+    if fall < 1.0: mg.setColorAt(1.0, QColor(0, 0, 0, 0))
+    rp.setCompositionMode(QPainter.CompositionMode_DestinationIn)
+    rp.fillRect(QRectF(0, 0, img.width(), img.height()), QBrush(mg)); rp.end()
+    p.save(); p.drawImage(QRectF(0, h + gap, w, h), ref); p.restore()
+
+def draw_object_fx_over(p, o, site, page, hide_text, edit):
+    """Feather and bevel/emboss — drawn as an OVERLAY after the object body, because
+    they modify the object's own pixels/edges rather than sitting behind it."""
+    fe = o.get('feather'); bv = o.get('bevel')
+    if not fe and not bv: return
+    w, h = o['w'], o['h']
+    sil = obj_silhouette_path(o)
+    if fe and fe.get('radius', 0) > 0:
+        # Soft edges: re-render the body, blur its alpha, then draw it back ON TOP of a
+        # version with the hard body erased. Simpler & robust: erase the object's own
+        # footprint (DestinationOut by the sharp silhouette) then stamp the feathered copy.
+        rad = max(1, int(round(fe.get('radius', 6))))
+        pad = rad + 2                                  # room for the edge to blur into
+        img = _obj_layer(o, site, page, hide_text, edit, pad=pad)
+        soft = _blur_alpha_img(img, rad)
+        p.save()
+        if sil is not None:
+            # knock out the crisp original within the silhouette so only the soft copy shows
+            p.setCompositionMode(QPainter.CompositionMode_DestinationOut)
+            p.setPen(Qt.NoPen); p.setBrush(QColor(0, 0, 0, 255)); p.drawPath(sil)
+            p.setCompositionMode(QPainter.CompositionMode_SourceOver)
+        p.drawImage(QRectF(-pad, -pad, w + 2 * pad, h + 2 * pad), soft)
+        p.restore()
+    if bv:
+        # Bevel/Emboss: a cheap inner 3-D edge. Clip to the silhouette, then draw a
+        # light stroke offset toward the light and a dark stroke offset away from it.
+        depth = max(1.0, float(bv.get('depth', 4))); soft = max(0.0, float(bv.get('soft', 2)))
+        light = max(0, min(100, bv.get('light', 70))) / 100.0; ang = math.radians(bv.get('dir', 135))
+        dx, dy = math.cos(ang), -math.sin(ang)   # screen y is down; dir measured maths-style
+        if sil is None:
+            sil = QPainterPath(); sil.addRect(QRectF(0, 0, w, h))
+        p.save(); p.setClipPath(sil)
+        pen_w = depth + soft
+        hi = QColor(255, 255, 255, int(round(light * 170)))
+        lo = QColor(0, 0, 0, int(round(light * 150)))
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(hi, pen_w)); p.translate(dx * depth, dy * depth); p.drawPath(sil)
+        p.translate(-2 * dx * depth, -2 * dy * depth)
+        p.setPen(QPen(lo, pen_w)); p.drawPath(sil)
+        p.restore()
+
 def fx_css(o):
-    """CSS `filter` implementing an object's drop-shadow/glow at publish."""
+    """CSS implementing an object's filter effects at publish:
+      shadow/glow → `filter: drop-shadow(...)`
+      reflection  → `-webkit-box-reflect: below <gap> <fade-gradient>`
+      bevel       → two `inset` box-shadows (an approximation of the 3-D edge)
+    Feather is canvas/PDF-only (no faithful CSS — `filter:blur` would blur colour too),
+    so it emits nothing here."""
+    out = ''
     parts = []; sh = o.get('shadow'); gl = o.get('glow')
     if sh:
         parts.append(f"drop-shadow({sh.get('dx', 6):g}px {sh.get('dy', 6):g}px "
@@ -2145,7 +2244,24 @@ def fx_css(o):
     if gl:
         c = _rgba(gl.get('color', '#ffe08a'), gl.get('opacity', 70)); b = max(1, gl.get('blur', 12))
         parts.append(f"drop-shadow(0 0 {b:g}px {c}) drop-shadow(0 0 {b:g}px {c})")
-    return ('filter:' + ' '.join(parts) + ';') if parts else ''
+    if parts: out += 'filter:' + ' '.join(parts) + ';'
+    rf = o.get('reflect')
+    if rf:
+        op = max(0, min(100, rf.get('opacity', 50))) / 100.0
+        fall = max(1, min(100, rf.get('falloff', 60)))   # % of height before fully faded
+        gap = rf.get('gap', 4)
+        grad = (f"linear-gradient(transparent 0%, transparent {max(0, 100 - fall):g}%, "
+                f"rgba(255,255,255,{op:g}) 100%)")
+        out += f"-webkit-box-reflect:below {gap:g}px {grad};"
+    bv = o.get('bevel')
+    if bv:
+        depth = max(1, bv.get('depth', 4)); soft = max(0, bv.get('soft', 2))
+        light = max(0, min(100, bv.get('light', 70))) / 100.0; ang = math.radians(bv.get('dir', 135))
+        dx = math.cos(ang) * depth; dy = -math.sin(ang) * depth   # CSS y is down
+        hi = f"rgba(255,255,255,{light * 0.7:g})"; lo = f"rgba(0,0,0,{light * 0.6:g})"
+        out += (f"box-shadow:inset {dx:g}px {dy:g}px {soft:g}px {hi},"
+                f"inset {-dx:g}px {-dy:g}px {soft:g}px {lo};")
+    return out
 
 def mask_css(o):
     """CSS mask-image implementing an object's transparency gradient (o['agrad']) at
@@ -2564,6 +2680,7 @@ def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
     t, w, h = o['type'], o['w'], o['h']
     r = QRectF(0, 0, w, h)
     rad = o.get('radius', 0)
+    if o.get('reflect'): draw_object_reflect(p, o, site, page, hide_text, edit)
     draw_object_fx(p, o)
     def box():
         sw = o.get('strokeW', 0) if o.get('stroke') else 0
@@ -2882,6 +2999,8 @@ def _paint_obj_body(p, o, site, page, hide_text=False, edit=True):
                 p.drawText(QRectF(tx, cr.y() + 30, tw, cardh - 36), Qt.TextWordWrap,
                            QFontMetrics(f).elidedText(it['excerpt'] or '', Qt.ElideRight, int(tw) * 2))
                 y += cardh + gap
+    if o.get('feather') or o.get('bevel'):
+        draw_object_fx_over(p, o, site, page, hide_text, edit)
 
 def placed(o, site, page_h):
     """A master object set to stay at the bottom of the page keeps its distance from the bottom edge."""
@@ -6042,9 +6161,15 @@ class ObjItem(QGraphicsItem):
         sh = self.o.get('shadow'); gl = self.o.get('glow')
         if sh: pad = max(pad, abs(sh.get('dx', 6)) + sh.get('blur', 8) + 8, abs(sh.get('dy', 6)) + sh.get('blur', 8) + 8)
         if gl: pad = max(pad, gl.get('blur', 12) + 8)
+        fe = self.o.get('feather')
+        if fe: pad = max(pad, fe.get('radius', 6) + 4)
         if self.o['type'] == 'line' and self.o.get('arrow', 'none') != 'none':
             pad = max(pad, 10 + self.o.get('strokeW', 2) * 2.5)
-        return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad)
+        # Reflection extends only DOWNWARD (object height + gap below), so widen the
+        # bottom of the bounding rect rather than padding all four sides.
+        rf = self.o.get('reflect'); bottom = 0.0
+        if rf: bottom = self.o['h'] + rf.get('gap', 4) + 2
+        return QRectF(-pad, -pad, self.o['w'] + 2 * pad, self.o['h'] + 2 * pad + bottom)
 
     def shape(self):
         path = QPainterPath(); path.addRect(QRectF(0, 0, self.o['w'], self.o['h'])); return path
@@ -11052,12 +11177,35 @@ class MainWindow(QMainWindow):
         gop = QSpinBox(); gop.setRange(0, 100); gop.setSuffix(' %'); gop.setValue(int(g0.get('opacity', 70)))
         gcol = [g0.get('color', '#ffd54a')]
         gcb = ColorButton(gcol[0], lambda c: gcol.__setitem__(0, c or '#ffd54a'), 'Glow colour')
+        # --- Reflection (mirrored fading copy below the object) ---
+        r0 = o0.get('reflect') or {}
+        r_on = QCheckBox('Enable reflection'); r_on.setChecked(bool(o0.get('reflect')))
+        rop = QSpinBox(); rop.setRange(0, 100); rop.setSuffix(' %'); rop.setValue(int(r0.get('opacity', 50)))
+        rfall = QSpinBox(); rfall.setRange(1, 100); rfall.setSuffix(' %'); rfall.setValue(int(r0.get('falloff', 60)))
+        rgap = QSpinBox(); rgap.setRange(0, 100); rgap.setSuffix(' px'); rgap.setValue(int(r0.get('gap', 4)))
+        # --- Feather (soft-blurred edges) ---
+        f0 = o0.get('feather') or {}
+        f_on = QCheckBox('Enable feather (soft edge)'); f_on.setChecked(bool(o0.get('feather')))
+        frad = QSpinBox(); frad.setRange(1, 60); frad.setSuffix(' px'); frad.setValue(int(f0.get('radius', 6)))
+        # --- Bevel / Emboss (approximate inner 3-D edge) ---
+        b0 = o0.get('bevel') or {}
+        b_on = QCheckBox('Enable bevel / emboss'); b_on.setChecked(bool(o0.get('bevel')))
+        bdep = QSpinBox(); bdep.setRange(1, 40); bdep.setSuffix(' px'); bdep.setValue(int(b0.get('depth', 4)))
+        bsoft = QSpinBox(); bsoft.setRange(0, 40); bsoft.setSuffix(' px'); bsoft.setValue(int(b0.get('soft', 2)))
+        blight = QSpinBox(); blight.setRange(0, 100); blight.setSuffix(' %'); blight.setValue(int(b0.get('light', 70)))
+        bdir = QSpinBox(); bdir.setRange(0, 359); bdir.setSuffix(' °'); bdir.setValue(int(b0.get('dir', 135)))
         rows = [('', s_on), ('Offset across:', sdx), ('Offset down:', sdy), ('Shadow blur:', sbl),
                 ('Shadow strength:', sop), ('Shadow colour:', scb),
-                ('', g_on), ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb)]
-        dlg = form_dialog(self, 'Effects — Shadow & Glow', rows,
-                          QLabel('Drop shadow and outer glow lift an object off the page. They preview live '
-                                 'and publish as CSS filters on the web.'))
+                ('', g_on), ('Glow spread:', gbl), ('Glow strength:', gop), ('Glow colour:', gcb),
+                ('', r_on), ('Reflection strength:', rop), ('Reflection fade:', rfall), ('Reflection gap:', rgap),
+                ('', f_on), ('Feather radius:', frad),
+                ('', b_on), ('Bevel depth:', bdep), ('Bevel softness:', bsoft),
+                ('Bevel light:', blight), ('Light direction:', bdir)]
+        dlg = form_dialog(self, 'Filter Effects', rows,
+                          QLabel('Shadow and glow lift an object off the page; reflection mirrors it below; '
+                                 'feather softens the edges; bevel adds a 3-D edge. All preview live. '
+                                 'Shadow/glow/reflection/bevel also publish as CSS; feather is print/PDF only. '
+                                 'Tip: a drop shadow with blur 0 becomes a solid offset outline.'))
         if not dlg.exec(): return
         self.commit()
         for o in objs:
@@ -11068,6 +11216,16 @@ class MainWindow(QMainWindow):
             if g_on.isChecked():
                 o['glow'] = {'blur': gbl.value(), 'opacity': gop.value(), 'color': gcol[0]}
             else: o.pop('glow', None)
+            if r_on.isChecked():
+                o['reflect'] = {'opacity': rop.value(), 'falloff': rfall.value(), 'gap': rgap.value()}
+            else: o.pop('reflect', None)
+            if f_on.isChecked():
+                o['feather'] = {'radius': frad.value()}
+            else: o.pop('feather', None)
+            if b_on.isChecked():
+                o['bevel'] = {'depth': bdep.value(), 'soft': bsoft.value(),
+                              'light': blight.value(), 'dir': bdir.value()}
+            else: o.pop('bevel', None)
         self.refresh()
 
     def _collect_misspellings(self):
