@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.40-00"
+VERSION = "1.41-00"
 
 
 def _just_dir(kind):
@@ -6319,6 +6319,63 @@ def _equal_gap(pos, size, opos, osize, cands, thresh, axis):
     return d, g
 
 
+# ----------------------------------------------------------------------------
+# Ruler units & interactive guides (pure helpers — unit-testable, no GUI)
+# ----------------------------------------------------------------------------
+# Document unit choices. Canvas geometry is always stored in scene px @96dpi;
+# these only change how the rulers label ticks and how readouts are formatted.
+UNITS = ('px', 'cm', 'mm', 'in', 'pt')
+# Scene px per one of each unit, assuming 96 px = 1 inch.
+_PER_UNIT = {'px': 1.0, 'in': 96.0, 'cm': 96.0 / 2.54, 'mm': 96.0 / 25.4, 'pt': 96.0 / 72.0}
+
+def px_to_unit(px, unit):
+    """Convert a scene-px measurement into the chosen document unit."""
+    return px / _PER_UNIT.get(unit, 1.0)
+
+def unit_to_px(val, unit):
+    """Convert a value in the chosen unit back to scene px."""
+    return val * _PER_UNIT.get(unit, 1.0)
+
+def fmt_unit(px, unit):
+    """Format a scene-px value as a short labelled string in the chosen unit."""
+    v = px_to_unit(px, unit)
+    return f'{v:.0f}' if unit in ('px', 'pt') else f'{v:.2f}'
+
+def ruler_major_px(unit, zoom):
+    """Pick the tick spacing for a ruler in SCENE px, so labels stay ~>=70 screen px
+    apart and fall on tidy round numbers in the chosen unit. Returns (major_px,
+    minor_px, label-decimals)."""
+    if unit == 'px':
+        major = next((m for m in (10, 20, 50, 100, 200, 500, 1000, 2000) if m * zoom >= 70), 2000)
+        return major, major / (10 if major * zoom >= 100 else 5), 0
+    per = _PER_UNIT[unit]
+    # candidate step sizes expressed in the unit (nice 1/2/5 decades)
+    if unit == 'in':
+        steps = (0.25, 0.5, 1, 2, 5, 10, 20)
+    elif unit == 'pt':
+        steps = (10, 20, 50, 100, 200, 500, 1000)
+    else:  # cm / mm
+        steps = (0.5, 1, 2, 5, 10, 20, 50, 100, 200) if unit == 'cm' else (5, 10, 20, 50, 100, 200, 500)
+    step = next((s for s in steps if s * per * zoom >= 70), steps[-1])
+    major = step * per
+    minor = major / (4 if unit == 'in' and step in (0.25, 0.5, 1, 2) else 5)
+    dec = 0 if (unit == 'pt' or step >= 1) else (2 if step < 0.5 else 1)
+    return major, minor, dec
+
+def guide_hit_test(guides, sp_x, sp_y, tol):
+    """Which ruler guide (if any) is under a scene point, within tolerance (scene px).
+    Returns ('v', index) / ('h', index) for the nearest grabbed guide, else None.
+    Vertical guides are matched on x, horizontal on y; the closest wins."""
+    best = None; bestd = tol
+    for i, gx in enumerate(guides.get('v', [])):
+        d = abs(sp_x - gx)
+        if d <= bestd: best, bestd = ('v', i), d
+    for i, gy in enumerate(guides.get('h', [])):
+        d = abs(sp_y - gy)
+        if d <= bestd: best, bestd = ('h', i), d
+    return best
+
+
 class Canvas(QGraphicsView):
     HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 
@@ -6338,6 +6395,7 @@ class Canvas(QGraphicsView):
         self.marq = None
         self.ghost = None
         self._cross = None
+        self._ruler_pull = None     # ('v'|'h', scene-coord) while pulling a new guide off a ruler
         self._smart = []            # transient smart-guide lines for the current drag
         self.horizontalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.verticalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
@@ -6461,6 +6519,12 @@ class Canvas(QGraphicsView):
             pr = self.page_rect(); gp = QPen(QColor(0, 150, 190, 150), 0); gp.setCosmetic(True); p.setPen(gp)
             for gx in g.get('v', []): p.drawLine(QPointF(gx, 0), QPointF(gx, pr.height()))
             for gy in g.get('h', []): p.drawLine(QPointF(0, gy), QPointF(pr.width(), gy))
+        # Live preview while pulling a new guide off a ruler, or dragging an existing one.
+        if self._ruler_pull is not None:
+            ax, c = self._ruler_pull; pr = self.page_rect()
+            pp = QPen(QColor(0, 150, 190, 200), 0, Qt.DashLine); pp.setCosmetic(True); p.setPen(pp)
+            if ax == 'v': p.drawLine(QPointF(c, rect.top()), QPointF(c, rect.bottom()))
+            else: p.drawLine(QPointF(rect.left(), c), QPointF(rect.right(), c))
         # Baseline grid (non-printing): faint horizontal lines at the publication's baseline
         # pitch, as a typesetting aid. Editor overlay only (drawForeground) — never exported/printed.
         bl = win.site.get('baseline', 0)
@@ -6511,6 +6575,20 @@ class Canvas(QGraphicsView):
             if isinstance(it, ObjItem):
                 return it
         return None
+
+    def guides_shown(self):
+        """Guides are only interactive when they're drawn (same gate as drawForeground)."""
+        win = self.win
+        return bool(getattr(win, 'show_guides', True)) and not win.booklet and not win.cur_master()
+
+    def guide_at(self, vpos):
+        """Which ruler guide (if any) is under a viewport point, within ~5 screen px.
+        Returns ('v'|'h', index) or None. Delegates the maths to guide_hit_test."""
+        if not self.guides_shown(): return None
+        g = self.win.site.get('guides')
+        if not g: return None
+        sp = self.mapToScene(vpos)
+        return guide_hit_test(g, sp.x(), sp.y(), 5 / self.zoom)
 
     def on_page_bottom(self, vpos):
         """True when the viewport point is on the page's bottom edge — the grab zone for
@@ -6662,6 +6740,16 @@ class Canvas(QGraphicsView):
         if win.tool == 'pointer' and self.on_page_bottom(vpos):
             self.drag = dict(mode='pageh', pt=sp, start_h=win.page_h(), snap=win.snapshot(), moved=False)
             return
+        # Grab an existing ruler guide (takes precedence over marquee/empty-space; a
+        # guide drag never creates or selects objects). Only when the guide is actually
+        # drawn and nothing is being resized/rotated.
+        if win.tool == 'pointer':
+            gh = self.guide_at(vpos)
+            if gh is not None:
+                ax, idx = gh
+                self.drag = dict(mode='guide', axis=ax, idx=idx, snap=win.snapshot(), moved=False)
+                self._ruler_pull = (ax, win.site['guides'][ax][idx]); self.viewport().update()
+                return
         if win.tool == 'pointer':
             it = self.obj_at(vpos)
             if it and it.master:
@@ -6699,6 +6787,12 @@ class Canvas(QGraphicsView):
                 elif getattr(self, '_over_link', None):
                     self._over_link = None; win.update_hint()
             hk = self.handle_at(vpos) if win.tool == 'pointer' else None
+            if not hk and win.tool == 'pointer':
+                gh = self.guide_at(vpos)
+                if gh is not None:                       # hovering a guide → move cursor
+                    self.viewport().setCursor(Qt.SplitHCursor if gh[0] == 'v' else Qt.SplitVCursor)
+                    win.hint('Drag to move this guide, or drag it off the page (or double-click) to remove it.')
+                    return
             cur = {'nw': Qt.SizeFDiagCursor, 'se': Qt.SizeFDiagCursor, 'ne': Qt.SizeBDiagCursor, 'sw': Qt.SizeBDiagCursor,
                    'n': Qt.SizeVerCursor, 's': Qt.SizeVerCursor, 'e': Qt.SizeHorCursor, 'w': Qt.SizeHorCursor}.get(hk)
             if hk == 'rot': cur = Qt.CrossCursor
@@ -6713,6 +6807,12 @@ class Canvas(QGraphicsView):
         if d['mode'] == 'pan':
             delta = e.position() - d['start']
             self.horizontalScrollBar().setValue(int(d['h'] - delta.x())); self.verticalScrollBar().setValue(int(d['v'] - delta.y())); return
+        if d['mode'] == 'guide':
+            if not d['moved']: win.push_undo(d['snap']); d['moved'] = True
+            c = self.snap(sp.x() if d['axis'] == 'v' else sp.y())   # respect grid snap
+            win.move_guide(d['axis'], d['idx'], c)
+            self._ruler_pull = (d['axis'], c)
+            win.set_pos_label(sp); self.viewport().update(); return
         dx, dy = sp.x() - d['pt'].x(), sp.y() - d['pt'].y()
         if d['mode'] == 'move':
             if not d['moved'] and abs(dx) + abs(dy) < 2 / self.zoom: return
@@ -6797,6 +6897,14 @@ class Canvas(QGraphicsView):
         sp = self.mapToScene(e.position().toPoint())
         if d['mode'] == 'pan':
             self.viewport().setCursor(Qt.OpenHandCursor if win.tool == 'hand' else Qt.ArrowCursor); return
+        if d['mode'] == 'guide':
+            self._ruler_pull = None
+            pr = self.page_rect()
+            off = (sp.x() < 0 or sp.x() > pr.width()) if d['axis'] == 'v' else (sp.y() < 0 or sp.y() > pr.height())
+            if off:                                  # dragged off the page edge → delete it
+                win.delete_guide(d['axis'], d['idx'])
+                win.hint('Guide removed.')
+            win.dirty = True; win.refresh(); return
         if d['mode'] == 'marq':
             r_ = self.marq; self.marq = None
             if r_ and r_.width() > 2:
@@ -6817,6 +6925,10 @@ class Canvas(QGraphicsView):
         win = self.win
         if win.editor: super().mouseDoubleClickEvent(e); return
         if win.tool != 'pointer': return
+        gh = self.guide_at(e.position().toPoint())    # double-click a guide to remove it
+        if gh is not None:
+            win.commit(); win.delete_guide(gh[0], gh[1]); win.refresh()
+            win.hint('Guide removed.'); return
         it = self.obj_at(e.position().toPoint())
         if it and it.master:
             if it.o['type'] == 'nav' and not it.o.get('locked'):
@@ -6884,19 +6996,24 @@ class Ruler(QWidget):
     def __init__(self, view, horiz):
         super().__init__()
         self.view, self.horiz, self.mouse = view, horiz, None
+        self._pulling = False                    # True while dragging a new guide off this ruler
+        self.setMouseTracking(True)
         if horiz: self.setFixedHeight(20)
         else: self.setFixedWidth(20)
+
+    def _unit(self):
+        return self.view.win.site.get('units', 'px')
 
     def paintEvent(self, ev):
         p = QPainter(self); pal = self.palette()
         bg = pal.color(QPalette.Window); fg = pal.color(QPalette.WindowText); dim = QColor(fg); dim.setAlpha(140)
         p.fillRect(self.rect(), bg)
-        v = self.view; z = v.zoom
+        v = self.view; z = v.zoom; unit = self._unit()
         o = v.mapFromScene(QPointF(0, 0))
         origin = o.x() if self.horiz else o.y()
         length = self.width() if self.horiz else self.height()
-        major = next((m for m in (10, 20, 50, 100, 200, 500, 1000, 2000) if m * z >= 70), 2000)
-        minor = major / (10 if major * z >= 100 else 5)
+        # Tick spacing is chosen in the active unit (converted back to scene px).
+        major, minor, dec = ruler_major_px(unit, z)
         # selection extent
         sel = v.win.sel_items()
         if sel:
@@ -6915,13 +7032,14 @@ class Ruler(QWidget):
             is_major = abs(val / major - round(val / major)) < 1e-6
             ln = 10 if is_major else 4
             p.setPen(dim)
+            lbl = f'{px_to_unit(val, unit):.{dec}f}'   # tick value shown in the active unit
             if self.horiz:
                 p.drawLine(QPointF(px, 20 - ln), QPointF(px, 20))
-                if is_major: p.setPen(fg); p.drawText(QPointF(px + 3, 9), f'{int(val)}')
+                if is_major: p.setPen(fg); p.drawText(QPointF(px + 3, 9), lbl)
             else:
                 p.drawLine(QPointF(20 - ln, px), QPointF(20, px))
                 if is_major:
-                    p.save(); p.setPen(fg); p.translate(9, px + 3); p.rotate(90); p.drawText(QPointF(0, 0), f'{int(val)}'); p.restore()
+                    p.save(); p.setPen(fg); p.translate(9, px + 3); p.rotate(90); p.drawText(QPointF(0, 0), lbl); p.restore()
             val += minor
         if self.mouse is not None:
             p.setPen(QPen(pal.color(QPalette.Highlight), 1))
@@ -6931,6 +7049,57 @@ class Ruler(QWidget):
         p.setPen(pal.color(QPalette.Mid))
         if self.horiz: p.drawLine(0, 19, self.width(), 19)
         else: p.drawLine(19, 0, 19, self.height())
+
+    # -- drag a new guide out of the ruler (PagePlus Guide Tool). The horizontal
+    # ruler yields a VERTICAL guide that tracks cursor-x; the vertical ruler a
+    # HORIZONTAL guide at cursor-y. The guide is only committed to the page on
+    # release (so a mis-pull can be cancelled by dropping back on the ruler).
+    def _scene_coord(self, ev):
+        """Map a ruler-local mouse position to the scene axis this ruler pulls."""
+        win = self.view.win
+        gp = self.mapToGlobal(ev.position().toPoint())
+        vp = self.view.viewport().mapFromGlobal(gp)
+        sp = self.view.mapToScene(vp)
+        return sp, win.view.snap(sp.x() if self.horiz else sp.y())
+
+    def mousePressEvent(self, ev):
+        win = self.view.win
+        if ev.button() != Qt.LeftButton or win.booklet or win.cur_master():
+            return super().mousePressEvent(ev)
+        self._pulling = True
+        _, c = self._scene_coord(ev)
+        # show the live position straight away (reuses the canvas crosshair line)
+        self.view._ruler_pull = ('v' if self.horiz else 'h', c); self.view.viewport().update()
+        win.hint(f'Drag onto the page to place a guide ({fmt_unit(c, self._unit())} {self._unit()}).')
+
+    def mouseMoveEvent(self, ev):
+        if not self._pulling: return super().mouseMoveEvent(ev)
+        win = self.view.win; sp, c = self._scene_coord(ev)
+        self.view._ruler_pull = ('v' if self.horiz else 'h', c); self.view.viewport().update()
+        win.set_pos_label(sp)
+
+    def mouseReleaseEvent(self, ev):
+        if not self._pulling: return super().mouseReleaseEvent(ev)
+        self._pulling = False
+        win = self.view.win; self.view._ruler_pull = None; self.view.viewport().update()
+        sp, c = self._scene_coord(ev)
+        pr = self.view.page_rect()
+        axis = 'v' if self.horiz else 'h'
+        if pr.contains(sp):                      # dropped on the page → keep the guide
+            win.commit(); win.add_guide(axis, c); win.refresh()
+            win.hint(f'Guide placed at {fmt_unit(c, self._unit())} {self._unit()}. Drag it off the page or double-click to remove it.')
+        else:
+            win.update_hint()
+
+    # -- right-click to choose the document unit
+    def contextMenuEvent(self, ev):
+        win = self.view.win; cur = win.site.get('units', 'px')
+        m = QMenu(self); m.addAction('Ruler units').setEnabled(False); m.addSeparator()
+        names = {'px': 'Pixels', 'cm': 'Centimetres', 'mm': 'Millimetres', 'in': 'Inches', 'pt': 'Points'}
+        for u in UNITS:
+            a = m.addAction(f'{names[u]}  ({u})'); a.setCheckable(True); a.setChecked(u == cur)
+            a.triggered.connect(lambda _=False, uu=u: win.set_units(uu))
+        m.exec(ev.globalPos())
 
 # ----------------------------------------------------------------------------
 # Small widgets & dialogs
@@ -7510,6 +7679,8 @@ class MainWindow(QMainWindow):
         self.snap_grid = self.settings.value('snap', True, type=bool)
         self.crosshair = False
         self.show_guides = True
+        u = self.settings.value('units', 'px', type=str)                          # ruler/readout unit
+        self.site['units'] = u if u in UNITS else 'px'
         self.show_baseline = self.settings.value('baseline', False, type=bool)   # baseline-grid overlay (editor only)
         self.smart_guides = self.settings.value('smartguides', True, type=bool)   # dynamic alignment guides
         self.booklet = False                 # Booklet view: all pages as facing spreads (print)
@@ -7989,11 +8160,43 @@ class MainWindow(QMainWindow):
         self.update_rulers()
 
     def set_pos_label(self, sp):
-        self.pos_label.setText(f'X {sp.x():6.0f}  Y {sp.y():6.0f}')
+        u = self.site.get('units', 'px')
+        self.pos_label.setText(f'X {fmt_unit(sp.x(), u):>7}  Y {fmt_unit(sp.y(), u):>7} {u}')
         self.rx.mouse, self.ry.mouse = sp.x(), sp.y(); self.rx.update(); self.ry.update()
 
     def update_rulers(self):
         self.rx.update(); self.ry.update()
+
+    # -- interactive ruler guides (drag-from-ruler / move / delete). The list
+    # mutations are factored out here so they can be unit-tested without a mouse.
+    def _guides(self):
+        g = self.site.setdefault('guides', {'v': [], 'h': []})
+        g.setdefault('v', []); g.setdefault('h', [])
+        return g
+
+    def add_guide(self, axis, val):
+        """Add a vertical ('v') guide at scene-x=val, or horizontal ('h') at scene-y=val.
+        Returns the new guide's index in its list."""
+        lst = self._guides()[axis]
+        lst.append(round(float(val), 1))
+        return len(lst) - 1
+
+    def move_guide(self, axis, idx, val):
+        """Relocate guide #idx on the given axis to scene coordinate val."""
+        self._guides()[axis][idx] = round(float(val), 1)
+
+    def delete_guide(self, axis, idx):
+        """Remove guide #idx on the given axis."""
+        del self._guides()[axis][idx]
+
+    def set_units(self, unit):
+        """Set the document ruler unit and persist the choice (QSettings)."""
+        if unit not in UNITS: return
+        self.site['units'] = unit
+        self.settings.setValue('units', unit)
+        self.update_rulers()
+        if self.view.drag is None: self.set_pos_label(QPointF(0, 0))
+        self.update_hint()
 
     # ------------------------------------------------------------ Studio
     def dock(self, title, widget, name):
