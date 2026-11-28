@@ -118,5 +118,23 @@
 "label": "Ellipse",
 "meta": "QuickShape",
 "tags": "quickshape Ellipse ellipse"
+},
+{
+"file": "draw/moon.png",
+"label": "Moon",
+"meta": "QuickShape",
+"tags": "quickshape Moon moon"
+},
+{
+"file": "draw/sun.png",
+"label": "Sun",
+"meta": "QuickShape",
+"tags": "quickshape Sun sun"
+},
+{
+"file": "draw/gear.png",
+"label": "Gear",
+"meta": "QuickShape",
+"tags": "quickshape Gear gear"
 }
 ]

@@ -281,11 +281,11 @@ def quickshape_path(name, w, h, qp=None):
             pts.append((cx + cx * k * math.cos(a), cy + cy * k * math.sin(a)))
         return _qs_poly(pts)
     if name == 'moon':
-        # A crescent = the big disc minus an offset disc. phase (0..1) sets how much
-        # of the disc stays lit: 0.5 = half, →1 nearly full, →0 a thin sliver.
+        # A crescent = the disc minus a disc shifted right by w*phase. The leftover lit
+        # sliver grows with phase: →0 a thin sliver, 0.5 ≈ half-moon, →1 nearly full.
         phase = max(0.05, min(0.95, float(qp.get('phase', 0.5))))
         disc = QPainterPath(); disc.addEllipse(QRectF(0, 0, w, h))
-        cut = QPainterPath(); cut.addEllipse(QRectF(w * (0.9 - 1.8 * phase), 0, w, h))
+        cut = QPainterPath(); cut.addEllipse(QRectF(w * phase, 0, w, h))
         return disc.subtracted(cut)
     if name == 'sun':
         rays = int(qp.get('points', 12)); core = 0.55
