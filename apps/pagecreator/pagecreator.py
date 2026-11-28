@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.38-00"
+VERSION = "1.39-00"
 
 
 def _just_dir(kind):
@@ -1442,7 +1442,19 @@ DASH = {'solid': Qt.SolidLine, 'dashed': Qt.DashLine, 'dotted': Qt.DotLine}
 def qfont(o):
     f = QFont(o.get('font', SANS)); f.setPixelSize(max(1, int(o.get('size', 16))))
     f.setBold(bool(o.get('bold'))); f.setItalic(bool(o.get('italic'))); f.setUnderline(bool(o.get('underline')))
+    # Character-dialog typography: letter/word tracking (px) + small caps on the frame's font.
+    tr = o.get('tracking', 0)
+    if tr: f.setLetterSpacing(QFont.AbsoluteSpacing, float(tr))
+    ws = o.get('wordspacing', 0)
+    if ws: f.setWordSpacing(float(ws))
+    if o.get('smallcaps'): f.setCapitalization(QFont.SmallCaps)
     return f
+
+# Baseline grid: the active publication's baseline pitch (px, 0 = off), stamped here at
+# paint/overflow time so make_doc() — a module-level function that only sees the object —
+# can snap a frame's line-height onto the grid when o['snapbaseline'] is on. Module global
+# (not an object key) so it never persists into the saved document.
+BASELINE_PX = 0
 
 # ---------------------------------------------------------------- Drop cap
 def _first_letter_pos(html_src):
@@ -1650,7 +1662,14 @@ def make_doc(o):
         bf = blk.blockFormat(); bf.setTopMargin(0)
         bf.setBottomMargin(0 if not blk.next().isValid() or o['type'] != 'text' else gap)
         lh = o.get('lh', 1.4)
-        if lh != 'normal':
+        # Baseline-grid snap: force this frame's line pitch up to the nearest multiple of the
+        # publication baseline that is >= the natural line height, so successive lines land on
+        # the grid. Only when the frame opts in (snapbaseline) and a grid is active.
+        if o.get('snapbaseline') and BASELINE_PX > 0:
+            natural = (1.4 if lh == 'normal' else float(lh)) * o.get('size', 16)
+            snapped = math.ceil(natural / BASELINE_PX - 1e-9) * BASELINE_PX
+            bf.setLineHeight(float(snapped), 3)  # 3 = MinimumHeight
+        elif lh != 'normal':
             bf.setLineHeight(float(lh) * o.get('size', 16), 3)  # 3 = MinimumHeight, like CSS line-height
         if not bf.hasProperty(QTextBlockFormat.BlockAlignment):
             bf.setAlignment(ALIGN.get(o.get('align', 'left'), Qt.AlignLeft))
@@ -2513,6 +2532,8 @@ def paint_qr(o, p):
 
 
 def paint_obj(p, o, site, page, hide_text=False, edit=True):
+    global BASELINE_PX
+    BASELINE_PX = site.get('baseline', 0) if site else 0   # so make_doc can snap onto the grid
     # Transparency gradient (o['agrad']): render the object to a temp layer, multiply
     # its alpha by a linear a1→a2 fade across `angle`, then draw the masked layer back.
     # Composes with flat opacity because we draw the layer at the painter's opacity.
@@ -3430,6 +3451,10 @@ def text_css(o):
          f"text-align:{o.get('align', 'left')};font-weight:{700 if o.get('bold') else 400};"
          f"font-style:{'italic' if o.get('italic') else 'normal'};text-decoration:{'underline' if o.get('underline') else 'none'};"
          f"line-height:{o.get('lh', 1.4)};")
+    # Character dialog: tracking / word spacing / small caps.
+    if o.get('tracking'): s += f"letter-spacing:{o['tracking']}px;"
+    if o.get('wordspacing'): s += f"word-spacing:{o['wordspacing']}px;"
+    if o.get('smallcaps'): s += "font-variant:small-caps;"
     if o.get('type') == 'text' and int(o.get('cols', 1)) > 1:
         s += f"column-count:{int(o['cols'])};column-gap:{o.get('colgap', 16)}px;"
     return s
@@ -6311,6 +6336,15 @@ class Canvas(QGraphicsView):
             pr = self.page_rect(); gp = QPen(QColor(0, 150, 190, 150), 0); gp.setCosmetic(True); p.setPen(gp)
             for gx in g.get('v', []): p.drawLine(QPointF(gx, 0), QPointF(gx, pr.height()))
             for gy in g.get('h', []): p.drawLine(QPointF(0, gy), QPointF(pr.width(), gy))
+        # Baseline grid (non-printing): faint horizontal lines at the publication's baseline
+        # pitch, as a typesetting aid. Editor overlay only (drawForeground) — never exported/printed.
+        bl = win.site.get('baseline', 0)
+        if bl and getattr(win, 'show_baseline', False) and not win.booklet and not win.cur_master():
+            pr = self.page_rect()
+            bp = QPen(QColor(120, 160, 210, 70), 0); bp.setCosmetic(True); p.setPen(bp)
+            y = float(bl)
+            while y < pr.height():
+                p.drawLine(QPointF(0, y), QPointF(pr.width(), y)); y += bl
         # Dynamic alignment (smart) guides: transient magenta lines drawn only while an
         # object is being dragged/resized onto alignment. Editor overlay only — never saved,
         # exported or printed (this is drawForeground, not paint_obj).
@@ -7351,6 +7385,7 @@ class MainWindow(QMainWindow):
         self.snap_grid = self.settings.value('snap', True, type=bool)
         self.crosshair = False
         self.show_guides = True
+        self.show_baseline = self.settings.value('baseline', False, type=bool)   # baseline-grid overlay (editor only)
         self.smart_guides = self.settings.value('smartguides', True, type=bool)   # dynamic alignment guides
         self.booklet = False                 # Booklet view: all pages as facing spreads (print)
         self._booklet_rects = []
@@ -7543,6 +7578,8 @@ class MainWindow(QMainWindow):
             snap=A('&Snap to Grid', self.toggle_snap, None, 'snap-to-grid', True),
             crosshair=A('Cross&hair', self.toggle_crosshair, None, ['crosshairs', 'tool-pointer', 'cursor-crosshair'], True),
             smartguides=A('S&mart Guides', self.toggle_smart_guides, None, ['snap-orthogonal', 'snap-bounding-box', 'view-guides'], True),
+            baseline=A('&Baseline Grid', self.toggle_baseline, None, ['view-grid', 'format-line-spacing-triple'], True),
+            baselineset=A('Baseline Grid &Spacing…', self.baseline_dialog, None, ['view-grid', 'configure', 'format-line-spacing-normal']),
             guides=A('&Guides && Columns…', self.guides_dialog, None, ['view-guides', 'view-grid', 'configure']),
             booklet=A('&Booklet View', self.toggle_booklet, None, ['view-pages-facing', 'view-book', 'x-office-document'], True),
             zin=A('Zoom &In', lambda: self.view.set_zoom(self.view.zoom * 1.25), QKeySequence.ZoomIn, 'zoom-in'),
@@ -7590,6 +7627,7 @@ class MainWindow(QMainWindow):
         self.a['rulers'].setChecked(self.settings.value('rulers', True, type=bool))
         self.a['grid'].setChecked(self.show_grid); self.a['snap'].setChecked(self.snap_grid)
         self.a['smartguides'].setChecked(self.smart_guides)
+        self.a['baseline'].setChecked(self.show_baseline)
         for k in ('cut', 'copy', 'paste', 'undo', 'redo', 'selall', 'bold', 'italic', 'underline'):
             self.a[k].setShortcutContext(Qt.WindowShortcut)
 
@@ -7615,7 +7653,7 @@ class MainWindow(QMainWindow):
                        a['printdoc'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall'], None,
                        self.act('Find && &Replace…', self.find_replace_dialog, 'Ctrl+H', ['edit-find-replace', 'edit-find'])])
-        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['smartguides'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
+        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['smartguides'], a['crosshair'], a['guides'], a['baseline'], a['baselineset'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
         for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom') and t[0] not in WEB_TOOLS]:
             ins.append(self.act(label, lambda _=False, t=tid: self.insert_default(t), None, None))
@@ -7644,6 +7682,8 @@ class MainWindow(QMainWindow):
         style_acts = [self.act(n, lambda _=False, n=n: self.apply_text_style(n), None, None) for n in TEXT_STYLE_PRESETS]
         menu('F&ormat', [a['bold'], a['italic'], a['underline'], None, a['aleft'], a['acenter'], a['aright'], a['ajust'],
                          None, ('Text Styles', style_acts), ('Lists / Bullets', list_sub),
+                         self.act('C&haracter…', lambda: self.character_dialog(), None,
+                                  ['format-text-character', 'format-font-size-more', 'preferences-desktop-font']),
                          self.act('Text Frame &Columns…', lambda: self.text_columns_dialog(), None,
                                   ['view-split-left-right', 'format-text-columns', 'view-column']), None,
                          self.act('&Replace Colour…', lambda: self.replace_colour_dialog(), None, ['color-picker', 'gtk-select-color', 'preferences-desktop-color']),
@@ -8628,6 +8668,8 @@ class MainWindow(QMainWindow):
             if t == 'text':
                 btn(['format-text-dropcap', 'format-text-direction-ltr'], 'Drop cap — large first letter',
                     lambda: self.set_prop('dropcap', not o.get('dropcap')), checked=bool(o.get('dropcap')), glyph='¶')
+                btn(['view-grid', 'format-line-spacing-triple'], 'Align to baseline grid — snap lines onto the publication baseline grid (View ▸ Baseline Grid)',
+                    lambda: self.set_prop('snapbaseline', not o.get('snapbaseline')), checked=bool(o.get('snapbaseline')), glyph='≡')
             if t == 'picture':
                 btn(['insert-image', 'document-open'], 'Replace Picture…', lambda: self.pick_picture(o))
                 btn(['edit-cut', 'tools-wizard', 'image-crop'], 'Cutout Studio — remove the background…',
@@ -9070,6 +9112,45 @@ class MainWindow(QMainWindow):
         self.refresh()
         self.hint(f'Text frame set to {n} column' + ('' if n == 1 else 's') + '.')
 
+    def character_dialog(self):
+        """PagePlus-style Character dialog: letter spacing (tracking), word spacing and
+        small caps. Applies to the selected text object(s) as frame-wide settings, or — when
+        a text frame is open for editing with a selection — to just the selected run."""
+        from PySide6.QtWidgets import QSpinBox
+        # Seed defaults from the first selected object / the frame being edited.
+        objs = [o for o in self.sel_objs() if o['type'] in ('text', 'artistic', 'button', 'nav', 'table', 'form')]
+        if not objs and not self.editor:
+            QMessageBox.information(self, APP, 'Select a text object first (or double-click one to edit),\nthen open Character…')
+            return
+        seed = objs[0] if objs else {}
+        tr = QSpinBox(); tr.setRange(-20, 60); tr.setSuffix(' px'); tr.setValue(int(seed.get('tracking', 0)))
+        tr.setToolTip('Extra space between letters (tracking). 0 = normal.')
+        wr = QSpinBox(); wr.setRange(-20, 80); wr.setSuffix(' px'); wr.setValue(int(seed.get('wordspacing', 0)))
+        wr.setToolTip('Extra space between words. 0 = normal.')
+        sc = QCheckBox('Small caps'); sc.setChecked(bool(seed.get('smallcaps')))
+        editing_run = bool(self.editor and self.editor.textCursor().hasSelection())
+        note = ('Applies to the selected text run.' if editing_run
+                else 'Applies to the whole text frame.' if objs or self.editor
+                else '')
+        dlg = form_dialog(self, 'Character',
+                          [('Letter spacing:', tr), ('Word spacing:', wr), ('', sc)],
+                          QLabel(note + '\nSmall caps applies to the whole frame.') if note else None)
+        if not dlg.exec(): return
+        # Live editor, text selected → letter/word spacing go on the selected run (small caps
+        # stays a frame setting, matching the doc default-font behaviour).
+        if editing_run:
+            c = self.editor.textCursor(); fmt = QTextCharFormat()
+            fmt.setFontLetterSpacingType(QFont.AbsoluteSpacing); fmt.setFontLetterSpacing(float(tr.value()))
+            fmt.setFontWordSpacing(float(wr.value()))
+            c.mergeCharFormat(fmt); self.editor.setTextCursor(c); self.editor.setFocus()
+            eo = self.find(self.edit_id)
+            if eo is not None and sc.isChecked() != bool(eo.get('smallcaps')):
+                self.set_prop('smallcaps', sc.isChecked())
+            return
+        for key, val in (('tracking', tr.value()), ('wordspacing', wr.value()), ('smallcaps', sc.isChecked())):
+            self.set_prop(key, val)
+        self.hint('Character formatting applied.')
+
     def insert_contact(self, field):
         """Drop a text frame showing a contact detail from Site Properties.
         Email becomes a clickable mailto: link; website a clickable link."""
@@ -9233,6 +9314,7 @@ class MainWindow(QMainWindow):
         if not it: return
         self.select([o['id']])
         self.edit_snap = self.snapshot(); self.edit_id = o['id']
+        global BASELINE_PX; BASELINE_PX = self.site.get('baseline', 0)   # baseline-grid snap during editing
         ed = TextEditor(it, self); doc = make_doc(o); ed._doc = doc; ed.setDocument(doc)
         ed.setDefaultTextColor(QColor(o.get('color', '#000')))
         pad = o.get('pad', 8) if o['type'] == 'text' else 0
@@ -9362,6 +9444,7 @@ class MainWindow(QMainWindow):
         if self.editor: self.finish_edit()
         objs = self.sel_objs()
         if not objs: return
+        global BASELINE_PX; BASELINE_PX = self.site.get('baseline', 0)   # so make_doc height-fit honours the grid
         self.commit()
         for o in objs:
             if o.get('locked'): continue
@@ -12072,6 +12155,29 @@ class MainWindow(QMainWindow):
 
     def toggle_grid(self):
         self.show_grid = self.a['grid'].isChecked(); self.settings.setValue('grid', self.show_grid); self.view.viewport().update()
+
+    def toggle_baseline(self):
+        self.show_baseline = self.a['baseline'].isChecked(); self.settings.setValue('baseline', self.show_baseline)
+        self.view.viewport().update()
+
+    def baseline_dialog(self):
+        """Set the publication's baseline-grid pitch (px; 0 = off). PagePlus 'Baseline Grid'.
+        The overlay is editor-only; text frames with 'Align to baseline grid' snap their line
+        pitch onto it so body text across columns/frames lines up."""
+        from PySide6.QtWidgets import QSpinBox
+        sp = QSpinBox(); sp.setRange(0, 400); sp.setSuffix(' px'); sp.setValue(int(self.site.get('baseline', 0)))
+        sp.setToolTip('Spacing between baseline lines. 0 turns the baseline grid off.')
+        dlg = form_dialog(self, 'Baseline Grid', [('Baseline spacing:', sp)],
+                          QLabel('The baseline grid is an on-screen aid (it never prints).\n'
+                                 'Turn a text frame’s “Align to baseline grid” on to snap its\n'
+                                 'lines onto the grid. Set 0 to switch the grid off.'))
+        if not dlg.exec(): return
+        self.commit()
+        self.site['baseline'] = int(sp.value())
+        if self.site['baseline'] > 0 and not self.show_baseline:   # show it once it's set
+            self.show_baseline = True; self.a['baseline'].setChecked(True); self.settings.setValue('baseline', True)
+        self.refresh()
+        self.hint(f'Baseline grid set to {sp.value()} px.' if sp.value() else 'Baseline grid off.')
 
     def toggle_snap(self):
         self.snap_grid = self.a['snap'].isChecked(); self.settings.setValue('snap', self.snap_grid)
