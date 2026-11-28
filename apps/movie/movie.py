@@ -17,7 +17,7 @@ try:
         QDockWidget, QListWidget, QListWidgetItem, QLineEdit, QDialog, QFormLayout,
         QSpinBox, QDoubleSpinBox, QDialogButtonBox, QColorDialog, QMenu, QSlider,
         QStyle, QProgressDialog, QCheckBox, QTextEdit, QSizePolicy,
-        QAbstractItemView, QToolButton)
+        QAbstractItemView, QToolButton, QGroupBox, QStackedWidget)
     from PySide6.QtGui import (
         QAction, QIcon, QColor, QPainter, QPen, QBrush, QPixmap, QImage, QFont,
         QKeySequence, QActionGroup, QLinearGradient, QFontMetrics, QPolygonF)
@@ -33,7 +33,7 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.3-00"
+VERSION = "1.4-00"
 
 
 # ===================================================================== font grouping
@@ -200,6 +200,116 @@ EFFECTS = [
 EFFECT_LABELS = [(k, lbl) for k, lbl, _ in EFFECTS]
 EFFECT_FRAG = {k: frag for k, _, frag in EFFECTS}
 
+# ---- parametric colour-correction effects (stackable) -------------------------
+# Each entry in clip['effects'] is {'type': <name>, ...params}. fx_fragment() turns
+# one entry into a single ffmpeg filter fragment (may itself contain commas). All
+# numeric params are coerced + clamped; string params come from fixed allowlists, so
+# nothing from a project file can inject a shell/filter metacharacter.
+CURVES_PRESETS = ('color_negative', 'cross_process', 'darker', 'increase_contrast',
+                  'lighter', 'linear_contrast', 'medium_contrast', 'negative',
+                  'strong_contrast', 'vintage')
+# a permissive "points" grammar: digits, dot, slash and spaces only
+_POINTS_OK = set('0123456789./ ')
+# parametric types exposed in the UI: (key, label)
+PARAM_EFFECTS = [('levels', 'Levels'), ('curves', 'Curves'),
+                 ('channelmix', 'Channel mixer'), ('temperature', 'White balance')]
+PARAM_TYPES = {k for k, _ in PARAM_EFFECTS}
+
+
+def _num(entry, key, default, lo, hi):
+    """Pull a numeric param, coerce to float, clamp to [lo,hi]; junk -> default."""
+    try:
+        v = float(entry.get(key, default))
+    except (TypeError, ValueError):
+        v = float(default)
+    if v != v:            # NaN
+        v = float(default)
+    return max(lo, min(hi, v))
+
+
+def _fx_levels(e):
+    ib = _num(e, 'in_black', 0.0, 0.0, 1.0); iw = _num(e, 'in_white', 1.0, 0.0, 1.0)
+    ob = _num(e, 'out_black', 0.0, 0.0, 1.0); ow = _num(e, 'out_white', 1.0, 0.0, 1.0)
+    g = _num(e, 'gamma', 1.0, 0.1, 10.0)
+    if iw <= ib:
+        iw = min(1.0, ib + 0.001)
+    parts = []
+    if ib != 0.0 or iw != 1.0 or ob != 0.0 or ow != 1.0:
+        parts.append(f"colorlevels=rimin={ib:.4f}:gimin={ib:.4f}:bimin={ib:.4f}"
+                     f":rimax={iw:.4f}:gimax={iw:.4f}:bimax={iw:.4f}"
+                     f":romin={ob:.4f}:gomin={ob:.4f}:bomin={ob:.4f}"
+                     f":romax={ow:.4f}:gomax={ow:.4f}:bomax={ow:.4f}")
+    if abs(g - 1.0) > 1e-6:
+        parts.append(f"eq=gamma={g:.4f}")
+    return ','.join(parts)
+
+
+def _fx_curves(e):
+    pts = e.get('all') or e.get('points')
+    if pts:
+        pts = str(pts)
+        if pts and set(pts) <= _POINTS_OK:
+            return f"curves=all='{pts.strip()}'"
+        return ''                                   # reject injection attempts
+    pre = e.get('preset')
+    if pre in CURVES_PRESETS:
+        return f"curves=preset={pre}"
+    return ''
+
+
+def _fx_channelmix(e):
+    keys = ('rr', 'rg', 'rb', 'gr', 'gg', 'gb', 'br', 'bg', 'bb')
+    defaults = {'rr': 1, 'gg': 1, 'bb': 1}
+    vals = {k: _num(e, k, defaults.get(k, 0.0), -2.0, 2.0) for k in keys}
+    if all(abs(vals[k] - defaults.get(k, 0.0)) < 1e-6 for k in keys):
+        return ''                                   # identity -> no-op
+    return "colorchannelmixer=" + ':'.join(f"{k}={vals[k]:.4f}" for k in keys)
+
+
+def _fx_temperature(e):
+    k = _num(e, 'kelvin', 6500.0, 1000.0, 40000.0)
+    mix = _num(e, 'mix', 1.0, 0.0, 1.0)
+    parts = []
+    if abs(k - 6500.0) > 0.5:
+        parts.append(f"colortemperature=temperature={int(round(k))}:mix={mix:.3f}")
+    tint = _num(e, 'tint', 0.0, -1.0, 1.0)
+    if abs(tint) > 1e-6:                            # green/magenta via colorbalance
+        parts.append(f"colorbalance=gm={tint:.4f}")
+    return ','.join(parts)
+
+
+FX_BUILDERS = {'levels': _fx_levels, 'curves': _fx_curves,
+               'channelmix': _fx_channelmix, 'temperature': _fx_temperature}
+
+
+def fx_fragment(entry):
+    """Pure: one effect entry -> an ffmpeg filter fragment ('' if degenerate/unknown).
+
+    Handles both the parametric colour-correction types (FX_BUILDERS) and the legacy
+    one-shot presets (EFFECT_FRAG), so an effects list can mix the two freely."""
+    if not isinstance(entry, dict):
+        return ''
+    t = entry.get('type', 'none')
+    b = FX_BUILDERS.get(t)
+    if b:
+        try:
+            return b(entry) or ''
+        except Exception:
+            return ''
+    return EFFECT_FRAG.get(t, '')                   # preset by name (sepia, bw, …)
+
+
+def clip_effects(clip):
+    """Return the clip's effect stack as a list of entries, synthesising a 1-item list
+    from a legacy scalar clip['effect'] when 'effects' is absent (back-compat)."""
+    fx = clip.get('effects')
+    if isinstance(fx, list):
+        return [e for e in fx if isinstance(e, dict)]
+    legacy = clip.get('effect', 'none')
+    if legacy and legacy != 'none':
+        return [{'type': legacy}]
+    return []
+
 
 def atempo_chain(speed):
     """ffmpeg atempo accepts 0.5–2.0 per stage; chain stages for larger factors."""
@@ -349,9 +459,10 @@ def clip_extra_vf(clip):
         s = float(adj.get('saturation', 1.0)); g = float(adj.get('gamma', 1.0))
         if b or c != 1.0 or s != 1.0 or g != 1.0:
             parts.append(f"eq=brightness={b:.3f}:contrast={c:.3f}:saturation={s:.3f}:gamma={g:.3f}")
-    frag = EFFECT_FRAG.get(clip.get('effect', 'none'), '')
-    if frag:
-        parts.append(frag)
+    for entry in clip_effects(clip):
+        frag = fx_fragment(entry)
+        if frag:
+            parts.append(frag)
     rot = float(clip.get('rotate', 0) or 0)
     if rot:
         parts.append(f"rotate={rot}*PI/180:fillcolor=black@0")
@@ -493,7 +604,9 @@ def new_clip(src, kind, info=None):
         'transition': {'type': 'none', 'dur': 1.0},
         'kenburns': None, 'chroma': None, 'opacity': 1.0, 'opacity_to': None, 'speed': 1.0,
         'adjust': None,   # {'brightness':0,'contrast':1,'saturation':1,'gamma':1}
-        'effect': 'none', 'rotate': 0.0,
+        'effect': 'none',   # legacy scalar, kept for back-compat / simple presets
+        'effects': [],      # stackable effect list: [{'type':..,params..}, ...]
+        'rotate': 0.0,
         'crop': None,       # {'x','y','w','h'} as fractions 0..1 (w/h = kept size)
         'transform': None,  # {'scale','x','y'} shrink+position a clip on black
         'blend': 'normal',  # overlay blend mode
@@ -1253,6 +1366,155 @@ class Timeline(QWidget):
             super().keyPressEvent(ev)
 
 
+# ===================================================================== effect-stack editor
+# labels for every effect type that can live in the stack: presets + parametric.
+STACK_EFFECT_LABELS = ([(k, lbl) for k, lbl in EFFECT_LABELS if k != 'none']
+                       + [(k, lbl + ' (adjust)') for k, lbl in PARAM_EFFECTS])
+_STACK_LBL = dict(STACK_EFFECT_LABELS)
+
+
+class EffectStackEditor(QWidget):
+    """A small stack editor: a reorderable list of effects + per-type param panels.
+    Presets are single-tap entries; parametric types show sliders/fields."""
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        # deep-ish copy so Cancel doesn't mutate the clip
+        self.entries = [dict(e) for e in entries if isinstance(e, dict)]
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0)
+        self.list = QListWidget(); self.list.setMaximumHeight(110)
+        v.addWidget(self.list)
+        row = QHBoxLayout()
+        self.pick = QComboBox()
+        for k, lbl in STACK_EFFECT_LABELS:
+            self.pick.addItem(lbl, k)
+        row.addWidget(self.pick, 1)
+        for txt, fn in (('Add', self._add), ('Remove', self._remove),
+                        ('↑', self._up), ('↓', self._down)):
+            b = QPushButton(txt); b.clicked.connect(fn); b.setMaximumWidth(64 if txt in ('Add', 'Remove') else 32)
+            row.addWidget(b)
+        v.addLayout(row)
+        self.panel_box = QGroupBox('Settings'); self.panel_box.setVisible(False)
+        self.panels = QStackedWidget(); pv = QVBoxLayout(self.panel_box); pv.addWidget(self.panels)
+        self._panel_idx = {}
+        for k in ('levels', 'curves', 'channelmix', 'temperature'):
+            self.panels.addWidget(self._build_panel(k))
+            self._panel_idx[k] = self.panels.count() - 1
+        v.addWidget(self.panel_box)
+        self.list.currentRowChanged.connect(self._sel_changed)
+        self._refresh(); self.list.setCurrentRow(0 if self.entries else -1)
+
+    # -- model helpers --------------------------------------------------------
+    def result(self):
+        return [dict(e) for e in self.entries]
+
+    def _refresh(self):
+        self.list.blockSignals(True)
+        self.list.clear()
+        for e in self.entries:
+            self.list.addItem(_STACK_LBL.get(e.get('type'), e.get('type', '?')))
+        self.list.blockSignals(False)
+
+    def _add(self):
+        t = self.pick.currentData()
+        e = {'type': t}
+        if t in PARAM_TYPES:
+            e.update(self._defaults(t))
+        self.entries.append(e); self._refresh(); self.list.setCurrentRow(len(self.entries) - 1)
+
+    def _remove(self):
+        i = self.list.currentRow()
+        if 0 <= i < len(self.entries):
+            self.entries.pop(i); self._refresh()
+            self.list.setCurrentRow(min(i, len(self.entries) - 1))
+
+    def _move(self, d):
+        i = self.list.currentRow(); j = i + d
+        if 0 <= i < len(self.entries) and 0 <= j < len(self.entries):
+            self.entries[i], self.entries[j] = self.entries[j], self.entries[i]
+            self._refresh(); self.list.setCurrentRow(j)
+
+    def _up(self): self._move(-1)
+    def _down(self): self._move(1)
+
+    def _sel_changed(self, i):
+        if not (0 <= i < len(self.entries)):
+            self.panel_box.setVisible(False); return
+        t = self.entries[i].get('type')
+        if t in self._panel_idx:
+            self.panels.setCurrentIndex(self._panel_idx[t])
+            self._load_panel(t, self.entries[i])
+            self.panel_box.setVisible(True); self.panel_box.setTitle(_STACK_LBL.get(t, t))
+        else:
+            self.panel_box.setVisible(False)   # presets have no params
+
+    # -- param panels ---------------------------------------------------------
+    def _defaults(self, t):
+        return {
+            'levels': {'in_black': 0.0, 'in_white': 1.0, 'gamma': 1.0, 'out_black': 0.0, 'out_white': 1.0},
+            'curves': {'preset': 'increase_contrast'},
+            'channelmix': {'rr': 1.0, 'rg': 0.0, 'rb': 0.0, 'gr': 0.0, 'gg': 1.0, 'gb': 0.0, 'br': 0.0, 'bg': 0.0, 'bb': 1.0},
+            'temperature': {'kelvin': 6500.0, 'tint': 0.0},
+        }[t]
+
+    def _spin(self, lo, hi, step, val, dec=3):
+        s = QDoubleSpinBox(); s.setRange(lo, hi); s.setSingleStep(step); s.setDecimals(dec); s.setValue(val)
+        s.valueChanged.connect(self._write_back)
+        return s
+
+    def _build_panel(self, t):
+        w = QWidget(); f = QFormLayout(w); f.setContentsMargins(4, 4, 4, 4)
+        self._fields = getattr(self, '_fields', {}); self._fields[t] = {}
+        fl = self._fields[t]
+        if t == 'levels':
+            fl['in_black'] = self._spin(0, 1, 0.02, 0.0); f.addRow('Input black', fl['in_black'])
+            fl['in_white'] = self._spin(0, 1, 0.02, 1.0); f.addRow('Input white', fl['in_white'])
+            fl['gamma'] = self._spin(0.1, 10, 0.1, 1.0); f.addRow('Gamma', fl['gamma'])
+            fl['out_black'] = self._spin(0, 1, 0.02, 0.0); f.addRow('Output black', fl['out_black'])
+            fl['out_white'] = self._spin(0, 1, 0.02, 1.0); f.addRow('Output white', fl['out_white'])
+        elif t == 'curves':
+            cb = QComboBox()
+            for p in CURVES_PRESETS:
+                cb.addItem(p.replace('_', ' ').capitalize(), p)
+            cb.currentIndexChanged.connect(self._write_back)
+            fl['preset'] = cb; f.addRow('Preset', cb)
+        elif t == 'channelmix':
+            for prefix, lbl in (('r', 'Red out'), ('g', 'Green out'), ('b', 'Blue out')):
+                row = QWidget(); h = QHBoxLayout(row); h.setContentsMargins(0, 0, 0, 0)
+                for src in ('r', 'g', 'b'):
+                    k = prefix + src
+                    fl[k] = self._spin(-2, 2, 0.1, 1.0 if prefix == src else 0.0)
+                    h.addWidget(fl[k])
+                f.addRow(lbl, row)
+        elif t == 'temperature':
+            fl['kelvin'] = self._spin(1000, 40000, 100, 6500.0, dec=0); f.addRow('Kelvin', fl['kelvin'])
+            fl['tint'] = self._spin(-1, 1, 0.05, 0.0); f.addRow('Tint (G↔M)', fl['tint'])
+        return w
+
+    def _load_panel(self, t, e):
+        self._loading = True
+        for k, wdg in self._fields[t].items():
+            if isinstance(wdg, QComboBox):
+                idx = wdg.findData(e.get(k, CURVES_PRESETS[0]))
+                wdg.setCurrentIndex(max(0, idx))
+            else:
+                try:
+                    wdg.setValue(float(e.get(k, wdg.value())))
+                except (TypeError, ValueError):
+                    pass
+        self._loading = False
+
+    def _write_back(self, *_):
+        if getattr(self, '_loading', False):
+            return
+        i = self.list.currentRow()
+        if not (0 <= i < len(self.entries)):
+            return
+        t = self.entries[i].get('type')
+        for k, wdg in self._fields.get(t, {}).items():
+            self.entries[i][k] = wdg.currentData() if isinstance(wdg, QComboBox) else wdg.value()
+
+
 # ===================================================================== clip properties dialog
 class ClipDialog(QDialog):
     def __init__(self, clip, main, parent=None):
@@ -1335,12 +1597,8 @@ class ClipDialog(QDialog):
             form.addRow('Speed', self.speed)
 
         if clip['kind'] in ('video', 'image', 'color'):
-            self.effect = QComboBox()
-            for k, lbl in EFFECT_LABELS:
-                self.effect.addItem(lbl, k)
-            cur = clip.get('effect', 'none')
-            self.effect.setCurrentIndex(max(0, [k for k, _ in EFFECT_LABELS].index(cur) if cur in dict(EFFECT_LABELS) else 0))
-            form.addRow('Effect', self.effect)
+            self.fxstack = EffectStackEditor(clip_effects(clip))
+            form.addRow('Effects', self.fxstack)
             adj = clip.get('adjust') or {}
             self.bright = QDoubleSpinBox(); self.bright.setRange(-1, 1); self.bright.setSingleStep(0.05); self.bright.setValue(adj.get('brightness', 0.0))
             self.contrast = QDoubleSpinBox(); self.contrast.setRange(0, 3); self.contrast.setSingleStep(0.1); self.contrast.setValue(adj.get('contrast', 1.0))
@@ -1459,7 +1717,8 @@ class ClipDialog(QDialog):
         if c['kind'] == 'color':
             c['color'] = self.ccol._color; c['name'] = 'Colour'
         if c['kind'] in ('video', 'image', 'color'):
-            c['effect'] = self.effect.currentData()
+            c['effects'] = self.fxstack.result()
+            c['effect'] = 'none'   # stack is now the source of truth
             c['adjust'] = {'brightness': self.bright.value(), 'contrast': self.contrast.value(),
                            'saturation': self.satur.value(), 'gamma': 1.0}
             c['rotate'] = self.rotate.value()
