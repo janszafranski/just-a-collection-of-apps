@@ -33,7 +33,7 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.4-00"
+VERSION = "1.5-00"
 
 
 # ===================================================================== font grouping
@@ -324,6 +324,147 @@ def atempo_chain(speed):
     return ','.join(f'atempo={x:.4f}' for x in stages)
 
 
+# ---- parametric audio effects (stackable) ------------------------------------
+# Each entry in clip['audio_fx'] is {'type': <name>, ...params}. afx_fragment()
+# turns one entry into a single ffmpeg audio-filter fragment ('' if degenerate).
+# All params are numeric-only: coerced + clamped via _num(), so nothing from a
+# project file can inject a shell/filter metacharacter. Fragments are appended to
+# the clip's audio chain AFTER volume/pan/fades, BEFORE the final amix.
+
+def _afx_bass(e):
+    g = _num(e, 'gain_db', 0.0, -30.0, 30.0)
+    return f"bass=g={g:.2f}" if abs(g) > 1e-6 else ''
+
+
+def _afx_treble(e):
+    g = _num(e, 'gain_db', 0.0, -30.0, 30.0)
+    return f"treble=g={g:.2f}" if abs(g) > 1e-6 else ''
+
+
+def _afx_highpass(e):
+    f = _num(e, 'freq', 80.0, 1.0, 24000.0)
+    return f"highpass=f={f:.1f}"
+
+
+def _afx_lowpass(e):
+    f = _num(e, 'freq', 8000.0, 1.0, 24000.0)
+    return f"lowpass=f={f:.1f}"
+
+
+def _afx_echo(e):
+    delay = _num(e, 'delay_ms', 500.0, 1.0, 5000.0)
+    decay = _num(e, 'decay', 0.5, 0.0, 0.9)
+    return f"aecho=0.8:0.9:{delay:.1f}:{decay:.3f}"
+
+
+def _afx_compress(e):
+    thr = _num(e, 'threshold', 0.125, 0.0, 1.0)   # linear amplitude, acompressor range
+    if thr <= 0:
+        thr = 0.001
+    ratio = _num(e, 'ratio', 2.0, 1.0, 20.0)
+    return f"acompressor=threshold={thr:.4f}:ratio={ratio:.2f}"
+
+
+def _afx_equalizer(e):
+    f = _num(e, 'freq', 1000.0, 1.0, 24000.0)
+    w = _num(e, 'width', 200.0, 1.0, 24000.0)
+    g = _num(e, 'gain_db', 0.0, -30.0, 30.0)
+    if abs(g) < 1e-6:
+        return ''
+    return f"equalizer=f={f:.1f}:t=o:w={w:.1f}:g={g:.2f}"
+
+
+def _afx_tempo(e):
+    # optional: speed up / slow down without resampling-pitch tricks (atempo chain)
+    sp = _num(e, 'tempo', 1.0, 0.5, 2.0)
+    if abs(sp - 1.0) < 1e-6:
+        return ''
+    return atempo_chain(sp)
+
+
+AFX_BUILDERS = {'bass': _afx_bass, 'treble': _afx_treble,
+                'highpass': _afx_highpass, 'lowpass': _afx_lowpass,
+                'echo': _afx_echo, 'compress': _afx_compress,
+                'equalizer': _afx_equalizer, 'tempo': _afx_tempo}
+
+# audio-fx types exposed in the UI: (key, label)
+AUDIO_FX = [('bass', 'Bass'), ('treble', 'Treble'), ('highpass', 'High-pass'),
+            ('lowpass', 'Low-pass'), ('echo', 'Reverb / echo'),
+            ('compress', 'Compressor'), ('equalizer', 'Equaliser'),
+            ('tempo', 'Tempo')]
+AUDIO_FX_LBL = dict(AUDIO_FX)
+
+
+def afx_fragment(entry):
+    """Pure: one audio-effect entry -> an ffmpeg audio-filter fragment ('' if junk)."""
+    if not isinstance(entry, dict):
+        return ''
+    b = AFX_BUILDERS.get(entry.get('type'))
+    if not b:
+        return ''
+    try:
+        return b(entry) or ''
+    except Exception:
+        return ''
+
+
+def clip_audio_fx(clip):
+    """Concat a clip's audio-effect stack into one comma-joined fragment ('' if none).
+    Back-compat: a clip with no 'audio_fx' (legacy projects) -> ''."""
+    fx = clip.get('audio_fx')
+    if not isinstance(fx, list):
+        return ''
+    frags = [afx_fragment(e) for e in fx]
+    return ','.join(f for f in frags if f)
+
+
+# ---- auto-ducking (sidechain compression) ------------------------------------
+# project['ducking'] = {'enabled': bool, 'key_track': <track id>, 'amount_db', 'threshold'}.
+# When enabled, every audio label NOT from the key (narration) track is compressed,
+# keyed by a copy of the mixed narration, so music sits under the voice. OFF by
+# default; a project with no 'ducking' (or enabled False) mixes exactly as before.
+def ducking_cfg(proj):
+    d = proj.get('ducking')
+    if not isinstance(d, dict) or not d.get('enabled'):
+        return None
+    return d
+
+
+def ducking_filtergraph(key_labels, other_labels, cfg, out='[aout]'):
+    """Build the sidechaincompress-based mix fragment list (list of graph strings).
+
+    key_labels   = audio stream labels on the narration/key track (e.g. ['[a0]'])
+    other_labels = all the other audio labels (music, fx, …) to be ducked
+    Returns a list of graph lines whose final output is `out`. If there is no key
+    or nothing to duck, returns None so the caller falls back to a plain amix."""
+    if not key_labels or not other_labels:
+        return None
+    thr = max(0.0, min(1.0, float(cfg.get('threshold', 0.05) or 0.05))) or 0.001
+    amt = max(1.0, min(1.0 + abs(float(cfg.get('amount_db', 12) or 12)) / 2.0, 20.0))  # dB -> ratio-ish
+    lines = []
+    # 1) mix the narration into one key stream (reused as both sidechain + final voice)
+    if len(key_labels) > 1:
+        lines.append(''.join(key_labels) +
+                     f"amix=inputs={len(key_labels)}:dropout_transition=0:normalize=0[key]")
+        key = '[key]'
+    else:
+        lines.append(f"{key_labels[0]}anull[key]")
+        key = '[key]'
+    lines.append(f"{key}asplit=2[keymix][keysc]")
+    # 2) mix all the duckable (music/fx) streams into one bed
+    if len(other_labels) > 1:
+        lines.append(''.join(other_labels) +
+                     f"amix=inputs={len(other_labels)}:dropout_transition=0:normalize=0[bed]")
+    else:
+        lines.append(f"{other_labels[0]}anull[bed]")
+    # 3) compress the bed, keyed by the narration sidechain
+    lines.append(f"[bed][keysc]sidechaincompress=threshold={thr:.4f}:ratio={amt:.2f}"
+                 f":attack=20:release=250[ducked]")
+    # 4) mix the (now-ducked) bed back with the narration
+    lines.append(f"[keymix][ducked]amix=inputs=2:dropout_transition=0:normalize=0{out}")
+    return lines
+
+
 # overlay blend modes (MoviePlus "Blend Modes")
 BLEND_MODES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
                'addition', 'difference', 'hardlight', 'softlight']
@@ -601,6 +742,7 @@ def new_clip(src, kind, info=None):
         'id': cid, 'src': src, 'kind': kind, 'name': os.path.basename(src) if src else 'Title',
         'start': 0.0, 'dur': float(dur), 'in': 0.0, 'src_dur': float(dur),
         'volume': 1.0, 'pan': 0.0, 'fade_in': 0.0, 'fade_out': 0.0,
+        'audio_fx': [],     # stackable audio-effect list: [{'type':..,params..}, ...]
         'transition': {'type': 'none', 'dur': 1.0},
         'kenburns': None, 'chroma': None, 'opacity': 1.0, 'opacity_to': None, 'speed': 1.0,
         'adjust': None,   # {'brightness':0,'contrast':1,'saturation':1,'gamma':1}
@@ -1039,7 +1181,8 @@ class RenderWorker(QThread):
 
     def _audio(self, tmp, total):
         """Collect audio from every audio-bearing clip, place at its start, mix."""
-        srcs = []  # clip dicts that carry audio
+        srcs = []       # clip dicts that carry audio
+        src_track = []  # parallel: the track id each src came from (for ducking)
         for t in self.proj['tracks']:
             for c in t['clips']:
                 k = c['kind']
@@ -1049,7 +1192,7 @@ class RenderWorker(QThread):
                     continue
                 if float(c.get('volume', 1.0)) <= 0:
                     continue
-                srcs.append(c)
+                srcs.append(c); src_track.append(t.get('id'))
         if not srcs:
             return None
         inputs = []
@@ -1080,14 +1223,27 @@ class RenderWorker(QThread):
                 chain += f",afade=t=in:st=0:d={fi:.3f}"
             if fo > 0:
                 chain += f",afade=t=out:st={max(0,dur-fo):.3f}:d={fo:.3f}"
+            afx = clip_audio_fx(c)   # per-clip audio effect stack (bass/eq/echo/…)
+            if afx:
+                chain += ',' + afx
             delay = int(start * 1000)
             if delay > 0:
                 chain += f",adelay={delay}|{delay}"
             lbl = f'[a{i}]'
             fc.append(chain + lbl)
             labels.append(lbl)
-        mix = ''.join(labels) + f"amix=inputs={len(labels)}:dropout_transition=0:normalize=0[aout]"
-        fc.append(mix)
+        duck = ducking_cfg(self.proj)
+        graph = None
+        if duck and len(labels) > 1:
+            key_id = duck.get('key_track')
+            key_labels = [l for l, tid in zip(labels, src_track) if tid == key_id]
+            other_labels = [l for l, tid in zip(labels, src_track) if tid != key_id]
+            graph = ducking_filtergraph(key_labels, other_labels, duck)
+        if graph is not None:
+            fc.extend(graph)   # sidechaincompress-based mix (music ducked under voice)
+        else:                  # default / legacy: plain amix, unchanged
+            fc.append(''.join(labels) +
+                      f"amix=inputs={len(labels)}:dropout_transition=0:normalize=0[aout]")
         out = os.path.join(tmp, 'audio.m4a')
         self._run_ff(inputs + ['-filter_complex', ';'.join(fc), '-map', '[aout]',
                               '-t', f'{total:.3f}', '-c:a', 'aac', '-b:a', '192k', out])
@@ -1515,6 +1671,129 @@ class EffectStackEditor(QWidget):
             self.entries[i][k] = wdg.currentData() if isinstance(wdg, QComboBox) else wdg.value()
 
 
+class AudioFxEditor(QWidget):
+    """Reorderable audio-effect stack editor (bass/treble/eq/echo/compressor/…),
+    a sibling of EffectStackEditor for clip['audio_fx']. All types are parametric."""
+
+    _DEFAULTS = {
+        'bass': {'gain_db': 6.0}, 'treble': {'gain_db': 6.0},
+        'highpass': {'freq': 80.0}, 'lowpass': {'freq': 8000.0},
+        'echo': {'delay_ms': 500.0, 'decay': 0.5},
+        'compress': {'threshold': 0.125, 'ratio': 2.0},
+        'equalizer': {'freq': 1000.0, 'width': 200.0, 'gain_db': 6.0},
+        'tempo': {'tempo': 1.0},
+    }
+
+    def __init__(self, entries, parent=None):
+        super().__init__(parent)
+        self.entries = [dict(e) for e in entries if isinstance(e, dict)]
+        v = QVBoxLayout(self); v.setContentsMargins(0, 0, 0, 0)
+        self.list = QListWidget(); self.list.setMaximumHeight(90); v.addWidget(self.list)
+        row = QHBoxLayout()
+        self.pick = QComboBox()
+        for k, lbl in AUDIO_FX:
+            self.pick.addItem(lbl, k)
+        row.addWidget(self.pick, 1)
+        for txt, fn in (('Add', self._add), ('Remove', self._remove),
+                        ('↑', self._up), ('↓', self._down)):
+            b = QPushButton(txt); b.clicked.connect(fn)
+            b.setMaximumWidth(64 if txt in ('Add', 'Remove') else 32); row.addWidget(b)
+        v.addLayout(row)
+        self.panel_box = QGroupBox('Settings'); self.panel_box.setVisible(False)
+        self.panels = QStackedWidget(); pv = QVBoxLayout(self.panel_box); pv.addWidget(self.panels)
+        self._panel_idx = {}; self._fields = {}
+        for k, _ in AUDIO_FX:
+            self.panels.addWidget(self._build_panel(k))
+            self._panel_idx[k] = self.panels.count() - 1
+        v.addWidget(self.panel_box)
+        self.list.currentRowChanged.connect(self._sel_changed)
+        self._refresh(); self.list.setCurrentRow(0 if self.entries else -1)
+
+    def result(self):
+        return [dict(e) for e in self.entries]
+
+    def _refresh(self):
+        self.list.blockSignals(True); self.list.clear()
+        for e in self.entries:
+            self.list.addItem(AUDIO_FX_LBL.get(e.get('type'), e.get('type', '?')))
+        self.list.blockSignals(False)
+
+    def _add(self):
+        t = self.pick.currentData()
+        e = {'type': t}; e.update(self._DEFAULTS.get(t, {}))
+        self.entries.append(e); self._refresh(); self.list.setCurrentRow(len(self.entries) - 1)
+
+    def _remove(self):
+        i = self.list.currentRow()
+        if 0 <= i < len(self.entries):
+            self.entries.pop(i); self._refresh(); self.list.setCurrentRow(min(i, len(self.entries) - 1))
+
+    def _move(self, d):
+        i = self.list.currentRow(); j = i + d
+        if 0 <= i < len(self.entries) and 0 <= j < len(self.entries):
+            self.entries[i], self.entries[j] = self.entries[j], self.entries[i]
+            self._refresh(); self.list.setCurrentRow(j)
+
+    def _up(self): self._move(-1)
+    def _down(self): self._move(1)
+
+    def _sel_changed(self, i):
+        if not (0 <= i < len(self.entries)):
+            self.panel_box.setVisible(False); return
+        t = self.entries[i].get('type')
+        if t in self._panel_idx:
+            self.panels.setCurrentIndex(self._panel_idx[t]); self._load_panel(t, self.entries[i])
+            self.panel_box.setVisible(True); self.panel_box.setTitle(AUDIO_FX_LBL.get(t, t))
+        else:
+            self.panel_box.setVisible(False)
+
+    def _spin(self, lo, hi, step, val, dec=2):
+        s = QDoubleSpinBox(); s.setRange(lo, hi); s.setSingleStep(step); s.setDecimals(dec)
+        s.setValue(val); s.valueChanged.connect(self._write_back); return s
+
+    def _build_panel(self, t):
+        w = QWidget(); f = QFormLayout(w); f.setContentsMargins(4, 4, 4, 4)
+        fl = self._fields[t] = {}
+        if t in ('bass', 'treble'):
+            fl['gain_db'] = self._spin(-30, 30, 1, 6.0, 1); f.addRow('Gain (dB)', fl['gain_db'])
+        elif t == 'highpass':
+            fl['freq'] = self._spin(1, 24000, 10, 80.0, 1); f.addRow('Frequency (Hz)', fl['freq'])
+        elif t == 'lowpass':
+            fl['freq'] = self._spin(1, 24000, 10, 8000.0, 1); f.addRow('Frequency (Hz)', fl['freq'])
+        elif t == 'echo':
+            fl['delay_ms'] = self._spin(1, 5000, 10, 500.0, 1); f.addRow('Delay (ms)', fl['delay_ms'])
+            fl['decay'] = self._spin(0, 0.9, 0.05, 0.5, 3); f.addRow('Decay', fl['decay'])
+        elif t == 'compress':
+            fl['threshold'] = self._spin(0, 1, 0.01, 0.125, 4); f.addRow('Threshold', fl['threshold'])
+            fl['ratio'] = self._spin(1, 20, 0.5, 2.0, 2); f.addRow('Ratio', fl['ratio'])
+        elif t == 'equalizer':
+            fl['freq'] = self._spin(1, 24000, 10, 1000.0, 1); f.addRow('Frequency (Hz)', fl['freq'])
+            fl['width'] = self._spin(1, 24000, 10, 200.0, 1); f.addRow('Width (Hz)', fl['width'])
+            fl['gain_db'] = self._spin(-30, 30, 1, 6.0, 1); f.addRow('Gain (dB)', fl['gain_db'])
+        elif t == 'tempo':
+            fl['tempo'] = self._spin(0.5, 2.0, 0.05, 1.0, 3); f.addRow('Tempo ×', fl['tempo'])
+        return w
+
+    def _load_panel(self, t, e):
+        self._loading = True
+        for k, wdg in self._fields[t].items():
+            try:
+                wdg.setValue(float(e.get(k, wdg.value())))
+            except (TypeError, ValueError):
+                pass
+        self._loading = False
+
+    def _write_back(self, *_):
+        if getattr(self, '_loading', False):
+            return
+        i = self.list.currentRow()
+        if not (0 <= i < len(self.entries)):
+            return
+        t = self.entries[i].get('type')
+        for k, wdg in self._fields.get(t, {}).items():
+            self.entries[i][k] = wdg.value()
+
+
 # ===================================================================== clip properties dialog
 class ClipDialog(QDialog):
     def __init__(self, clip, main, parent=None):
@@ -1595,6 +1874,9 @@ class ClipDialog(QDialog):
             self.speed = QDoubleSpinBox(); self.speed.setRange(0.1, 10.0); self.speed.setSingleStep(0.25)
             self.speed.setValue(clip.get('speed', 1.0)); self.speed.setSuffix(' ×  (0.5 = slow-mo)')
             form.addRow('Speed', self.speed)
+            afx = clip.get('audio_fx')
+            self.afxstack = AudioFxEditor(afx if isinstance(afx, list) else [])
+            form.addRow('Audio effects', self.afxstack)
 
         if clip['kind'] in ('video', 'image', 'color'):
             self.fxstack = EffectStackEditor(clip_effects(clip))
@@ -1714,6 +1996,7 @@ class ClipDialog(QDialog):
                 c['dur'] = self.dur.value() + new_hold
         if c['kind'] in ('video', 'audio'):
             c['volume'] = self.vol.value(); c['pan'] = self.pan.value(); c['speed'] = self.speed.value()
+            c['audio_fx'] = self.afxstack.result()
         if c['kind'] == 'color':
             c['color'] = self.ccol._color; c['name'] = 'Colour'
         if c['kind'] in ('video', 'image', 'color'):
@@ -2199,11 +2482,27 @@ class Main(QMainWindow):
         fps = QComboBox(); [fps.addItem(str(f), f) for f in (24, 25, 30, 60)]
         fps.setCurrentText(str(self.proj['fps']))
         form.addRow('Frame rate', fps)
+        # auto-ducking: lower music under the chosen narration/voice track
+        dk = self.proj.get('ducking') or {}
+        duck_on = QCheckBox('Duck music under narration (sidechain)')
+        duck_on.setChecked(bool(dk.get('enabled')))
+        form.addRow('Auto-ducking', duck_on)
+        key_cb = QComboBox()
+        for t in self.proj['tracks']:
+            key_cb.addItem(f"{t.get('name', t.get('id'))} ({t.get('id')})", t.get('id'))
+        ki = key_cb.findData(dk.get('key_track'))
+        if ki >= 0:
+            key_cb.setCurrentIndex(ki)
+        form.addRow('Narration (key) track', key_cb)
+        amt = QDoubleSpinBox(); amt.setRange(1, 36); amt.setValue(float(dk.get('amount_db', 12) or 12))
+        amt.setSuffix(' dB'); form.addRow('Duck amount', amt)
         bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); form.addRow(bb)
         if dlg.exec() == QDialog.Accepted:
             w, h = res.currentData(); self.proj['width'] = w; self.proj['height'] = h
             self.proj['fps'] = fps.currentData()
+            self.proj['ducking'] = {'enabled': duck_on.isChecked(), 'key_track': key_cb.currentData(),
+                                    'amount_db': amt.value(), 'threshold': 0.05}
             self.refresh_still(); self.push_undo()
 
     # -- undo/redo (whole-project snapshots) -----------------------------------
