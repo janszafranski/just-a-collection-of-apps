@@ -9,7 +9,8 @@ try:
                                    QFileDialog, QMessageBox, QSpinBox, QLabel, QInputDialog,
                                    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QComboBox,
                                    QSlider, QCheckBox, QFormLayout, QDialogButtonBox,
-                                   QDockWidget, QListWidget, QListWidgetItem)
+                                   QDockWidget, QListWidget, QListWidgetItem,
+                                   QGroupBox, QDoubleSpinBox)
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QCursor, QFont, QPainterPath, QActionGroup,
                                QLinearGradient, QRadialGradient, QConicalGradient, QPolygonF,
@@ -22,7 +23,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.21-00"
+VERSION = "1.22-00"
 
 
 # ===================================================================== font grouping
@@ -2236,7 +2237,149 @@ BLENDS = {
     'darken': QPainter.CompositionMode_Darken, 'lighten': QPainter.CompositionMode_Lighten,
     'add': QPainter.CompositionMode_Plus, 'difference': QPainter.CompositionMode_Difference,
 }
-BLEND_NAMES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'add', 'difference']
+# Modes Qt can't do natively — composited by hand via blend_arrays() (NumPy). The
+# first eight above stay on the fast Qt CompositionMode path and are byte-identical.
+NP_BLENDS = ['soft-light', 'hard-light', 'color-dodge', 'color-burn', 'linear-burn',
+             'linear-light', 'vivid-light', 'pin-light', 'exclusion', 'subtract', 'divide',
+             'hue', 'saturation', 'color', 'luminosity']
+BLEND_NAMES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten', 'add',
+               'difference'] + NP_BLENDS
+
+
+# ---- NumPy compositing (PhotoPlus blend modes Qt lacks) --------------------
+def _hsl_lum(c):
+    """Luma of RGB float array (…,3) per the W3C non-separable blend spec."""
+    return 0.3 * c[..., 0] + 0.59 * c[..., 1] + 0.11 * c[..., 2]
+
+
+def _hsl_set_lum(c, lum):
+    """Return c (…,3) shifted so its luma equals `lum` (…), clipped into gamut."""
+    d = (lum - _hsl_lum(c))[..., None]
+    c = c + d
+    l = _hsl_lum(c)[..., None]
+    mn = c.min(axis=-1, keepdims=True); mx = c.max(axis=-1, keepdims=True)
+    lo = l + (c - l) * l / _np.where(l - mn == 0, 1.0, l - mn)
+    hi = l + (c - l) * (1.0 - l) / _np.where(mx - l == 0, 1.0, mx - l)
+    c = _np.where(mn < 0, lo, c)
+    c = _np.where(mx > 1, hi, c)
+    return c
+
+
+def _hsl_sat(c):
+    return c.max(axis=-1) - c.min(axis=-1)
+
+
+def _hsl_set_sat(c, sat):
+    """Scale c (…,3) so its mid/max/min span equals `sat` (…), per W3C SetSat."""
+    c = c.copy(); sat = sat[..., None]
+    mn = c.min(axis=-1, keepdims=True); mx = c.max(axis=-1, keepdims=True)
+    span = mx - mn
+    scaled = _np.where(span == 0, 0.0, (c - mn) * sat / _np.where(span == 0, 1.0, span))
+    return scaled  # min→0, max→sat, mid interpolated
+
+
+def blend_arrays(base, top, mode):
+    """Blend two RGB float arrays (…,3) in 0..1 by `mode`, returning a new RGB array.
+    `base` is the backdrop, `top` the layer painted over it. Separable modes act
+    channel-wise; hue/saturation/color/luminosity are the W3C non-separable modes."""
+    b = base; s = top
+    if mode == 'soft-light':                    # W3C formula
+        d = _np.where(b <= 0.25, ((16 * b - 12) * b + 4) * b, _np.sqrt(_np.clip(b, 0, 1)))
+        r = _np.where(s <= 0.5, b - (1 - 2 * s) * b * (1 - b),
+                      b + (2 * s - 1) * (d - b))
+    elif mode == 'hard-light':                  # overlay with layers swapped
+        r = _np.where(s <= 0.5, 2 * b * s, 1 - 2 * (1 - b) * (1 - s))
+    elif mode == 'color-dodge':
+        r = _np.where(s >= 1, 1.0, _np.minimum(1.0, b / (1 - s + 1e-12)))
+        r = _np.where(b <= 0, 0.0, r)
+    elif mode == 'color-burn':
+        r = _np.where(s <= 0, 0.0, 1 - _np.minimum(1.0, (1 - b) / (s + 1e-12)))
+        r = _np.where(b >= 1, 1.0, r)
+    elif mode == 'linear-burn':
+        r = b + s - 1
+    elif mode == 'linear-light':
+        r = b + 2 * s - 1
+    elif mode == 'vivid-light':                 # dodge/burn by the layer
+        burn = _np.where(s <= 0, 0.0, 1 - _np.minimum(1.0, (1 - b) / (2 * s + 1e-12)))
+        dodge = _np.where(s >= 1, 1.0, _np.minimum(1.0, b / (2 * (1 - s) + 1e-12)))
+        r = _np.where(s <= 0.5, burn, dodge)
+    elif mode == 'pin-light':
+        r = _np.where(s > 0.5, _np.maximum(b, 2 * s - 1), _np.minimum(b, 2 * s))
+    elif mode == 'exclusion':
+        r = b + s - 2 * b * s
+    elif mode == 'subtract':
+        r = b - s
+    elif mode == 'divide':
+        r = _np.minimum(1.0, b / (s + 1e-12))
+    elif mode in ('hue', 'saturation', 'color', 'luminosity'):
+        if mode == 'hue':
+            r = _hsl_set_lum(_hsl_set_sat(s, _hsl_sat(b)), _hsl_lum(b))
+        elif mode == 'saturation':
+            r = _hsl_set_lum(_hsl_set_sat(b, _hsl_sat(s)), _hsl_lum(b))
+        elif mode == 'color':
+            r = _hsl_set_lum(s, _hsl_lum(b))
+        else:  # luminosity
+            r = _hsl_set_lum(b, _hsl_lum(s))
+    else:
+        r = s                                   # unknown → plain normal
+    return _np.clip(r, 0.0, 1.0)
+
+
+def composite_np(base_q, top_q, mode, opacity):
+    """Composite the top QImage over the base QImage (both ARGB32, same size) using a
+    NumPy blend `mode` at `opacity` (0..1), honouring the top layer's own alpha. The
+    blended colour is formed per the W3C rule  out = (1-αs)·Cb + αs·B(Cb,Cs),  then
+    alpha-composited over the backdrop so transparent top pixels leave the base shown.
+    Returns a NEW ARGB32 QImage."""
+    base = _np.asarray(q2pil(base_q).convert('RGBA')).astype(_np.float32) / 255.0
+    tp = _np.asarray(q2pil(top_q).convert('RGBA')).astype(_np.float32) / 255.0
+    cb, ab = base[..., :3], base[..., 3:4]
+    cs, as_ = tp[..., :3], tp[..., 3:4] * float(opacity)
+    blended = blend_arrays(cb, cs, mode)                 # B(Cb, Cs)
+    # colour the top "paints" = mix of straight layer colour and the blended result,
+    # weighted by how opaque the backdrop is underneath (W3C: Cs = (1-ab)·Cs + ab·B)
+    src = (1.0 - ab) * cs + ab * blended
+    out_a = as_ + ab * (1.0 - as_)
+    out_rgb = _np.where(out_a > 0, (as_ * src + ab * (1.0 - as_) * cb) / _np.where(out_a > 0, out_a, 1.0), 0.0)
+    out = _np.concatenate([out_rgb, out_a], axis=-1)
+    return pil2q(Image.fromarray((_np.clip(out, 0, 1) * 255.0 + 0.5).astype('uint8'), 'RGBA'))
+
+
+# ---- Gradient Map adjustment -----------------------------------------------
+def _stops_lut(stops):
+    """Build a 256x3 uint8 LUT by sampling a sorted multi-stop gradient
+    ([{pos 0..1, color '#rrggbb'}]) across luminance 0..255. Dark→first, light→last."""
+    ss = sorted(stops, key=lambda s: max(0.0, min(1.0, float(s['pos']))))
+    pos = [max(0.0, min(1.0, float(s['pos']))) for s in ss]
+    cols = [QColor(s['color']) for s in ss]
+    xs = _np.arange(256) / 255.0
+    r = _np.interp(xs, pos, [c.red() for c in cols])
+    g = _np.interp(xs, pos, [c.green() for c in cols])
+    b = _np.interp(xs, pos, [c.blue() for c in cols])
+    return _np.stack([r, g, b], axis=1).round().clip(0, 255).astype(_np.uint8)
+
+
+def adj_gradientmap(stops):
+    """Map image luminance through a colour gradient: build a 256-entry LUT from
+    `stops`, index it by each pixel's luma. Preserves alpha."""
+    lut = _stops_lut(stops)
+
+    def f(p):
+        a = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        y = _luma(a).round().clip(0, 255).astype(_np.intp)
+        return _merge_a(p, Image.fromarray(lut[y], 'RGB'))
+    return f
+
+
+GRADMAP_PRESETS = {
+    'Black → White': [{'pos': 0.0, 'color': '#000000'}, {'pos': 1.0, 'color': '#ffffff'}],
+    'Sepia duotone': [{'pos': 0.0, 'color': '#1b1008'}, {'pos': 0.5, 'color': '#8a5a2b'},
+                      {'pos': 1.0, 'color': '#f5e6c8'}],
+    'Cold → Warm': [{'pos': 0.0, 'color': '#0b1e4d'}, {'pos': 0.5, 'color': '#b14b7a'},
+                    {'pos': 1.0, 'color': '#ffd27f'}],
+    'Violet → Lime': [{'pos': 0.0, 'color': '#2a0845'}, {'pos': 0.5, 'color': '#6441a5'},
+                      {'pos': 1.0, 'color': '#c6f432'}],
+}
 
 
 class Layer:
@@ -2325,6 +2468,13 @@ class Canvas(QWidget):
         p = QPainter(base)
         for l in self.layers:
             if not l.visible or l.opacity <= 0: continue
+            if HAS_PIL and l.blend in NP_BLENDS:
+                # NumPy blend: hand the accumulator + this layer to composite_np, then
+                # resume drawing onto the result. Qt-native modes keep the fast path.
+                p.end()
+                base = composite_np(base, l.masked_img(), l.blend, l.opacity)
+                p = QPainter(base)
+                continue
             p.setOpacity(l.opacity)
             p.setCompositionMode(BLENDS.get(l.blend, QPainter.CompositionMode_SourceOver))
             p.drawImage(0, 0, l.masked_img())
@@ -2433,9 +2583,12 @@ class Canvas(QWidget):
             # bake the bottom layer's own mask in first, then the (masked) top over it
             if bot.mask is not None:
                 bot.img = bot.masked_img(); bot.mask = None
-            p = QPainter(bot.img); p.setOpacity(top.opacity)
-            p.setCompositionMode(BLENDS.get(top.blend, QPainter.CompositionMode_SourceOver))
-            p.drawImage(0, 0, top.masked_img()); p.end()
+            if HAS_PIL and top.blend in NP_BLENDS:
+                bot.img = composite_np(bot.img, top.masked_img(), top.blend, top.opacity)
+            else:
+                p = QPainter(bot.img); p.setOpacity(top.opacity)
+                p.setCompositionMode(BLENDS.get(top.blend, QPainter.CompositionMode_SourceOver))
+                p.drawImage(0, 0, top.masked_img()); p.end()
         del self.layers[self.active]; self.active -= 1; self.update(); self.win.refresh_layers()
 
     # ---- layer masks ----
@@ -4740,6 +4893,89 @@ class CurvesDialog(QDialog):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
 
 
+class GradientMapDialog(QDialog):
+    """Adjust ▸ Gradient Map — maps image luminance through a multi-stop colour ramp
+    (dark→first stop, light→last). A preset picker plus an add/remove/reposition/recolour
+    stop editor, live-previewed and selection-aware in AdjustDialog's spirit."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Gradient Map'); self.setMinimumWidth(340)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()
+        self.stops = [dict(s) for s in GRADMAP_PRESETS['Black → White']]
+        v = QVBoxLayout(self)
+        prow = QHBoxLayout(); prow.addWidget(QLabel('Preset:'))
+        self.preset_cb = QComboBox(); self.preset_cb.addItems(list(GRADMAP_PRESETS))
+        self.preset_cb.activated.connect(self._load_preset); prow.addWidget(self.preset_cb, 1)
+        v.addLayout(prow)
+        self.bar = QLabel(); self.bar.setFixedHeight(18); v.addWidget(self.bar)
+        box = QGroupBox('Colour stops'); bl = QVBoxLayout(box)
+        self.rows_host = QWidget(); self.rows_lay = QVBoxLayout(self.rows_host)
+        self.rows_lay.setContentsMargins(0, 0, 0, 0); bl.addWidget(self.rows_host)
+        add = QPushButton('Add stop'); add.clicked.connect(self._add_stop); bl.addWidget(add)
+        v.addWidget(box)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._rebuild()
+
+    def _load_preset(self, i):
+        self.stops = [dict(s) for s in GRADMAP_PRESETS[self.preset_cb.itemText(i)]]
+        self._rebuild()
+
+    def _add_stop(self):
+        self.stops.append(dict(pos=0.5, color='#888888')); self._rebuild()
+
+    def _rebuild(self):
+        while self.rows_lay.count():
+            it = self.rows_lay.takeAt(0); w = it.widget()
+            if w: w.setParent(None)
+        def tint(btn, st):
+            c = QColor(st['color']); btn.setStyleSheet(
+                f'background:{c.name()};color:{"#fff" if c.lightness() < 140 else "#000"}')
+        for i, st in enumerate(self.stops):
+            row = QWidget(); rl = QHBoxLayout(row); rl.setContentsMargins(0, 0, 0, 0)
+            pos = QDoubleSpinBox(); pos.setRange(0.0, 1.0); pos.setSingleStep(0.05); pos.setDecimals(2)
+            pos.setValue(float(st['pos']))
+            pos.valueChanged.connect(lambda val, s=st: (s.__setitem__('pos', val), self._apply()))
+            cb = QPushButton('Colour'); tint(cb, st)
+            def mkpick(s, b):
+                def go():
+                    c = QColorDialog.getColor(QColor(s['color']), self, 'Stop colour')
+                    if c.isValid(): s['color'] = c.name(); tint(b, s); self._apply()
+                return go
+            cb.clicked.connect(mkpick(st, cb))
+            rm = QPushButton('✕'); rm.setFixedWidth(28); rm.setEnabled(len(self.stops) > 2)
+            def mkremove(s):
+                def go():
+                    if len(self.stops) > 2: self.stops.remove(s); self._rebuild()
+                return go
+            rm.clicked.connect(mkremove(st))
+            rl.addWidget(QLabel(f'{i + 1}.')); rl.addWidget(pos, 1); rl.addWidget(cb, 1); rl.addWidget(rm)
+            self.rows_lay.addWidget(row)
+        self._apply()
+
+    def _preview_bar(self):
+        lut = _stops_lut(self.stops)                 # 256x3; stretch across the label
+        strip = _np.repeat(lut[None, :, :], 16, axis=0)
+        self.bar.setPixmap(QPixmap.fromImage(
+            pil2q(Image.fromarray(strip, 'RGB')).scaled(self.bar.width() or 300, 16)))
+
+    def _apply(self):
+        self._preview_bar()
+        try:
+            self.canvas.img = self.canvas._apply_to(self.base, adj_gradientmap(self.stops))
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+
+    def accept(self):
+        self.canvas.push_undo_layer(self.active_idx, self.base); super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
 class ExportDialog(QDialog):
     """File ▸ Export… — pick a format (PNG/JPEG/WEBP/GIF/BMP), a quality for the lossy
     ones with a live estimated file size, and (PNG) a transparency toggle. Writes via
@@ -5252,6 +5488,7 @@ class Main(QMainWindow):
         adj.addAction(self.act('Colour &Balance…', self.dlg_colorbalance))
         adj.addAction(self.act('&Threshold…', self.dlg_threshold))
         adj.addAction(self.act('&Posterize…', self.dlg_posterize))
+        adj.addAction(self.act('&Gradient Map…', self.dlg_gradientmap))
         adj.addSeparator()
         adj.addAction(self.act('Auto &Contrast', lambda: self.canvas.apply_region(adj_autocontrast)))
         adj.addAction(self.act('&Equalize', lambda: self.canvas.apply_region(adj_equalize)))
@@ -5625,6 +5862,10 @@ class Main(QMainWindow):
         if self._need_pil():
             AdjustDialog(self, 'Posterize', [('b', 'Levels:', 1, 8, 4, 1.0)],
                          lambda v: adj_posterize(v['b'])).exec()
+
+    def dlg_gradientmap(self):
+        if self._need_pil():
+            GradientMapDialog(self).exec()
 
     def dlg_smooth_skin(self):
         """Open the Smooth Skin portrait-retouch studio (live preview on the canvas)."""
