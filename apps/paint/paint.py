@@ -22,7 +22,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.19-00"
+VERSION = "1.20-00"
 
 
 # ===================================================================== font grouping
@@ -424,6 +424,25 @@ def _feather_mask(binary, feather):
     soft = Image.fromarray(binary.astype('uint8'), 'L').filter(
         ImageFilter.GaussianBlur(float(feather)))
     return _np.asarray(soft).astype(_np.uint8)
+
+
+def points_to_mask(points, w, h):
+    """Rasterise a closed polygon (a list of (x,y) points) to a 0/255 uint8 HxW mask.
+    Shared by the Lasso (freehand) and Polygon selection tools — the result is adopted
+    as a mask selection exactly like the Magic wand's. Pure (no window): fills a
+    QPainterPath into a Grayscale8 QImage, then reads it back as NumPy. Fewer than 3
+    points (no area) yields an all-zero mask."""
+    m = _np.zeros((h, w), _np.uint8)
+    if not HAS_PIL or w <= 0 or h <= 0 or len(points) < 3:
+        return m
+    img = QImage(w, h, QImage.Format_Grayscale8); img.fill(0)
+    path = QPainterPath(); path.addPolygon(QPolygonF([QPointF(float(x), float(y)) for x, y in points]))
+    path.closeSubpath()
+    p = QPainter(img); p.setRenderHint(QPainter.Antialiasing, False)
+    p.setPen(Qt.NoPen); p.setBrush(QBrush(QColor(255, 255, 255))); p.drawPath(path); p.end()
+    buf = img.constBits()
+    arr = _np.frombuffer(buf, _np.uint8, count=img.bytesPerLine() * h).reshape(h, img.bytesPerLine())[:, :w]
+    return _np.where(arr > 127, 255, 0).astype(_np.uint8)
 
 
 def _smart_mask_fallback(rgb, keep, remove, feather=0):
@@ -1794,6 +1813,53 @@ def adj_hue(shift):
         return _merge_a(p, Image.fromarray(hsv.astype('uint8'), 'HSV').convert('RGB'))
     return f
 
+def adj_channelmixer(params):
+    """Full 3x3 channel mixer. `params` is a dict:
+        mono      -> bool; when True one weight set (mr/mg/mb + moff) drives R=G=B
+        rr,rg,rb,roff  -> Red-output   weights (% of each source) + constant (0..255)
+        gr,gg,gb,goff  -> Green-output weights + constant
+        br,bg,bb,boff  -> Blue-output  weights + constant
+        mr,mg,mb,moff  -> monochrome weights + constant (used only when mono)
+    Weights are percentages (-200..200 => -2.0..2.0). NumPy matrix multiply on the RGB
+    array, then clip to 0..255. Alpha is preserved via _merge_a."""
+    g = lambda k, d=0.0: float(params.get(k, d))
+    if params.get('mono'):
+        wr, wg, wb = g('mr', 40) / 100.0, g('mg', 40) / 100.0, g('mb', 20) / 100.0
+        mat = _np.array([[wr, wg, wb]] * 3, _np.float32)                 # same row ->R=G=B
+        off = _np.array([g('moff'), g('moff'), g('moff')], _np.float32)
+    else:
+        mat = _np.array([[g('rr', 100) / 100.0, g('rg') / 100.0, g('rb') / 100.0],
+                         [g('gr') / 100.0, g('gg', 100) / 100.0, g('gb') / 100.0],
+                         [g('br') / 100.0, g('bg') / 100.0, g('bb', 100) / 100.0]], _np.float32)
+        off = _np.array([g('roff'), g('goff'), g('boff')], _np.float32)
+
+    def f(p):
+        rgb = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        out = rgb @ mat.T + off                                          # (H,W,3)@(3,3)->(H,W,3)
+        out = _np.clip(out, 0, 255).astype('uint8')
+        return _merge_a(p, Image.fromarray(out, 'RGB'))
+    return f
+
+
+def adj_vibrance(amount):
+    """Vibrance: a smart saturation that boosts LOW-saturated pixels more than ones that
+    are already vivid (so skin tones and already-colourful areas are protected). `amount`
+    is -100..100. Per-pixel saturation s (0..1) is pushed by a gain scaled by (1 - s):
+    de-saturated pixels get (1+k) while fully-saturated pixels are left ~unchanged."""
+    k = float(amount) / 100.0
+
+    def f(p):
+        rgb = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        mx = rgb.max(axis=2); mn = rgb.min(axis=2)
+        s = _np.where(mx > 0, (mx - mn) / _np.maximum(mx, 1.0), 0.0)     # HSV saturation 0..1
+        y = _luma(rgb)                                                   # grey axis to scale about
+        gain = 1.0 + k * (1.0 - s)                                       # less boost where s is high
+        out = y[..., None] + (rgb - y[..., None]) * gain[..., None]
+        out = _np.clip(out, 0, 255).astype('uint8')
+        return _merge_a(p, Image.fromarray(out, 'RGB'))
+    return f
+
+
 def adj_curves(lut, channel='rgb'):
     """Apply a 256-entry LUT (a list/array of 0..255) via Pillow point(). channel is
     'rgb' (all channels / luma-style) or 'r'/'g'/'b' for a single channel."""
@@ -2148,12 +2214,16 @@ class Canvas(QWidget):
         # intermediate values = feathered edge)}. sel_mask() turns any of them into a mask.
         self.sel = None
         self.sel_drag = None           # (start, cur) while dragging a marquee
+        self.lasso_pts = None          # [QPoint,...] while dragging a freehand Lasso
+        self.poly_pts = None           # [QPoint,...] vertices placed by the Polygon tool
+        self.poly_cur = None           # live cursor point for the Polygon rubber line
         self.clone_src = None          # clone-tool source anchor (Ctrl-click)
         self.clone_off = None          # clone offset once a stroke begins
         self.clone_base = None         # snapshot of the layer cloned FROM
         self.undo, self.redo = [], []
         self.setCursor(Qt.CrossCursor)
         self.setMouseTracking(True)
+        self.setFocusPolicy(Qt.StrongFocus)     # so the Polygon tool can get Enter/Escape
         self._fit()
 
     # ---- layers ----
@@ -2414,6 +2484,22 @@ class Canvas(QWidget):
             elif tool == 'gradient':
                 gp = QPen(QColor('#000'), 1, Qt.DashLine); gp.setCosmetic(True); p.setPen(gp); p.drawLine(a, b)
             p.restore()
+        if self.lasso_pts or self.poly_pts:              # live freehand / polygon outline
+            p.save(); p.scale(self.zoom, self.zoom)
+            if self.lasso_pts:
+                poly = QPolygonF([QPointF(pt) for pt in self.lasso_pts])
+            else:
+                pts = list(self.poly_pts)
+                if self.poly_cur is not None: pts = pts + [self.poly_cur]
+                poly = QPolygonF([QPointF(pt) for pt in pts])
+            for col, style in ((QColor('#ffffff'), Qt.SolidLine), (QColor('#000000'), Qt.DashLine)):
+                pen = QPen(col, 1, style); pen.setCosmetic(True); p.setPen(pen); p.setBrush(Qt.NoBrush)
+                p.drawPolyline(poly)
+            if self.poly_pts:                            # dots on placed vertices
+                p.setPen(Qt.NoPen); p.setBrush(QColor('#ffffff'))
+                for pt in self.poly_pts:
+                    p.drawEllipse(QPointF(pt), 2.5 / self.zoom, 2.5 / self.zoom)
+            p.restore()
         if self.sel and self.sel.get('kind') == 'mask' and not self.sel_drag:
             ov = self._mask_overlay()
             if ov is not None:
@@ -2495,6 +2581,13 @@ class Canvas(QWidget):
                 f = QFont(fam); f.setPixelSize(px); p.setFont(f)
                 p.drawText(QPointF(pos.x(), pos.y()), txt); p.end(); self.update()
             return
+        if self.tool == 'lasso':                         # freehand selection — not an image edit
+            self.lasso_pts = [pos]; self.update(); return
+        if self.tool == 'polyselect':                    # click to drop a vertex
+            pts = self.poly_pts or []
+            if len(pts) >= 3 and (pos - pts[0]).manhattanLength() <= max(6, int(8 / self.zoom)):
+                self._pts_to_sel(pts); self.poly_pts = None; self.poly_cur = None; self.update(); return
+            pts.append(pos); self.poly_pts = pts; self.poly_cur = pos; self.update(); return
         if self.tool in ('mrect', 'mellipse'):          # marquee selection — not an image edit
             self.start = pos; self.sel_drag = (pos, pos); self.update(); return
         if self.tool == 'clone' and (e.modifiers() & Qt.ControlModifier):
@@ -2529,7 +2622,11 @@ class Canvas(QWidget):
                 self._sm_paint(self.last, pos, getattr(self, '_sm_active', self.sm_mode))
                 self.last = pos
             return
+        if self.tool == 'polyselect' and self.poly_pts:   # live rubber line to the cursor
+            self.poly_cur = pos; self.update(); return
         if not (e.buttons() & Qt.LeftButton): return
+        if self.tool == 'lasso' and self.lasso_pts is not None:
+            self.lasso_pts.append(pos); self.update(); return
         if self.tool in ('brush', 'eraser', 'dodge', 'burn', 'clone', 'oil', 'smudge') and self.last is not None:
             self._stroke(self.last, pos); self.last = pos; self.update()
         elif self.tool in ('line', 'rect', 'ellipse', 'gradient') and self.start is not None:
@@ -2542,6 +2639,11 @@ class Canvas(QWidget):
             self.last = None; return
         if e.button() != Qt.LeftButton: return
         pos = self.img_pos(e)
+        if self.tool == 'lasso' and self.lasso_pts is not None:
+            self.lasso_pts.append(pos)
+            if len(self.lasso_pts) >= 3:
+                self._pts_to_sel(self.lasso_pts)
+            self.lasso_pts = None; self.update(); return
         if self.tool in ('mrect', 'mellipse') and self.start is not None:
             r = QRect(self.start, pos).normalized()
             self.sel = ({'rect': r, 'kind': 'ellipse' if self.tool == 'mellipse' else 'rect'}
@@ -2571,6 +2673,25 @@ class Canvas(QWidget):
         self.last = self.start = self.preview = None
         self.clone_base = None
         self.update()
+
+    def mouseDoubleClickEvent(self, e):
+        if self.tool == 'polyselect' and self.poly_pts:
+            self._close_poly()
+
+    def keyPressEvent(self, e):
+        if self.tool == 'polyselect' and self.poly_pts:
+            if e.key() in (Qt.Key_Return, Qt.Key_Enter):
+                self._close_poly(); return
+            if e.key() == Qt.Key_Escape:
+                self.poly_pts = None; self.poly_cur = None; self.update(); return
+        super().keyPressEvent(e)
+
+    def _close_poly(self):
+        """Close the in-progress Polygon selection -> mask selection (shared rasteriser)."""
+        pts = self.poly_pts or []
+        if len(pts) >= 3:
+            self._pts_to_sel(pts)
+        self.poly_pts = None; self.poly_cur = None; self.update()
 
     def _grad_brush(self, a, b):
         """A QLinearGradient for the gradient tool: start colour at the drag start,
@@ -2780,6 +2901,15 @@ class Canvas(QWidget):
         else:
             self.sel = {'kind': 'mask', 'mask': mask.astype(_np.uint8)}
         self.update()
+
+    def _pts_to_sel(self, pts):
+        """Rasterise a polygon of QPoints to a mask selection (Lasso / Polygon tools),
+        stored exactly like the wand's via set_mask_sel so feather/grow/invert/fill all
+        work unchanged. <3 points just clears any selection."""
+        if not HAS_PIL: return
+        w, h = self.img.width(), self.img.height()
+        mask = points_to_mask([(p.x(), p.y()) for p in pts], w, h)
+        self.set_mask_sel(mask)
 
     def _apply_to(self, src, func):
         """Return a NEW QImage: `src` with `func` (a pil->pil op) applied to the
@@ -3134,6 +3264,84 @@ class AdjustDialog(QDialog):
     def accept(self):
         self.canvas.push_undo_layer(self.active_idx, self.base)
         super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
+class ChannelMixerDialog(QDialog):
+    """Full 3x3 Channel Mixer with live canvas preview (PhotoPlus-style). An output-channel
+    picker (Red/Green/Blue) switches which set of source weights + constant the four sliders
+    edit; a Monochrome checkbox collapses to a single weight set driving R=G=B. All values
+    live in self.vals and are fed to adj_channelmixer. Mirrors AdjustDialog's apply/accept."""
+    OUT = [('r', 'Red'), ('g', 'Green'), ('b', 'Blue')]
+
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Channel Mixer'); self.setMinimumWidth(360)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()
+        # defaults: identity matrix (each output = 100% its own source), mono = greyscale-ish
+        self.vals = {'rr': 100, 'rg': 0, 'rb': 0, 'roff': 0,
+                     'gr': 0, 'gg': 100, 'gb': 0, 'goff': 0,
+                     'br': 0, 'bg': 0, 'bb': 100, 'boff': 0,
+                     'mr': 40, 'mg': 40, 'mb': 20, 'moff': 0}
+        v = QVBoxLayout(self)
+        self.mono_cb = QCheckBox('Monochrome'); self.mono_cb.toggled.connect(self._mono_toggled)
+        v.addWidget(self.mono_cb)
+        row = QHBoxLayout(); row.addWidget(QLabel('Output channel:'))
+        self.out_cb = QComboBox(); self.out_cb.addItems([n for _, n in self.OUT])
+        self.out_cb.currentIndexChanged.connect(self._reload)
+        row.addWidget(self.out_cb, 1); v.addLayout(row)
+        form = QFormLayout(); v.addLayout(form)
+        self.sliders = {}       # suffix ('r'/'g'/'b'/'off') -> (QSlider, QLabel)
+        for suf, label, lo, hi in (('r', 'Red source:', -200, 200), ('g', 'Green source:', -200, 200),
+                                   ('b', 'Blue source:', -200, 200), ('off', 'Constant:', -255, 255)):
+            s = QSlider(Qt.Horizontal); s.setRange(lo, hi)
+            val = QLabel(); val.setMinimumWidth(46); val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            s.valueChanged.connect(lambda _=0, k=suf: self._slider_changed(k))
+            rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+            holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250)
+            form.addRow(label, holder); self.sliders[suf] = (s, val)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._reload()
+
+    def _cur_prefix(self):
+        return 'm' if self.mono_cb.isChecked() else self.OUT[self.out_cb.currentIndex()][0]
+
+    def _mono_toggled(self, on):
+        self.out_cb.setEnabled(not on); self._reload()
+
+    def _reload(self):
+        """Load self.vals into the sliders for the currently-selected output set."""
+        self._loading = True
+        pre = self._cur_prefix()
+        for suf, (s, val) in self.sliders.items():
+            s.setValue(int(self.vals[pre + suf])); val.setText(f'{int(self.vals[pre + suf])}')
+        self._loading = False
+        self._apply()
+
+    def _slider_changed(self, suf):
+        if getattr(self, '_loading', False): return
+        pre = self._cur_prefix()
+        s, val = self.sliders[suf]
+        self.vals[pre + suf] = s.value(); val.setText(f'{s.value()}')
+        self._apply()
+
+    def _params(self):
+        p = dict(self.vals); p['mono'] = self.mono_cb.isChecked(); return p
+
+    def _apply(self):
+        try:
+            self.canvas.img = self.canvas._apply_to(self.base, adj_channelmixer(self._params()))
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+
+    def accept(self):
+        self.canvas.push_undo_layer(self.active_idx, self.base); super().accept()
 
     def reject(self):
         self.canvas.img = self.base; self.canvas._fit(); super().reject()
@@ -4681,6 +4889,8 @@ class Main(QMainWindow):
              ('oil', 'Oil brush — wet paint that blends (natural media)', '🎨'),
              ('smudge', 'Smudge / palette knife — drag and mix paint', '👆'),
              ('mrect', 'Select — rectangle', '⬚'), ('mellipse', 'Select — ellipse', '◌'),
+             ('lasso', 'Lasso — drag a freehand selection', '➰'),
+             ('polyselect', 'Polygon select — click vertices, double-click / Enter to close', '△'),
              ('wand', 'Magic wand — click to select by colour', '✦'),
              ('cutout', 'Cutout — click a background to erase it to transparency', '✂'),
              ('smartmask', 'Smart Mask — scribble KEEP (subject) / REMOVE (background), then Apply', '✎')]
@@ -4911,6 +5121,8 @@ class Main(QMainWindow):
         adj.addAction(self.act('&Levels…', self.dlg_levels))
         adj.addAction(self.act('Cur&ves…', self.dlg_curves))
         adj.addAction(self.act('&Hue / Saturation…', self.dlg_huesat))
+        adj.addAction(self.act('Vi&brance…', self.dlg_vibrance))
+        adj.addAction(self.act('Channel &Mixer…', self.dlg_channelmixer))
         adj.addAction(self.act('Colour &Temperature…', self.dlg_temperature))
         adj.addAction(self.act('Colour &Balance…', self.dlg_colorbalance))
         adj.addAction(self.act('&Threshold…', self.dlg_threshold))
@@ -5090,7 +5302,12 @@ class Main(QMainWindow):
 
     # ---- state ----
     def set_tool(self, t):
+        if t != 'polyselect':                         # abandon any half-built polygon
+            self.canvas.poly_pts = None; self.canvas.poly_cur = None
+        if t != 'lasso':
+            self.canvas.lasso_pts = None
         self.canvas.tool = t
+        self.canvas.update()
         if hasattr(self, 'wand_spin'):
             for wdg in (self.wand_lbl, self.wand_spin, self.wand_cb):
                 wdg.setVisible(t == 'wand')
@@ -5242,6 +5459,15 @@ class Main(QMainWindow):
             AdjustDialog(self, 'Hue / Saturation',
                          [('h', 'Hue shift:', -180, 180, 0, 1.0), ('s', 'Saturation:', 0, 200, 100, 100.0)],
                          lambda v: (lambda p: adj_saturation(v['s'])(adj_hue(v['h'])(p)))).exec()
+
+    def dlg_vibrance(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Vibrance', [('v', 'Vibrance:', -100, 100, 0, 1.0)],
+                         lambda vals: adj_vibrance(vals['v'])).exec()
+
+    def dlg_channelmixer(self):
+        if self._need_pil():
+            ChannelMixerDialog(self).exec()
 
     def dlg_temperature(self):
         if self._need_pil():
