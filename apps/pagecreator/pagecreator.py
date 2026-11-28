@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.41-00"
+VERSION = "1.42-00"
 
 
 def _just_dir(kind):
@@ -838,6 +838,69 @@ def scheme_roles(cols):
                 accent=accent, accentInk=_ink_on(accent),
                 mute=shade(ink, 45) if _lum(ink) < .4 else shade(ink, -20))
 
+# --- live scheme switching (PagePlus "dynamic scheme colouring") -------------
+# Template objects hold literal hex, not role tags, so we re-colour by remapping:
+# site['serif']['rolemap'] (set in serif_site) says which hex each role currently
+# is; to change a role we swap its old hex -> new hex across EVERY object via
+# map_colors (the same walker Replace Colour uses: fill/stroke/color/head/accent/
+# accentInk/cardbg/ink/dark/light/axis/grid, grad.c1/c2, colors[] gradient stops,
+# page+master bg, palette, and #hex inside html). These are standalone (no GUI)
+# so they can be unit-tested and reused from the Schemes dialog.
+
+def _diff_rolemaps(old, new):
+    """[(old_hex, new_hex), ...] for roles in BOTH maps whose colour actually changes.
+    Longest role-list first so a shared old colour maps to the role we hit first; a
+    swap only fires on an EXACT normalised-hex match, so order rarely matters."""
+    pairs = []
+    for role, nhex in (new or {}).items():
+        ohex = (old or {}).get(role)
+        if norm_hex(ohex) and norm_hex(nhex) and norm_hex(ohex) != norm_hex(nhex):
+            pairs.append((norm_hex(ohex), norm_hex(nhex)))
+    return pairs
+
+def remap_colours(site, pairs):
+    """Swap a batch of (old_hex, new_hex) across the whole publication in one pass,
+    so chained roles (A->B while B->C) don't cascade. Returns props changed."""
+    table = {o: n for o, n in pairs}
+    n = [0]
+    def fn(c):
+        h = norm_hex(c)
+        if h in table:
+            n[0] += 1; return table[h]
+        return c
+    map_colors(site, fn)
+    return n[0]
+
+def apply_scheme(site, new_cols, new_name=None):
+    """Re-colour `site` into a new scheme given its raw colour list. Uses the stored
+    role->hex map as the 'from' side, computes the new map from new_cols, and swaps
+    each role everywhere. Updates site['serif'] rolemap/scheme/cols. Returns props
+    changed (0 if the site isn't template-based / nothing to do)."""
+    serif = (site or {}).get('serif')
+    if not isinstance(serif, dict):
+        return 0
+    old = serif.get('rolemap') or {}
+    new = scheme_roles(new_cols or [])
+    changed = remap_colours(site, _diff_rolemaps(old, new))
+    serif['rolemap'] = dict(new)
+    serif['cols'] = list(new_cols or [])
+    if new_name is not None:
+        serif['scheme'] = new_name
+    return changed
+
+def remap_role(site, role, new_hex):
+    """Edit one scheme colour: swap this role's current hex -> new_hex everywhere and
+    update the stored rolemap. Returns props changed."""
+    serif = (site or {}).get('serif')
+    if not isinstance(serif, dict):
+        return 0
+    old = (serif.get('rolemap') or {}).get(role)
+    if not (norm_hex(old) and norm_hex(new_hex)):
+        return 0
+    changed = remap_colours(site, [(norm_hex(old), norm_hex(new_hex))]) if norm_hex(old) != norm_hex(new_hex) else 0
+    serif.setdefault('rolemap', {})[role] = norm_hex(new_hex)
+    return changed
+
 # --- placeholder copy, varied per template so no two read the same ----------
 
 def _pick(seq, key, salt=0):
@@ -946,7 +1009,8 @@ def serif_site(row, scheme=None):
     offered = serif_schemes(row)
     if scheme not in offered:
         scheme = offered[0] if offered else None
-    C = scheme_roles(cat.get('schemes', {}).get(scheme) or [])
+    raw = cat.get('schemes', {}).get(scheme) or []
+    C = scheme_roles(raw)
     key = row.get('key') or row.get('name') or 'template'
     brand = row.get('name') or 'My Site'
     mobile = 'Mobile' in (row.get('surface') or '')
@@ -958,8 +1022,12 @@ def serif_site(row, scheme=None):
     s = base_site(brand, width=W, bg=C['page'],
                   palette=[C['bar'], C['accent'], C['page'], C['panel'], C['ink'], C['rule']])
     s['pages'] = []
+    # Record the scheme's role->hex map (and the raw colour list) so the doc can
+    # be re-coloured live later: a scheme switch becomes "swap each role's old hex
+    # for its new hex everywhere" — see apply_scheme() / remap_role() below.
     s['serif'] = {'key': key, 'name': brand, 'scheme': scheme,
-                  'category': row.get('category', ''), 'surface': row.get('surface', '')}
+                  'category': row.get('category', ''), 'surface': row.get('surface', ''),
+                  'rolemap': dict(C), 'cols': list(raw)}
     for p in serif_pages(row):
         add_page(s, p.get('name') or 'Page', level=max(0, int(p.get('depth') or 0)),
                  file=p.get('file') or None)
@@ -7982,6 +8050,7 @@ class MainWindow(QMainWindow):
                                   ['format-text-character', 'format-font-size-more', 'preferences-desktop-font']),
                          self.act('Text Frame &Columns…', lambda: self.text_columns_dialog(), None,
                                   ['view-split-left-right', 'format-text-columns', 'view-column']), None,
+                         self.act('Colour &Scheme…', lambda: self.scheme_dialog(), None, ['preferences-desktop-color', 'color-management', 'gtk-select-color']),
                          self.act('&Replace Colour…', lambda: self.replace_colour_dialog(), None, ['color-picker', 'gtk-select-color', 'preferences-desktop-color']),
                          self.act('&Picture Fill…', lambda: self.bitmap_fill_dialog(), None, ['insert-image', 'fill-color', 'view-preview']),
                          self.act('Remove Picture Fill', lambda: self.clear_fill_image(), None, None),
@@ -11762,6 +11831,114 @@ class MainWindow(QMainWindow):
         for o in objs: o['wrap'] = v
         self.refresh()
         self.hint('Overlapping frame text now wraps around this object.' if v else 'Text wrap turned off.')
+
+    def scheme_dialog(self):
+        """PagePlus-style Colour Scheme panel: pick a different scheme for the current
+        template to re-colour the whole document live, or click a role swatch to edit
+        that one scheme colour. Works retroactively via the stored role->hex rolemap
+        (see apply_scheme / remap_role); falls back to the built-in 21 generic schemes
+        when the template isn't resolvable, and to the doc's own colours for a blank doc."""
+        from PySide6.QtWidgets import (QListWidget, QListWidgetItem, QHBoxLayout, QVBoxLayout,
+                                        QGridLayout, QWidget, QScrollArea)
+        serif = self.site.get('serif') if isinstance(self.site.get('serif'), dict) else None
+        cat = serif_catalogue()
+        # Scheme name -> raw colour list the picker can offer.
+        offered = {}          # ordered {name: cols}
+        if serif:
+            row = serif_row(serif.get('key'))
+            names = serif_schemes(row) if row else list(cat.get('generic_schemes') or [])
+            for nm in names:
+                cols = cat.get('schemes', {}).get(nm)
+                if cols:
+                    offered[nm] = cols
+        if not offered:                                   # template not resolvable
+            for nm in (cat.get('generic_schemes') or []):
+                cols = cat.get('schemes', {}).get(nm)
+                if cols:
+                    offered[nm] = cols
+
+        # Blank doc with no template: synthesise a rolemap from the most-used colours
+        # so the swatch editor still works (no scheme list to switch between though).
+        if not serif:
+            used = {}
+            map_colors(self.site, lambda c: (used.__setitem__(norm_hex(c), used.get(norm_hex(c), 0) + 1) if norm_hex(c) else None) or c)
+            top = [h for h, _ in sorted(used.items(), key=lambda kv: -kv[1]) if h][:8]
+            if not top:
+                self.hint('Colour schemes apply to template-based documents — this page has no colours to remap yet.')
+                return
+            self.site['serif'] = serif = {'key': None, 'name': self.site.get('name', 'Document'),
+                                          'scheme': None, 'rolemap': {('colour %d' % (i + 1)): h for i, h in enumerate(top)}}
+
+        dlg = QDialog(self); dlg.setWindowTitle('Colour Scheme'); dlg.resize(480, 560)
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel('<b>Colour scheme.</b> Pick a scheme to re-colour the whole publication at '
+                           'once, or click a swatch below to change just that one colour everywhere.'))
+
+        lst = QListWidget(); names = list(offered.keys())
+        for nm in names:
+            it = QListWidgetItem('  ' + nm); it.setData(Qt.UserRole, nm)
+            cols = [c for c in offered[nm] if norm_hex(c)][:6]
+            pm = QPixmap(72, 20); pm.fill(Qt.transparent)
+            from PySide6.QtGui import QPainter
+            pr = QPainter(pm)
+            for i, c in enumerate(cols or ['#cccccc']):
+                pr.fillRect(i * 12, 0, 12, 20, QColor(c))
+            pr.end(); it.setIcon(QIcon(pm))
+            lst.addItem(it)
+        cur = serif.get('scheme')
+        if cur in names:
+            lst.setCurrentRow(names.index(cur))
+        elif names:
+            lst.setCurrentRow(0)
+        if names:
+            v.addWidget(QLabel('Available schemes:')); v.addWidget(lst, 1)
+        else:
+            v.addWidget(QLabel('<i>No alternative schemes for this document — you can still edit the '
+                               'colours below.</i>'))
+
+        # Per-role swatch grid, rebuilt from the live rolemap after every change.
+        v.addWidget(QLabel('Scheme colours — click to change one everywhere:'))
+        area = QScrollArea(); area.setWidgetResizable(True); area.setMaximumHeight(180); v.addWidget(area)
+        holder = QWidget(); grid = QGridLayout(holder); area.setWidget(holder)
+
+        def rebuild_swatches():
+            while grid.count():
+                it = grid.takeAt(0); w = it.widget()
+                if w:
+                    w.deleteLater()
+            rm = serif.get('rolemap') or {}
+            for i, role in enumerate(rm):
+                grid.addWidget(QLabel(role), i // 2, (i % 2) * 2)
+                def edit(c, role=role):
+                    if norm_hex(c) and norm_hex(c) != norm_hex((serif.get('rolemap') or {}).get(role)):
+                        self.commit()
+                        n = remap_role(self.site, role, c)
+                        self.refresh(); rebuild_swatches()
+                        self.hint('Changed %s in %d place(s).' % (role, n))
+                grid.addWidget(ColorButton(rm[role], edit, 'Change the "%s" colour' % role),
+                               i // 2, (i % 2) * 2 + 1)
+        rebuild_swatches()
+
+        def apply_selected():
+            it = lst.currentItem()
+            if not it:
+                return
+            nm = it.data(Qt.UserRole); cols = offered.get(nm)
+            if not cols or nm == serif.get('scheme'):
+                return
+            self.commit()
+            n = apply_scheme(self.site, cols, nm)
+            self.refresh(); rebuild_swatches()
+            self.hint('Switched to scheme "%s" — %d colour(s) remapped.' % (nm, n))
+
+        bb = QDialogButtonBox()
+        if names:
+            ap = bb.addButton('Apply scheme', QDialogButtonBox.ApplyRole)
+            ap.clicked.connect(apply_selected)
+            lst.itemDoubleClicked.connect(lambda *_: apply_selected())
+        bb.addButton(QDialogButtonBox.Close).clicked.connect(dlg.accept)
+        v.addWidget(bb)
+        dlg.exec()
 
     def replace_colour_dialog(self):
         """Find a colour used anywhere in the publication and replace it everywhere."""
