@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.34-00"
+VERSION = "1.35-00"
 
 
 def _just_dir(kind):
@@ -5686,6 +5686,102 @@ class TextEditor(QGraphicsTextItem):
             self.win.text_link_dialog()
 
 
+def smart_snap(mr, cands, thresh, do_equal=True):
+    """Dynamic-alignment maths for the smart guides (Illustrator/PagePlus style).
+    Pure function so it can be unit-tested without a GUI.
+
+    mr    : the moving object's rect as (x, y, w, h).
+    cands : list of candidate rects (x, y, w, h) — every OTHER visible object plus
+            synthetic rects for the page box / margin box (so their edges & centres
+            are candidates too).
+    thresh: snap distance in SCENE units (caller scales screen px by the zoom).
+    do_equal: also look for equal-gap spacing between two neighbours.
+
+    Returns (ddx, ddy, guides) where ddx/ddy are the extra offset to add to the
+    moving rect to land it exactly on alignment, and guides is a list of tuples:
+      ('v', x, y0, y1) vertical line  or  ('h', y, x0, x1) horizontal line,
+      ('gap', ...) markers for equal spacing.
+    All geometry is axis-independent: x and y are snapped separately."""
+    mx, my, mw, mh = mr
+    # key coordinates of the mover: (edge value, kind) — left/centre/right, top/mid/bot
+    mxs = [(mx, 'l'), (mx + mw / 2, 'c'), (mx + mw, 'r')]
+    mys = [(my, 't'), (my + mh / 2, 'm'), (my + mh, 'b')]
+    bestx = besty = None            # (penalty, snapped_mover_edge, target_value, span_lo, span_hi)
+    for c in cands:
+        cx, cy, cw, ch = c
+        cxs = [cx, cx + cw / 2, cx + cw]
+        cys = [cy, cy + ch / 2, cy + ch]
+        for mval, _ in mxs:
+            for tv in cxs:
+                d = abs(mval - tv)
+                if d <= thresh and (bestx is None or d < bestx[0]):
+                    lo, hi = min(cy, my), max(cy + ch, my + mh)
+                    bestx = (d, mval, tv, lo, hi)
+        for mval, _ in mys:
+            for tv in cys:
+                d = abs(mval - tv)
+                if d <= thresh and (besty is None or d < besty[0]):
+                    lo, hi = min(cx, mx), max(cx + cw, mx + mw)
+                    besty = (d, mval, tv, lo, hi)
+    ddx = ddy = 0.0
+    guides = []
+    if bestx is not None:
+        ddx = bestx[2] - bestx[1]
+        gx = bestx[2]
+        guides.append(('v', gx, bestx[3], bestx[4]))
+    if besty is not None:
+        ddy = besty[2] - besty[1]
+        gy = besty[2]
+        guides.append(('h', gy, besty[3], besty[4]))
+    # -- equal-spacing: if the mover sits horizontally between two others with a near
+    # -- equal gap, nudge it to balance the two gaps. Vertical centres must roughly line
+    # -- up so it reads as a row (ditto a column for the vertical case). Only runs when x
+    # -- (resp. y) was not already locked by an edge/centre snap, to avoid fighting it.
+    if do_equal:
+        if bestx is None:
+            eq = _equal_gap(mx, mw, my, mh, cands, thresh, axis='x')
+            if eq is not None:
+                ddx, g = eq; guides.extend(g)
+        if besty is None:
+            eq = _equal_gap(my, mh, mx, mw, cands, thresh, axis='y')
+            if eq is not None:
+                ddy, g = eq; guides.extend(g)
+    return ddx, ddy, guides
+
+
+def _equal_gap(pos, size, opos, osize, cands, thresh, axis):
+    """Find a left/right (or top/bottom) neighbour pair that brackets the mover on the
+    given axis and whose gaps to the mover can be equalised within threshold. Returns
+    (delta, guide-markers) or None. Neighbours must overlap the mover on the cross axis
+    so the result reads as a genuine row/column."""
+    lo = pos; hi = pos + size
+    def span(c):   # (start, end) on the working axis, (ostart, oend) on the cross axis
+        if axis == 'x': return c[0], c[0] + c[2], c[1], c[1] + c[3]
+        return c[1], c[1] + c[3], c[0], c[0] + c[2]
+    left = [c for c in cands if span(c)[1] <= lo + thresh]      # fully to the low side
+    right = [c for c in cands if span(c)[0] >= hi - thresh]     # fully to the high side
+    def crosses(c):
+        _, _, cs, ce = span(c)
+        return cs < opos + osize and ce > opos
+    left = [c for c in left if crosses(c)]; right = [c for c in right if crosses(c)]
+    if not left or not right: return None
+    L = max(left, key=lambda c: span(c)[1]); R = min(right, key=lambda c: span(c)[0])
+    Le = span(L)[1]; Rs = span(R)[0]
+    centre = (Le + Rs) / 2 - size / 2          # mover pos that balances the two gaps
+    d = centre - pos
+    if abs(d) > thresh: return None
+    gap = (Rs - Le - size) / 2
+    if gap < 1: return None
+    newlo = pos + d; newhi = newlo + size
+    if axis == 'x':
+        y = opos + osize / 2
+        g = [('gap', 'h', Le, newlo, y), ('gap', 'h', newhi, Rs, y)]
+    else:
+        x = opos + osize / 2
+        g = [('gap', 'v', Le, newlo, x), ('gap', 'v', newhi, Rs, x)]
+    return d, g
+
+
 class Canvas(QGraphicsView):
     HANDLES = ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w']
 
@@ -5705,6 +5801,7 @@ class Canvas(QGraphicsView):
         self.marq = None
         self.ghost = None
         self._cross = None
+        self._smart = []            # transient smart-guide lines for the current drag
         self.horizontalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.verticalScrollBar().valueChanged.connect(lambda *_: win.update_rulers())
         self.setAcceptDrops(True); self.viewport().setAcceptDrops(True)   # drop assets or picture files onto the page
@@ -5827,6 +5924,25 @@ class Canvas(QGraphicsView):
             pr = self.page_rect(); gp = QPen(QColor(0, 150, 190, 150), 0); gp.setCosmetic(True); p.setPen(gp)
             for gx in g.get('v', []): p.drawLine(QPointF(gx, 0), QPointF(gx, pr.height()))
             for gy in g.get('h', []): p.drawLine(QPointF(0, gy), QPointF(pr.width(), gy))
+        # Dynamic alignment (smart) guides: transient magenta lines drawn only while an
+        # object is being dragged/resized onto alignment. Editor overlay only — never saved,
+        # exported or printed (this is drawForeground, not paint_obj).
+        if self._smart:
+            sg = QPen(QColor('#e5308a'), 0); sg.setCosmetic(True); p.setPen(sg); p.setBrush(Qt.NoBrush)
+            t = 3 / self.zoom
+            for g in self._smart:
+                if g[0] == 'v':
+                    _, gx, y0, y1 = g; p.drawLine(QPointF(gx, y0), QPointF(gx, y1))
+                elif g[0] == 'h':
+                    _, gy, x0, x1 = g; p.drawLine(QPointF(x0, gy), QPointF(x1, gy))
+                elif g[0] == 'gap':      # equal-spacing marker: a short bracket across the gap
+                    _, ori, a0, a1, cross = g
+                    if ori == 'h':
+                        p.drawLine(QPointF(a0, cross), QPointF(a1, cross))
+                        for xx in (a0, a1): p.drawLine(QPointF(xx, cross - t), QPointF(xx, cross + t))
+                    else:
+                        p.drawLine(QPointF(cross, a0), QPointF(cross, a1))
+                        for yy in (a0, a1): p.drawLine(QPointF(cross - t, yy), QPointF(cross + t, yy))
         # Grab grip at the page bottom edge: a short centred bar the user can drag to make
         # the page taller or shorter. Only on a normal page (not while editing a master).
         if not win.editor and not win.cur_master():
@@ -5860,6 +5976,65 @@ class Canvas(QGraphicsView):
 
     def snap(self, v):
         return round(v / 10) * 10 if self.win.snap_grid else round(v)
+
+    def smart_candidates(self, moving_ids):
+        """Rects of every other non-hidden object on the page, plus synthetic page &
+        margin boxes, as alignment candidates for the smart guides. Only unrotated
+        objects contribute (and only axis-aligned movers snap) — rotated geometry has
+        no meaningful axis-aligned edges."""
+        cands = []
+        for it in self.win.layer_items():
+            o = it.o
+            if o['id'] in moving_ids or o.get('hidden') or o.get('rot', 0): continue
+            cands.append((o['x'], o['y'], o['w'], o['h']))
+        pr = self.page_rect()
+        cands.append((0, 0, pr.width(), pr.height()))               # page box: edges + centre lines
+        if not self.win.cur_master():
+            inset = self.win.site.get('margin_mm', 12.7) / 25.4 * 96
+            if 0 < inset * 2 < pr.width() and inset * 2 < pr.height():
+                cands.append((inset, inset, pr.width() - 2 * inset, pr.height() - 2 * inset))
+        return cands
+
+    def apply_smart(self, mx, my, mw, mh, moving_ids):
+        """Run the smart-guide snap for a mover rect, stash the guide lines for
+        drawForeground, and return the snapped (x, y). Falls back to identity when the
+        feature is off or the mover is rotated."""
+        self._smart = []
+        if not getattr(self.win, 'smart_guides', True):
+            return mx, my
+        thresh = 6 / self.zoom                     # ~6 screen px regardless of zoom
+        ddx, ddy, guides = smart_snap((mx, my, mw, mh), self.smart_candidates(moving_ids), thresh)
+        self._smart = guides
+        return mx + ddx, my + ddy
+
+    def snap_resize_edges(self, x, y, w, h, k, oid):
+        """Snap the edges that a resize handle moves ('n'/'s'/'e'/'w' in k) to the
+        nearest candidate x/y coordinate, holding the opposite edge fixed. Lights up a
+        guide for each snapped edge. Returns the adjusted (x, y, w, h)."""
+        thresh = 6 / self.zoom
+        cands = self.smart_candidates([oid])
+        xs, ys = set(), set()
+        for cx, cy, cw, ch in cands:
+            xs.update((cx, cx + cw / 2, cx + cw)); ys.update((cy, cy + ch / 2, cy + ch))
+        def near(v, pool):
+            best = None
+            for t in pool:
+                dd = abs(v - t)
+                if dd <= thresh and (best is None or dd < abs(v - best)): best = t
+            return best
+        if 'e' in k:
+            t = near(x + w, xs)
+            if t is not None: w = t - x; self._smart.append(('v', t, y, y + h))
+        if 'w' in k:
+            t = near(x, xs)
+            if t is not None: w += (x - t); x = t; self._smart.append(('v', t, y, y + h))
+        if 's' in k:
+            t = near(y + h, ys)
+            if t is not None: h = t - y; self._smart.append(('h', t, x, x + w))
+        if 'n' in k:
+            t = near(y, ys)
+            if t is not None: h += (y - t); y = t; self._smart.append(('h', t, x, x + w))
+        return x, y, w, h
 
     # -- mouse
     def mouseDoubleClickEvent(self, e):
@@ -5999,9 +6174,21 @@ class Canvas(QGraphicsView):
             if e.modifiers() & Qt.ShiftModifier:
                 if abs(dx) > abs(dy): dy = 0
                 else: dx = 0
-            for it, x0, y0 in d['starts']:
-                it.o['x'], it.o['y'] = self.snap(x0 + dx), self.snap(y0 + dy); it.sync()
-            win.live_update()
+            # grid snap first (rounds the raw move), then smart guides take precedence by
+            # adjusting the whole selection's bounding box onto any nearby alignment.
+            pts = [(it, self.snap(x0 + dx), self.snap(y0 + dy)) for it, x0, y0 in d['starts']]
+            self._smart = []
+            if not (e.modifiers() & Qt.AltModifier):   # hold Alt to suppress smart snapping
+                bx = min(nx for _, nx, _ in pts); by = min(ny for _, _, ny in pts)
+                bw = max(nx + it.o['w'] for it, nx, _ in pts) - bx
+                bh = max(ny + it.o['h'] for it, _, ny in pts) - by
+                mids = [it.o['id'] for it, _, _ in pts]
+                sx, sy = self.apply_smart(bx, by, bw, bh, mids)
+                adx, ady = sx - bx, sy - by
+                pts = [(it, nx + adx, ny + ady) for it, nx, ny in pts]
+            for it, nx, ny in pts:
+                it.o['x'], it.o['y'] = nx, ny; it.sync()
+            win.live_update(); self.viewport().update()
         elif d['mode'] == 'resize':
             it, s0, k = d['item'], d['start'], d['dir']
             if not d['moved']: win.push_undo(d['snap']); d['moved'] = True
@@ -6027,7 +6214,12 @@ class Canvas(QGraphicsView):
                 if 'n' in k: y -= (minv - h)
                 h = minv
             o = it.o
-            o['x'], o['y'], o['w'], o['h'] = self.snap(x), self.snap(y), max(minv, self.snap(w) or minv), max(minv, self.snap(h) or minv)
+            x, y, w, h = self.snap(x), self.snap(y), max(minv, self.snap(w) or minv), max(minv, self.snap(h) or minv)
+            # smart guides on the edges being dragged (unrotated, un-aspect-locked only)
+            self._smart = []
+            if getattr(win, 'smart_guides', True) and not s0.get('rot', 0) and not (keep and len(k) == 2) and not (e.modifiers() & Qt.AltModifier):
+                x, y, w, h = self.snap_resize_edges(x, y, w, h, k, o['id'])
+            o['x'], o['y'], o['w'], o['h'] = x, y, max(minv, w), max(minv, h)
             if o['type'] == 'artistic':
                 o['size'] = max(4, round(s0['size'] * o['h'] / s0['h']))
             it.sync(); win.live_update()
@@ -6053,6 +6245,7 @@ class Canvas(QGraphicsView):
 
     def mouseReleaseEvent(self, e):
         win = self.win; d = self.drag; self.drag = None
+        if self._smart: self._smart = []; self.viewport().update()   # smart guides are drag-only
         if win.editor and not d: super().mouseReleaseEvent(e); return
         if not d: return
         sp = self.mapToScene(e.position().toPoint())
@@ -6771,6 +6964,7 @@ class MainWindow(QMainWindow):
         self.snap_grid = self.settings.value('snap', True, type=bool)
         self.crosshair = False
         self.show_guides = True
+        self.smart_guides = self.settings.value('smartguides', True, type=bool)   # dynamic alignment guides
         self.booklet = False                 # Booklet view: all pages as facing spreads (print)
         self._booklet_rects = []
         self.editor = None; self.edit_id = None; self.edit_snap = None
@@ -6961,6 +7155,7 @@ class MainWindow(QMainWindow):
             grid=A('&Grid', self.toggle_grid, None, 'view-grid', True),
             snap=A('&Snap to Grid', self.toggle_snap, None, 'snap-to-grid', True),
             crosshair=A('Cross&hair', self.toggle_crosshair, None, ['crosshairs', 'tool-pointer', 'cursor-crosshair'], True),
+            smartguides=A('S&mart Guides', self.toggle_smart_guides, None, ['snap-orthogonal', 'snap-bounding-box', 'view-guides'], True),
             guides=A('&Guides && Columns…', self.guides_dialog, None, ['view-guides', 'view-grid', 'configure']),
             booklet=A('&Booklet View', self.toggle_booklet, None, ['view-pages-facing', 'view-book', 'x-office-document'], True),
             zin=A('Zoom &In', lambda: self.view.set_zoom(self.view.zoom * 1.25), QKeySequence.ZoomIn, 'zoom-in'),
@@ -7007,6 +7202,7 @@ class MainWindow(QMainWindow):
         del self.a['import_']
         self.a['rulers'].setChecked(self.settings.value('rulers', True, type=bool))
         self.a['grid'].setChecked(self.show_grid); self.a['snap'].setChecked(self.snap_grid)
+        self.a['smartguides'].setChecked(self.smart_guides)
         for k in ('cut', 'copy', 'paste', 'undo', 'redo', 'selall', 'bold', 'italic', 'underline'):
             self.a[k].setShortcutContext(Qt.WindowShortcut)
 
@@ -7031,7 +7227,7 @@ class MainWindow(QMainWindow):
                        a['printdoc'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall'], None,
                        self.act('Find && &Replace…', self.find_replace_dialog, 'Ctrl+H', ['edit-find-replace', 'edit-find'])])
-        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
+        self.view_menu = menu('&View', [a['booklet'], None, a['rulers'], a['grid'], a['snap'], a['smartguides'], a['crosshair'], a['guides'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
         ins = []
         for tid, label, *_ in [t for t in TOOLS if t[0] and t[0] not in ('pointer', 'hand', 'zoom') and t[0] not in WEB_TOOLS]:
             ins.append(self.act(label, lambda _=False, t=tid: self.insert_default(t), None, None))
@@ -11366,6 +11562,9 @@ class MainWindow(QMainWindow):
 
     def toggle_snap(self):
         self.snap_grid = self.a['snap'].isChecked(); self.settings.setValue('snap', self.snap_grid)
+
+    def toggle_smart_guides(self):
+        self.smart_guides = self.a['smartguides'].isChecked(); self.settings.setValue('smartguides', self.smart_guides)
 
     # ------------------------------------------------------------ files
     def recent_files(self):
