@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.12-00"
+VERSION = "1.13-00"
 
 
 # ===================================================================== font grouping
@@ -459,6 +459,166 @@ def _nodes_from_painterpath(pp):
         else:
             closed = True   # QuickShapes are closed outlines
     return nodes, closed
+
+
+# ---------------------------------------------------------------- node editing helpers
+def _bezier_point(p0, p1, p2, p3, t):
+    """A cubic Bézier evaluated at t (0..1); each arg is an (x, y) tuple."""
+    u = 1 - t
+    a = u * u * u; b = 3 * u * u * t; c = 3 * u * t * t; d = t * t * t
+    return (a * p0[0] + b * p1[0] + c * p2[0] + d * p3[0],
+            a * p0[1] + b * p1[1] + c * p2[1] + d * p3[1])
+
+
+def split_segment(nodes, i, closed, t=0.5):
+    """Return a NEW node list with an extra node inserted on the segment that leaves node i
+    (toward node i+1), at parameter t. The curve shape is preserved: for a cubic segment we
+    subdivide with de Casteljau, rewriting the two endpoints' adjacent handles; a straight
+    segment just gets a corner node at the lerp point. Handles are stored node-relative."""
+    n = len(nodes); j = (i + 1) % n
+    a = nodes[i]; b = nodes[j]
+    ax, ay = a['x'], a['y']; bx, by = b['x'], b['y']
+    p0 = (ax, ay)
+    p1 = (ax + a.get('hout', [0, 0])[0], ay + a.get('hout', [0, 0])[1])
+    p2 = (bx + b.get('hin', [0, 0])[0], by + b.get('hin', [0, 0])[1])
+    p3 = (bx, by)
+    # de Casteljau subdivision at t
+    q0 = (p0[0] + (p1[0] - p0[0]) * t, p0[1] + (p1[1] - p0[1]) * t)
+    q1 = (p1[0] + (p2[0] - p1[0]) * t, p1[1] + (p2[1] - p1[1]) * t)
+    q2 = (p2[0] + (p3[0] - p2[0]) * t, p2[1] + (p3[1] - p2[1]) * t)
+    r0 = (q0[0] + (q1[0] - q0[0]) * t, q0[1] + (q1[1] - q0[1]) * t)
+    r1 = (q1[0] + (q2[0] - q1[0]) * t, q1[1] + (q2[1] - q1[1]) * t)
+    s = (r0[0] + (r1[0] - r0[0]) * t, r0[1] + (r1[1] - r0[1]) * t)   # the new node point
+    out = [dict(nd, hin=list(nd.get('hin', [0, 0])), hout=list(nd.get('hout', [0, 0]))) for nd in nodes]
+    out[i]['hout'] = [q0[0] - ax, q0[1] - ay]
+    out[j]['hin'] = [q2[0] - bx, q2[1] - by]
+    mid = {'x': s[0], 'y': s[1], 'hin': [r0[0] - s[0], r0[1] - s[1]],
+           'hout': [r1[0] - s[0], r1[1] - s[1]], 'smooth': True}
+    out.insert(i + 1, mid)
+    return out
+
+
+def set_node_type(nd, kind):
+    """Convert a node in place to 'cusp' (independent handles), 'smooth' (handles collinear,
+    lengths kept) or 'symmetric' (handles mirrored). Sets the 'smooth' flag to match."""
+    hin = list(nd.get('hin', [0, 0])); hout = list(nd.get('hout', [0, 0]))
+    if kind == 'cusp':
+        nd['smooth'] = False
+        return nd
+    if kind == 'symmetric':
+        # mirror: hin = -hout (prefer the longer handle as the master, else hin)
+        if hout == [0, 0] and hin != [0, 0]:
+            nd['hout'] = [-hin[0], -hin[1]]
+        else:
+            nd['hin'] = [-hout[0], -hout[1]]
+        nd['smooth'] = True
+        return nd
+    # smooth: keep both lengths but make them collinear along a shared axis
+    din = math.hypot(*hin); dout = math.hypot(*hout)
+    if din > 1e-6 and dout > 1e-6:
+        # average the two (opposite) directions, then re-project each handle onto it
+        ax, ay = -hin[0] / din, -hin[1] / din; bx, by = hout[0] / dout, hout[1] / dout
+        ux, uy = ax + bx, ay + by
+        m = math.hypot(ux, uy)
+        if m > 1e-6:
+            ux, uy = ux / m, uy / m
+            nd['hout'] = [ux * dout, uy * dout]; nd['hin'] = [-ux * din, -uy * din]
+    elif din > 1e-6:
+        nd['hout'] = [-hin[0], -hin[1]]
+    elif dout > 1e-6:
+        nd['hin'] = [-hout[0], -hout[1]]
+    nd['smooth'] = True
+    return nd
+
+
+# ---------------------------------------------------------------- blend (morph) helpers
+def _resample_nodes(nodes, count, closed):
+    """Return `count` nodes sampled evenly (by Bézier parameter, per segment) along a node
+    path. Resampled nodes are smooth with handles derived from the local tangent so the
+    morph stays well-behaved; used to give two paths a common node count before blending."""
+    n = len(nodes)
+    if n == 0:
+        return []
+    if n == 1:
+        return [dict(x=nodes[0]['x'], y=nodes[0]['y'], hin=[0, 0], hout=[0, 0], smooth=False) for _ in range(count)]
+    segs = n if closed else n - 1
+
+    def seg_pts(i):
+        a = nodes[i]; b = nodes[(i + 1) % n]
+        return ((a['x'], a['y']), (a['x'] + a.get('hout', [0, 0])[0], a['y'] + a.get('hout', [0, 0])[1]),
+                (b['x'] + b.get('hin', [0, 0])[0], b['y'] + b.get('hin', [0, 0])[1]), (b['x'], b['y']))
+    total = segs if closed else segs
+    out = []
+    span = count if closed else count - 1
+    for k in range(count):
+        g = (k / span) * segs if span else 0.0
+        if g >= segs: g = segs - 1e-9
+        si = int(g); lt = g - si
+        p0, p1, p2, p3 = seg_pts(si)
+        pt = _bezier_point(p0, p1, p2, p3, lt)
+        # tangent via a small finite difference along the curve, scaled to a modest handle
+        t2 = min(1.0, lt + 0.01); t1 = max(0.0, lt - 0.01)
+        q2 = _bezier_point(p0, p1, p2, p3, t2); q1 = _bezier_point(p0, p1, p2, p3, t1)
+        tx, ty = (q2[0] - q1[0]), (q2[1] - q1[1])
+        m = math.hypot(tx, ty) or 1.0
+        hl = (math.hypot(p3[0] - p0[0], p3[1] - p0[1]) or 1.0) / 3.0 / max(1, segs) * segs
+        tx, ty = tx / m * hl, ty / m * hl
+        out.append({'x': pt[0], 'y': pt[1], 'hin': [-tx, -ty], 'hout': [tx, ty], 'smooth': True})
+    return out
+
+
+def blend_paths(a_nodes, b_nodes, t, closed=False):
+    """Interpolate two node lists at parameter t (0=a, 1=b). If the counts differ, resample
+    the SHORTER list up to the longer count first, so both have matching node indices. Pure:
+    returns a new node list."""
+    na, nb = len(a_nodes), len(b_nodes)
+    if na == 0 or nb == 0:
+        return [dict(x=nd['x'], y=nd['y'], hin=list(nd.get('hin', [0, 0])),
+                     hout=list(nd.get('hout', [0, 0])), smooth=nd.get('smooth', False))
+                for nd in (b_nodes if t >= 0.5 else a_nodes)]
+    if na != nb:
+        m = max(na, nb)
+        if na < m: a_nodes = _resample_nodes(a_nodes, m, closed)
+        if nb < m: b_nodes = _resample_nodes(b_nodes, m, closed)
+    out = []
+    for p, q in zip(a_nodes, b_nodes):
+        ph = p.get('hin', [0, 0]); qh = q.get('hin', [0, 0])
+        po = p.get('hout', [0, 0]); qo = q.get('hout', [0, 0])
+        out.append({'x': p['x'] + (q['x'] - p['x']) * t, 'y': p['y'] + (q['y'] - p['y']) * t,
+                    'hin': [ph[0] + (qh[0] - ph[0]) * t, ph[1] + (qh[1] - ph[1]) * t],
+                    'hout': [po[0] + (qo[0] - po[0]) * t, po[1] + (qo[1] - po[1]) * t],
+                    'smooth': p.get('smooth', False) or q.get('smooth', False)})
+    return out
+
+
+def _lerp_color(ca, cb, t):
+    """Lerp two colour strings (or None) in RGB; returns a '#rrggbb' string, or None if both
+    are None (so a no-fill→no-fill blend stays unfilled)."""
+    if ca is None and cb is None:
+        return None
+    qa = QColor(ca) if ca else QColor(cb); qb = QColor(cb) if cb else QColor(ca)
+    r = round(qa.red() + (qb.red() - qa.red()) * t)
+    g = round(qa.green() + (qb.green() - qa.green()) * t)
+    b = round(qa.blue() + (qb.blue() - qa.blue()) * t)
+    return QColor(r, g, b).name()
+
+
+def blend_objects(a, b, steps):
+    """Build `steps` intermediate node objects morphing object a → object b (geometry +
+    fill + stroke + width). a and b must already be 'nodes' objects. Pure: returns a list
+    of new obj dicts (the intermediates only, in a→b order)."""
+    an, bn = a.get('nodes') or [], b.get('nodes') or []
+    closed = bool(a.get('closed')) or bool(b.get('closed'))
+    out = []
+    for i in range(1, steps + 1):
+        t = i / (steps + 1)
+        nd = blend_paths(an, bn, t, closed)
+        o = dict(type='nodes', nodes=nd, closed=closed,
+                 fill=_lerp_color(a.get('fill'), b.get('fill'), t),
+                 stroke=_lerp_color(a.get('stroke'), b.get('stroke'), t),
+                 sw=a.get('sw', 2) + (b.get('sw', 2) - a.get('sw', 2)) * t)
+        out.append(o)
+    return out
 
 
 # ---------------------------------------------------------------- line dashes & arrowheads
@@ -1490,8 +1650,9 @@ class Canvas(QWidget):
         self.pending_image = None  # dict(uri,w,h) awaiting a click/drag placement
         # Pen (Bézier) tool: nodes being laid down, and the live smooth-drag node
         self.pen_nodes = None; self.pen_dragging = False
-        # Node tool: the path being reshaped and which node/handle is grabbed
-        self.node_obj = None; self.node_grab = None
+        # Node tool: the path being reshaped, which node/handle is grabbed, and which node
+        # index is "selected" (for delete / type-convert via keys and menu)
+        self.node_obj = None; self.node_grab = None; self.selected_node = None
         # transform/rubber-band drag state
         self.handle = None       # which transform handle is being dragged
         self.drag_start = None   # canvas pt where a handle/rubber drag began
@@ -1996,8 +2157,11 @@ class Canvas(QWidget):
                     hx, hy = nd['x'] + h[0], nd['y'] + h[1]
                     p.setPen(pen); p.drawLine(QPointF(nd['x'], nd['y']), QPointF(hx, hy))
                     p.setBrush(QColor(col)); p.drawEllipse(QPointF(hx, hy), hs * .9, hs * .9)
-        for nd in nodes:
-            p.setPen(pen); p.setBrush(QColor('#ffffff'))
+        for i, nd in enumerate(nodes):
+            if i == self.selected_node:
+                p.setPen(pen); p.setBrush(QColor('#ff8a00'))
+            else:
+                p.setPen(pen); p.setBrush(QColor('#ffffff'))
             p.drawRect(QRectF(nd['x'] - hs, nd['y'] - hs, hs * 2, hs * 2))
 
     def _hit_node(self, pt):
@@ -2019,6 +2183,98 @@ class Canvas(QWidget):
             if abs(nd['x'] - pt[0]) <= tol and abs(nd['y'] - pt[1]) <= tol:
                 return ('node', i)
         return None
+
+    def _hit_segment(self, pt):
+        """Return (seg_index, t) for the path segment nearest pt (within tolerance), or
+        None. Used by the Node tool's double-click to insert a node on a segment."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return None
+        nodes = o.get('nodes', []); n = len(nodes)
+        if n < 2:
+            return None
+        tol = 8 / max(self.zoom, 0.01)
+        closed = o.get('closed'); segs = n if closed else n - 1
+        best = None
+        for i in range(segs):
+            a = nodes[i]; b = nodes[(i + 1) % n]
+            p0 = (a['x'], a['y'])
+            p1 = (a['x'] + a.get('hout', [0, 0])[0], a['y'] + a.get('hout', [0, 0])[1])
+            p2 = (b['x'] + b.get('hin', [0, 0])[0], b['y'] + b.get('hin', [0, 0])[1])
+            p3 = (b['x'], b['y'])
+            for k in range(1, 24):
+                t = k / 24.0
+                sx, sy = _bezier_point(p0, p1, p2, p3, t)
+                d = math.hypot(sx - pt[0], sy - pt[1])
+                if d <= tol and (best is None or d < best[0]):
+                    best = (d, i, t)
+        return (best[1], best[2]) if best else None
+
+    def add_node_at(self, pt):
+        """Node tool: insert a node on the segment under pt (splitting the Bézier so the
+        shape is unchanged). Returns True if a node was added."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return False
+        hit = self._hit_segment(pt)
+        if hit is None:
+            return False
+        i, t = hit
+        self.snapshot()
+        o['nodes'] = split_segment(o['nodes'], i, bool(o.get('closed')), t)
+        self.selected_node = i + 1
+        self.update(); return True
+
+    def delete_selected_node(self):
+        """Node tool: remove the selected (or hovered) node and reconnect its neighbours.
+        A path shorter than 2 nodes is removed entirely."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return False
+        nodes = o.get('nodes', [])
+        i = self.selected_node
+        if i is None or not (0 <= i < len(nodes)):
+            return False
+        self.snapshot()
+        nodes.pop(i)
+        if len(nodes) < 2:
+            if o in self.objs: self.objs.remove(o)
+            self.node_obj = None; self.selected_node = None
+            self.sel = None; self.sels = []
+        else:
+            self.selected_node = min(i, len(nodes) - 1)
+        self.update(); return True
+
+    def set_selected_node_type(self, kind):
+        """Convert the selected node to cusp / smooth / symmetric."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return False
+        nodes = o.get('nodes', []); i = self.selected_node
+        if i is None or not (0 <= i < len(nodes)):
+            return False
+        self.snapshot()
+        set_node_type(nodes[i], kind)
+        self.update(); return True
+
+    def cycle_selected_node_type(self):
+        """Cycle the selected node cusp → smooth → symmetric → cusp."""
+        o = self.node_obj
+        if o is None or o.get('type') != 'nodes':
+            return False
+        nodes = o.get('nodes', []); i = self.selected_node
+        if i is None or not (0 <= i < len(nodes)):
+            return False
+        nd = nodes[i]
+        hin = nd.get('hin', [0, 0]); hout = nd.get('hout', [0, 0])
+        sym = nd.get('smooth') and abs(hin[0] + hout[0]) < 1e-6 and abs(hin[1] + hout[1]) < 1e-6
+        if not nd.get('smooth'):
+            nxt = 'smooth'
+        elif not sym:
+            nxt = 'symmetric'
+        else:
+            nxt = 'cusp'
+        return self.set_selected_node_type(nxt)
 
     def drag_node(self, i, nx, ny):
         """Programmatic/UI helper: move node i to (nx, ny), carrying its handles."""
@@ -2104,6 +2360,51 @@ class Canvas(QWidget):
                 self.objs.remove(o)
         self.objs.append(new); self.set_selection([new]); self.update()
         return new
+
+    def _as_node_obj(self, o):
+        """Return o as a 'nodes' object, converting non-node shapes to Bézier nodes (used by
+        Blend). Returns None if o can't be converted."""
+        if o.get('type') == 'nodes':
+            return o
+        if o.get('type') not in ('rect', 'ellipse', 'quick', 'line', 'poly', 'path'):
+            return None
+        nodes, closed = nodes_from_obj(o)
+        if not nodes:
+            return None
+        new = dict(type='nodes', nodes=nodes, closed=closed,
+                   stroke=o.get('stroke'), sw=o.get('sw', 2), fill=o.get('fill'))
+        return new
+
+    def blend_selection(self, steps):
+        """DrawPlus Blend: morph between the two selected objects over `steps` intermediate
+        shapes (geometry + fill + stroke + width), inserted BETWEEN the originals in z-order
+        and grouped with them. Requires exactly two selected objects. Returns the new group's
+        object list, or None."""
+        sel = self._selection()
+        if len(sel) != 2:
+            return None
+        a = self._as_node_obj(sel[0]); b = self._as_node_obj(sel[1])
+        if a is None or b is None:
+            return None
+        self.snapshot()
+        mids = blend_objects(a, b, steps)
+        lid = self.obj_layer(sel[0])
+        for o in mids:
+            o['layer'] = lid
+        gid = self._next_gid; self._next_gid += 1
+        # z-order: keep the two originals where they are, drop the intermediates just after
+        # the first original (so they sit between the pair) in paint order.
+        try:
+            ia = self.objs.index(sel[0])
+        except ValueError:
+            ia = len(self.objs) - 1
+        for k, o in enumerate(mids):
+            self.objs.insert(ia + 1 + k, o)
+        members = [sel[0]] + mids + [sel[1]]
+        for o in members:
+            o['gid'] = gid
+        self.set_selection(members); self.update()
+        return members
 
     def _object_painterpath(self, o):
         """A filled QPainterPath for a shape object in canvas coordinates (for combining)."""
@@ -2223,7 +2524,8 @@ class Canvas(QWidget):
         if self.tool == 'node':
             g = self._hit_node(pt)
             if g is not None:
-                self.node_grab = g; self.drag_start = pt; self.snapshot(); return
+                self.node_grab = g; self.drag_start = pt; self.selected_node = g[1]
+                self.snapshot(); self.update(); return
             # clicking elsewhere picks a path to edit
             hit = next((o for o in reversed(self.ordered_objs())
                         if o.get('type') == 'nodes' and obj_hit(o, pt)), None)
@@ -2231,7 +2533,8 @@ class Canvas(QWidget):
                 hit = next((o for o in reversed(self.ordered_objs()) if obj_hit(o, pt)), None)
                 if hit is not None and hit.get('type') != 'nodes':
                     hit = None
-            self.node_obj = hit; self.node_grab = None; self.update(); return
+            self.node_obj = hit; self.node_grab = None; self.selected_node = None
+            self.update(); return
 
     def mouseMoveEvent(self, e):
         pt = self.pos(e); self.win.set_pos(pt)
@@ -2404,6 +2707,14 @@ class Canvas(QWidget):
         self.pen_nodes = None; self.pen_dragging = False; self.cur = None; self.update()
 
     def mouseDoubleClickEvent(self, e):
+        if self.tool == 'node' and self.node_obj is not None:
+            pt = self.pos(e)
+            g = self._hit_node(pt)
+            if g is not None and g[0] == 'node':
+                # double-click a node deletes it (reconnecting neighbours)
+                self.selected_node = g[1]; self.delete_selected_node(); return
+            # double-click a segment inserts a node (split Bézier, shape preserved)
+            self.add_node_at(pt); return
         if self.tool == 'pen' and self.pen_nodes and len(self.pen_nodes) >= 2:
             # the double-click fires an extra press that duplicates the last node — drop it
             if len(self.pen_nodes) >= 2:
@@ -2413,6 +2724,12 @@ class Canvas(QWidget):
             self._finish_pen(closed=True)
 
     def keyPressEvent(self, e):
+        if (self.tool == 'node' and self.node_obj is not None and self.selected_node is not None
+                and e.key() in (Qt.Key_Delete, Qt.Key_Backspace)):
+            self.delete_selected_node(); self.win.sync_props(); return
+        if (self.tool == 'node' and self.node_obj is not None and self.selected_node is not None
+                and e.key() == Qt.Key_C):
+            self.cycle_selected_node_type(); return
         if e.key() in (Qt.Key_Delete, Qt.Key_Backspace) and self._selection():
             self.snapshot()
             for o in self._selection():
@@ -4169,6 +4486,26 @@ class Main(QMainWindow):
             return
         self.refresh_layers()
 
+    def blend(self):
+        if len(self.canvas._selection()) != 2:
+            QMessageBox.information(self, APP, 'Select exactly two objects, then Blend to morph one into '
+                                   'the other over a number of steps.')
+            return
+        n, ok = QInputDialog.getInt(self, 'Blend', 'Number of blend steps:', 6, 1, 100, 1)
+        if not ok:
+            return
+        new = self.canvas.blend_selection(n)
+        if new is None:
+            QMessageBox.information(self, APP, 'Those two objects could not be blended. Pick two shapes, '
+                                   'QuickShapes, lines or node paths.')
+            return
+        self.refresh_layers()
+
+    def node_type(self, kind):
+        if not self.canvas.set_selected_node_type(kind):
+            QMessageBox.information(self, APP, 'Pick the Node tool, click a node on a path, then set its '
+                                   'type (Cusp / Smooth / Symmetric).')
+
     # ---------------------------------------------------------------- opacity / dash / arrows
     def opacity_dialog(self):
         o = self.canvas.sel
@@ -4287,6 +4624,13 @@ class Main(QMainWindow):
         e.addAction(self.act('&Line Style (Dashes & Arrows)…', self.line_style_dialog))
         e.addSeparator()
         e.addAction(self.act('Convert to &Curves', self.convert_to_curves, QKeySequence('Ctrl+Shift+C')))
+        nm = e.addMenu('&Node')
+        nm.addAction(self.act('Make &Cusp', lambda: self.node_type('cusp')))
+        nm.addAction(self.act('Make &Smooth', lambda: self.node_type('smooth')))
+        nm.addAction(self.act('Make S&ymmetric', lambda: self.node_type('symmetric')))
+        nm.addSeparator()
+        nm.addAction(self.act('C&ycle Node Type (press C)', self.canvas.cycle_selected_node_type))
+        nm.addAction(self.act('&Delete Node', self.canvas.delete_selected_node))
         tm = m.addMenu('&Text')
         tm.addAction(self.act('Edit &Text…', self.edit_text))
         tm.addAction(self.act('&Fit Text to Path', self.fit_text_to_path))
@@ -4314,6 +4658,7 @@ class Main(QMainWindow):
         cm.addAction(self.act('&Union (Add)', lambda: self.combine('union')))
         cm.addAction(self.act('&Subtract (Front from Back)', lambda: self.combine('subtract')))
         cm.addAction(self.act('&Intersect', lambda: self.combine('intersect')))
+        a.addAction(self.act('Ble&nd…', self.blend))
         al = a.addMenu('A&lign')
         for lbl, how in (('Align Left', 'left'), ('Align Centre', 'hcenter'), ('Align Right', 'right'),
                          ('Align Top', 'top'), ('Align Middle', 'vcenter'), ('Align Bottom', 'bottom')):
