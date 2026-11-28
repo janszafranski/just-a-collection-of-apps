@@ -23,7 +23,7 @@ try:
                                    QFormLayout, QDialog, QDialogButtonBox, QLineEdit, QCheckBox,
                                    QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
                                    QTreeWidget, QTreeWidgetItem, QTreeWidgetItemIterator,
-                                   QStackedWidget, QFileDialog, QTabWidget,
+                                   QStackedWidget, QFileDialog, QTabWidget, QScrollArea,
                                    QMessageBox, QColorDialog, QSlider, QPlainTextEdit,
                                    QTableWidget, QTableWidgetItem, QMenu, QFrame, QSizePolicy,
                                    QGroupBox, QAbstractItemView, QStyle, QInputDialog)
@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.28-00"
+VERSION = "1.29-00"
 
 
 # ===================================================================== font grouping
@@ -1871,6 +1871,251 @@ def _box_blur(a, r):
         a = (hi - lo) / k
     return a
 
+# ---------------------------------------------------------------- Cutout Studio
+# A full in-app background remover (the Serif suite's Cutout Studio), ported from
+# PAGEdesigner. qimage_to_rgba/rgba_to_qimage below are the only new helpers it needs;
+# it reuses the existing _box_blur (feather) rather than redefining it.
+def qimage_to_rgba(qi):
+    """QImage → contiguous (H, W, 4) uint8 RGBA numpy array."""
+    import numpy as np
+    qi = qi.convertToFormat(QImage.Format_RGBA8888)
+    w, h, bpl = qi.width(), qi.height(), qi.bytesPerLine()
+    buf = np.frombuffer(memoryview(qi.constBits()), np.uint8)
+    return buf.reshape((h, bpl))[:, :w * 4].reshape((h, w, 4)).copy()
+
+def rgba_to_qimage(arr):
+    """(H, W, 4) uint8 RGBA numpy array → a self-owning QImage."""
+    import numpy as np
+    arr = np.ascontiguousarray(arr, np.uint8)
+    h, w = arr.shape[:2]
+    return QImage(arr.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
+
+class _CutoutView(QWidget):
+    """The zoomable canvas inside Cutout Studio; forwards events to the dialog."""
+    def __init__(self, dlg):
+        super().__init__(); self.dlg = dlg
+        self.setMouseTracking(True)
+        self.setCursor(Qt.CrossCursor)
+    def paintEvent(self, e): self.dlg._paint_view(self)
+    def mousePressEvent(self, e): self.dlg._view_press(e)
+    def mouseMoveEvent(self, e): self.dlg._view_move(e)
+    def mouseReleaseEvent(self, e): self.dlg._view_release(e)
+
+class CutoutStudio(QDialog):
+    """Extract the subject of a picture from its background — the WebPlus Cutout Studio.
+
+    Paint with the Discard (magic-wand flood), Keep and Erase brushes to build an alpha
+    mask; the result is returned (OK) as a new RGBA image in ``self.result_rgba``."""
+    WORK_MAX = 1200  # cap the working resolution so the flood fill stays snappy
+
+    def __init__(self, parent, qimage):
+        super().__init__(parent)
+        import numpy as np
+        self.setWindowTitle('Cutout Studio')
+        self.result_rgba = None
+        # decode + cap the working resolution
+        w, h = qimage.width(), qimage.height()
+        s = min(1.0, self.WORK_MAX / max(1, max(w, h)))
+        if s < 1.0:
+            qimage = qimage.scaled(max(1, int(w * s)), max(1, int(h * s)),
+                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self.orig = qimage_to_rgba(qimage)                       # (H,W,4)
+        self.rgb = self.orig[:, :, :3].astype(np.int32)
+        H, W = self.orig.shape[:2]
+        self.mask = np.where(self.orig[:, :, 3] > 8, np.uint8(255), np.uint8(0))
+        self._undo = []
+        self.mode = 'discard'
+        self.brush = 24
+        self.tol = 18
+        self.feather = 1
+        self.show_outline = True
+        self.zoom = 1.0
+        self._last = None
+
+        root = QVBoxLayout(self)
+        bar = QHBoxLayout(); root.addLayout(bar)
+        self.mode_btns = {}
+        for mid, lbl, tip in (('discard', 'Discard', 'Flood-remove the background you click on'),
+                              ('keep', 'Keep', 'Paint back areas to keep'),
+                              ('erase', 'Erase', 'Hand-erase stray areas')):
+            b = QPushButton(lbl); b.setCheckable(True); b.setToolTip(tip)
+            b.clicked.connect(lambda _=0, m=mid: self._set_mode(m))
+            bar.addWidget(b); self.mode_btns[mid] = b
+        self.mode_btns['discard'].setChecked(True)
+        bar.addSpacing(12)
+        bar.addWidget(QLabel('Brush:'))
+        self.brush_sp = QSpinBox(); self.brush_sp.setRange(2, 200); self.brush_sp.setValue(self.brush)
+        self.brush_sp.setSuffix(' px'); self.brush_sp.valueChanged.connect(lambda v: setattr(self, 'brush', v))
+        bar.addWidget(self.brush_sp)
+        bar.addWidget(QLabel('Grow tolerance:'))
+        self.tol_sp = QSpinBox(); self.tol_sp.setRange(1, 100); self.tol_sp.setValue(self.tol)
+        self.tol_sp.valueChanged.connect(lambda v: setattr(self, 'tol', v))
+        bar.addWidget(self.tol_sp)
+        self.outline_cb = QCheckBox('Show outline'); self.outline_cb.setChecked(True)
+        self.outline_cb.toggled.connect(self._toggle_outline); bar.addWidget(self.outline_cb)
+        bar.addStretch(1)
+        undo_b = QPushButton('Undo'); undo_b.clicked.connect(self._undo_mask); bar.addWidget(undo_b)
+        reset_b = QPushButton('Reset'); reset_b.clicked.connect(self._reset); bar.addWidget(reset_b)
+
+        self.view = _CutoutView(self)
+        self.scroll = QScrollArea(); self.scroll.setWidget(self.view)
+        self.scroll.setAlignment(Qt.AlignCenter)
+        self.scroll.setStyleSheet('QScrollArea{background:#5a5a5a;border:1px solid #888}')
+        root.addWidget(self.scroll, 1)
+
+        foot = QHBoxLayout(); root.addLayout(foot)
+        foot.addWidget(QLabel('Zoom:'))
+        self.zoom_sl = QSlider(Qt.Horizontal); self.zoom_sl.setRange(20, 400)
+        self.zoom_sl.setFixedWidth(160); self.zoom_sl.valueChanged.connect(self._set_zoom_pct)
+        foot.addWidget(self.zoom_sl)
+        foot.addWidget(QLabel('Edge feather:'))
+        self.feather_sp = QSpinBox(); self.feather_sp.setRange(0, 12); self.feather_sp.setValue(self.feather)
+        self.feather_sp.valueChanged.connect(lambda v: setattr(self, 'feather', v))
+        foot.addWidget(self.feather_sp)
+        foot.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Apply cutout')
+        bb.accepted.connect(self._accept); bb.rejected.connect(self.reject)
+        foot.addWidget(bb)
+
+        self.resize(860, 640)
+        fit = max(0.2, min(2.0, 760 / max(1, W)))          # fit to the available width once shown
+        self.zoom_sl.setValue(int(round(fit * 100)))
+
+    # ---- state helpers
+    def _push_undo(self):
+        self._undo.append(self.mask.copy())
+        if len(self._undo) > 16: self._undo.pop(0)
+
+    def _undo_mask(self):
+        if self._undo:
+            self.mask = self._undo.pop(); self.view.update()
+
+    def _reset(self):
+        import numpy as np
+        self._push_undo()
+        self.mask = np.where(self.orig[:, :, 3] > 8, np.uint8(255), np.uint8(0))
+        self.view.update()
+
+    def _set_mode(self, m):
+        self.mode = m
+        for mid, b in self.mode_btns.items(): b.setChecked(mid == m)
+
+    def _toggle_outline(self, on):
+        self.show_outline = on; self.view.update()
+
+    def _set_zoom_pct(self, pct):
+        self.zoom = pct / 100.0
+        H, W = self.orig.shape[:2]
+        self.view.setFixedSize(max(1, int(W * self.zoom)), max(1, int(H * self.zoom)))
+        self.view.update()
+
+    # ---- painting
+    def _composite(self):
+        """Build the display RGBA: original pixels, dimmed+checker where discarded."""
+        import numpy as np
+        H, W = self.orig.shape[:2]
+        keep = self.mask > 0
+        out = self.orig.copy()
+        yy, xx = np.mgrid[0:H, 0:W]                          # checkerboard behind discarded pixels
+        chk = (((xx // 8) + (yy // 8)) & 1).astype(np.uint8)
+        board = np.where(chk[..., None] == 1, np.uint8(200), np.uint8(235))
+        board = np.repeat(board, 3, axis=2)
+        disc = ~keep
+        out[disc, :3] = board[disc]
+        out[:, :, 3] = 255
+        if self.show_outline:
+            edge = keep & ~(np.roll(keep, 1, 0) & np.roll(keep, -1, 0)
+                            & np.roll(keep, 1, 1) & np.roll(keep, -1, 1))
+            out[edge] = (255, 40, 40, 255)
+        return out
+
+    def _paint_view(self, view):
+        qi = rgba_to_qimage(self._composite())
+        p = QPainter(view)
+        p.setRenderHint(QPainter.SmoothPixmapTransform, self.zoom < 1.0)
+        p.drawImage(QRectF(0, 0, view.width(), view.height()), qi)
+        p.end()
+
+    def _view_xy(self, e):
+        x = int(e.position().x() / self.zoom); y = int(e.position().y() / self.zoom)
+        H, W = self.orig.shape[:2]
+        return max(0, min(W - 1, x)), max(0, min(H - 1, y))
+
+    def _view_press(self, e):
+        if e.button() != Qt.LeftButton: return
+        self._push_undo(); self._last = None
+        self._apply_at(*self._view_xy(e)); self.view.update()
+
+    def _view_move(self, e):
+        if not (e.buttons() & Qt.LeftButton): return
+        self._apply_at(*self._view_xy(e)); self.view.update()
+
+    def _view_release(self, e):
+        self._last = None
+
+    # ---- brush application
+    def _disc(self, cx, cy, value):
+        import numpy as np
+        r = max(1, self.brush // 2)
+        H, W = self.mask.shape
+        y0, y1 = max(0, cy - r), min(H, cy + r + 1)
+        x0, x1 = max(0, cx - r), min(W, cx + r + 1)
+        yy, xx = np.mgrid[y0:y1, x0:x1]
+        m = (xx - cx) ** 2 + (yy - cy) ** 2 <= r * r
+        self.mask[y0:y1, x0:x1][m] = value
+
+    def _apply_at(self, x, y):
+        if self.mode == 'keep':
+            self._disc(x, y, 255)
+        elif self.mode == 'erase':
+            self._disc(x, y, 0)
+        else:  # discard flood (magic wand) — only re-flood when crossing a new, still-kept pixel
+            if self.mask[y, x] == 0: return
+            if self._last is not None and self._last == (x, y): return
+            self._last = (x, y)
+            self._flood_discard(x, y)
+
+    def _flood_discard(self, sx, sy):
+        import numpy as np
+        H, W = self.rgb.shape[:2]
+        seed = self.rgb[sy, sx]
+        thr = (self.tol / 100.0) * 441.673  # sqrt(3*255^2)
+        d2 = ((self.rgb - seed) ** 2).sum(axis=2)
+        similar = d2 <= (thr * thr)
+        if not similar[sy, sx]: return
+        out = np.zeros((H, W), bool)
+        stack = [(sx, sy)]
+        while stack:
+            x, y = stack.pop()
+            free = similar[y] & ~out[y]
+            if not free[x]: continue
+            lf = np.nonzero(~free[:x])[0]
+            xl = lf[-1] + 1 if lf.size else 0
+            rf = np.nonzero(~free[x + 1:])[0]
+            xr = x + rf[0] if rf.size else W - 1
+            out[y, xl:xr + 1] = True
+            for yy in (y - 1, y + 1):
+                if 0 <= yy < H:
+                    cand = similar[yy, xl:xr + 1] & ~out[yy, xl:xr + 1]
+                    idx = np.nonzero(cand)[0]
+                    if idx.size:
+                        starts = idx[np.concatenate(([True], np.diff(idx) > 1))]
+                        for st in starts: stack.append((xl + int(st), yy))
+        self.mask[out] = 0
+
+    # ---- result
+    def _accept(self):
+        import numpy as np
+        keep = (self.mask > 0).astype(np.float32)
+        if self.feather > 0:
+            keep = _box_blur(keep, self.feather)
+        alpha = np.clip(keep * (self.orig[:, :, 3].astype(np.float32)), 0, 255)
+        out = self.orig.copy()
+        out[:, :, 3] = alpha.astype(np.uint8)
+        self.result_rgba = out
+        self.accept()
+
 def _obj_layer(o, site, page, hide_text, edit, pad=0):
     """Render an object's body to its own transparent QImage, with `pad` px of
     transparent margin all round (so edges have room to blur into for feather). The
@@ -2908,6 +3153,40 @@ def render_page_image(site, page, width=240, crop=None):
             p.translate(o['w'] / 2, o['h'] / 2); p.rotate(o['rot']); p.translate(-o['w'] / 2, -o['h'] / 2)
         p.setOpacity(o.get('opacity', 1)); paint_obj(p, o, site, page, edit=False); p.restore()
     p.end()
+    return img
+
+def render_page_to_image(site, page, out_w, out_h, src_rect=None, transparent=False, supersample=True):
+    """Render a web page (or a sub-rectangle of it) to a QImage of exactly out_w × out_h px for the
+    'Export As Picture' command. `src_rect` is a QRectF in page coordinates (px); None = whole page
+    (site['width'] × the page's height). When `supersample` we render at 2× and smooth-scale down for
+    crisp anti-aliased edges and text. `transparent` keeps an alpha channel (no page background painted);
+    otherwise the page background (or white) is flattened in. Uses the shared paint_obj path so
+    gradients/cutouts/effects all show — the same object loop as render_page_image."""
+    out_w = max(1, int(round(out_w))); out_h = max(1, int(round(out_h)))
+    ss = 2 if supersample else 1
+    W, Hh = site['width'], page.get('height') or site['height']
+    if src_rect is None: src_rect = QRectF(0, 0, W, Hh)
+    rw = max(1e-6, src_rect.width()); rh = max(1e-6, src_rect.height())
+    iw, ih = out_w * ss, out_h * ss
+    img = QImage(iw, ih, QImage.Format_ARGB32_Premultiplied)
+    if transparent:
+        img.fill(Qt.transparent)
+    else:
+        m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
+        img.fill(QColor(page.get('bg') or m.get('bg') or site.get('bg') or '#ffffff'))
+    p = QPainter(img)
+    p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform); p.setRenderHint(QPainter.TextAntialiasing)
+    # map the chosen source rectangle onto the full image (independent x/y scale handles odd aspects)
+    p.scale(iw / rw, ih / rh); p.translate(-src_rect.x(), -src_rect.y())
+    for o in page_objects(site, page):
+        if o.get('hidden'): continue
+        p.save(); p.translate(o['x'], o['y'])
+        if o.get('rot'):
+            p.translate(o['w'] / 2, o['h'] / 2); p.rotate(o['rot']); p.translate(-o['w'] / 2, -o['h'] / 2)
+        p.setOpacity(o.get('opacity', 1)); paint_obj(p, o, site, page, edit=False); p.restore()
+    p.end()
+    if ss != 1:
+        img = img.scaled(out_w, out_h, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return img
 
 # ----------------------------------------------------------------------------
@@ -8142,7 +8421,9 @@ class MainWindow(QMainWindow):
                 elif isinstance(it, tuple): sub = m.addMenu(it[0]); [sub.addAction(x) if x else sub.addSeparator() for x in it[1]]
                 else: m.addAction(it)
             return m
-        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openwpp'], a['import'], None, a['save'], a['saveas'], None, a['checklinks'], None,
+        self.a['exportpic'] = self.act('&Export As Picture…', self.export_picture, None, ['insert-image', 'image-x-generic', 'document-export'])
+        self.a['exportpic'].setToolTip('Save the current page (or selection) as a PNG/JPEG/TIFF/BMP/WebP image')
+        menu('&File', [a['new'], a['open'], self.recent_menu_action(), a['openwpp'], a['import'], None, a['save'], a['saveas'], a['exportpic'], None, a['checklinks'], None,
                        a['prevwin'], a['prevpage'], a['prevsite'], a['publish'], None, a['quit']])
         menu('&Edit', [a['undo'], a['redo'], None, a['cut'], a['copy'], a['paste'], a['dup'], a['delete'], None, a['selall']])
         self.view_menu = menu('&View', [a['rulers'], a['grid'], a['snap'], a['crosshair'], None, a['zin'], a['zout'], a['z100'], a['zfit'], None])
@@ -8281,6 +8562,14 @@ class MainWindow(QMainWindow):
         # Photo-tools toolbar — the Serif suite's PhotoPlus / PhotoLab / Cutout Studio
         # are replaced here by just a… PAINTcanvas, which opens the selected picture.
         photo = QToolBar('Photo tools'); photo.setObjectName('phototools'); photo.setIconSize(QSize(20, 20))
+        # In-app Cutout Studio — a full background remover that stays inside WEBcreator
+        # (the Edit-in-PAINTcanvas hand-off stays available too, right beside it).
+        cut_a = QAction(ticon(['edit-cut', 'gimp-tool-scissors', 'image-crop'], '✂'), 'Cutout Studio', self)
+        cut_a.setToolTip('Cutout Studio — remove the background of the selected picture, in-app')
+        cut_a.triggered.connect(lambda: self.cutout_studio())
+        photo.addAction(cut_a)
+        w = photo.widgetForAction(cut_a)
+        if w: w.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
         for name, icons, glyph in (
             ('Edit Properties', ['document-properties', 'document-edit'], '≡'),
             ('PhotoLab (PAINTcanvas)', ['darktable', 'applications-graphics'], '◉'),
@@ -9264,6 +9553,144 @@ class MainWindow(QMainWindow):
         self.site['assets'][key] = f'data:image/{mime};base64,' + base64.b64encode(data).decode()
         _PIX.pop(key, None); self.dirty = True
         self.refresh(); self.hint('Picture updated from PAINTcanvas.')
+
+    def cutout_studio(self, o=None):
+        """Open the in-app Cutout Studio on the selected picture; store the transparent
+        result as a NEW asset and point the picture at it (same mechanism as an imported
+        picture). Unlike Edit-in-PAINTcanvas this stays entirely inside WEBcreator."""
+        if o is None:
+            o = next((o for o in self.sel_objs() if o.get('type') == 'picture' and o.get('src')), None)
+        if not o or o.get('type') != 'picture':
+            self.hint('Select a picture first to cut out its background.'); return
+        pm = pixmap_for(self.site, o.get('src'))
+        if not pm or pm.isNull():
+            self.hint('That picture has no image to cut out yet.'); return
+        try:
+            import numpy  # Cutout Studio needs NumPy for the flood/feather maths
+        except ImportError:
+            QMessageBox.information(self, APP, 'Cutout Studio needs the NumPy library '
+                                   '(e.g. sudo pacman -S python-numpy). Or use Cutout in PAINTcanvas.')
+            return
+        dlg = CutoutStudio(self, pm.toImage())
+        if not dlg.exec() or dlg.result_rgba is None: return
+        qi = rgba_to_qimage(dlg.result_rgba)               # transparent-background RGBA
+        ba = QByteArray(); buf = QBuffer(ba); buf.open(QIODevice.WriteOnly); qi.save(buf, 'PNG'); buf.close()
+        uri = 'data:image/png;base64,' + base64.b64encode(bytes(ba)).decode()
+        self.commit()
+        o['src'] = add_asset(self.site, uri)               # new key in the document image store
+        o['fit'] = 'contain'                               # show the whole cut-out, not a cropped fill
+        self.site.setdefault('assetnames', {})[o['src']] = 'Cutout'
+        self.dirty = True; self.refresh()
+        self.hint('Background removed. The cut-out picture replaces the original in this frame.')
+
+    def export_picture(self):
+        """Export the current page (or just the current selection) as a raster image:
+        PNG / JPEG / TIFF / BMP / WebP. Size is chosen by scale %, DPI, or an explicit pixel
+        width (height follows the aspect). Optional supersampling renders at 2× then smooth-
+        scales down for crisp edges; PNG/WebP can keep a transparent background. A live preview
+        updates as the options change. Uses render_page_to_image (the shared paint_obj path)."""
+        page = self.page()
+        Wpx = self.site['width']; Hpx = self.page_h()
+        # Selection bounding box (page coords) if anything on the page is selected.
+        sel = [o for o in self.sel_objs()] if not self.edit_master else []
+        sel_rect = None
+        if sel:
+            x0 = min(o['x'] for o in sel); y0 = min(o['y'] for o in sel)
+            x1 = max(o['x'] + o['w'] for o in sel); y1 = max(o['y'] + o['h'] for o in sel)
+            sel_rect = QRectF(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
+        dlg = QDialog(self); dlg.setWindowTitle('Export As Picture'); dlg.setModal(True)
+        root = QHBoxLayout(dlg)
+        form = QFormLayout(); left = QVBoxLayout(); left.addLayout(form); root.addLayout(left, 1)
+
+        area = QComboBox(); area.addItem('Whole page', 'page')
+        if sel_rect is not None: area.addItem(f'Current selection ({len(sel)} object(s))', 'sel')
+        form.addRow('Area:', area)
+
+        fmt = QComboBox()
+        for lbl, ext in [('PNG', 'png'), ('JPEG', 'jpg'), ('TIFF', 'tif'), ('BMP', 'bmp'), ('WebP', 'webp')]:
+            fmt.addItem(lbl, ext)
+        form.addRow('Format:', fmt)
+
+        # Sizing: pick the method, then the value for that method.
+        method = QComboBox()
+        method.addItem('Scale %', 'scale'); method.addItem('DPI', 'dpi'); method.addItem('Width (pixels)', 'px')
+        form.addRow('Size by:', method)
+        scale = QSpinBox(); scale.setRange(5, 800); scale.setSuffix(' %'); scale.setValue(100)
+        dpi = QSpinBox(); dpi.setRange(18, 1200); dpi.setSuffix(' dpi'); dpi.setValue(96)
+        pxw = QSpinBox(); pxw.setRange(16, 20000); pxw.setSuffix(' px'); pxw.setValue(int(Wpx))
+        form.addRow('Scale:', scale); form.addRow('Resolution:', dpi); form.addRow('Pixel width:', pxw)
+
+        quality = QSlider(Qt.Horizontal); quality.setRange(0, 100); quality.setValue(90)
+        qlbl = QLabel('90')
+        quality.valueChanged.connect(lambda v: qlbl.setText(str(v)))
+        qrow = QHBoxLayout(); qrow.addWidget(quality); qrow.addWidget(qlbl)
+        qwrap = QWidget(); qwrap.setLayout(qrow); form.addRow('Quality:', qwrap)
+
+        transp = QCheckBox('32-bit transparent background'); form.addRow('', transp)
+        ssample = QCheckBox('Supersample (render 2× then downscale)'); ssample.setChecked(True); form.addRow('', ssample)
+        dim = QLabel(''); dim.setStyleSheet('color:gray'); form.addRow('Output:', dim)
+
+        prev = QLabel(); prev.setFixedSize(220, 260); prev.setAlignment(Qt.AlignCenter)
+        prev.setStyleSheet('border:1px solid #888; background:#f2f2f2')
+        pv = QVBoxLayout(); pv.addWidget(QLabel('Preview')); pv.addWidget(prev); pv.addStretch(1); root.addLayout(pv)
+
+        def src():
+            return sel_rect if (area.currentData() == 'sel' and sel_rect is not None) else QRectF(0, 0, Wpx, Hpx)
+
+        def out_size():
+            r = src(); sw, sh = r.width(), r.height()
+            m = method.currentData()
+            if m == 'scale': f = scale.value() / 100.0; ow = sw * f
+            elif m == 'dpi': f = dpi.value() / 96.0; ow = sw * f
+            else: ow = pxw.value()
+            ow = max(1, int(round(ow))); oh = max(1, int(round(ow * sh / max(1e-6, sw))))
+            return ow, oh
+
+        def can_alpha():
+            return fmt.currentData() in ('png', 'webp')
+
+        def refresh(*_):
+            scale.setVisible(method.currentData() == 'scale'); form.labelForField(scale).setVisible(method.currentData() == 'scale')
+            dpi.setVisible(method.currentData() == 'dpi'); form.labelForField(dpi).setVisible(method.currentData() == 'dpi')
+            pxw.setVisible(method.currentData() == 'px'); form.labelForField(pxw).setVisible(method.currentData() == 'px')
+            lossy = fmt.currentData() in ('jpg', 'webp')
+            qwrap.setVisible(lossy); form.labelForField(qwrap).setVisible(lossy)
+            transp.setEnabled(can_alpha())
+            if not can_alpha(): transp.setChecked(False)
+            ow, oh = out_size(); dim.setText(f'{ow} × {oh} px')
+            # live preview: render a small thumbnail at the source aspect, then letterbox into the panel
+            r = src(); pw = 200; ph = max(1, int(round(pw * r.height() / max(1e-6, r.width()))))
+            img = render_page_to_image(self.site, page, pw, ph, src_rect=r,
+                                       transparent=transp.isChecked() and can_alpha(), supersample=False)
+            prev.setPixmap(QPixmap.fromImage(img).scaled(prev.width(), prev.height(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+
+        for wdg in (area, fmt, method): wdg.currentIndexChanged.connect(refresh)
+        for sp in (scale, dpi, pxw): sp.valueChanged.connect(refresh)
+        transp.toggled.connect(refresh)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Export')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); left.addWidget(bb)
+        refresh()
+        if dlg.exec() != QDialog.Accepted: return
+
+        ext = fmt.currentData()
+        base = os.path.splitext(self.path or self.site.get('name') or 'website')[0]
+        start = os.path.join(_just_dir('pics'), f'{os.path.basename(base)}.{ext}')
+        filt = {'png': 'PNG image (*.png)', 'jpg': 'JPEG image (*.jpg *.jpeg)', 'tif': 'TIFF image (*.tif *.tiff)',
+                'bmp': 'BMP image (*.bmp)', 'webp': 'WebP image (*.webp)'}[ext]
+        path, _ = QFileDialog.getSaveFileName(self, 'Export As Picture', start, filt)
+        if not path: return
+        if not path.lower().endswith('.' + ext) and not (ext == 'jpg' and path.lower().endswith('.jpeg')):
+            path += '.' + ext
+        ow, oh = out_size()
+        img = render_page_to_image(self.site, page, ow, oh, src_rect=src(),
+                                   transparent=transp.isChecked() and can_alpha(), supersample=ssample.isChecked())
+        qual = quality.value() if ext in ('jpg', 'webp') else -1
+        qfmt = {'png': 'PNG', 'jpg': 'JPEG', 'tif': 'TIFF', 'bmp': 'BMP', 'webp': 'WEBP'}[ext]
+        ok = img.save(path, qfmt, qual)
+        if ok: self.hint(f'Exported {ow}×{oh} {qfmt} to {os.path.basename(path)}')
+        else: QMessageBox.warning(self, APP, "Couldn't save that image.")
 
     def refresh_site_tab(self):
         self.site_name_label.setText(f'<b>{H.escape(self.site["name"])}</b> &nbsp;·&nbsp; {self.site["width"]} px wide')
