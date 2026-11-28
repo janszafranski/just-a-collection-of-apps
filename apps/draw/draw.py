@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.13-00"
+VERSION = "1.14-00"
 
 
 # ===================================================================== font grouping
@@ -369,6 +369,17 @@ def node_painter_path(o):
     if closed:
         pp.closeSubpath()
     return pp
+
+
+def _flatten_painterpath(pp, step=0.02):
+    """Sample a QPainterPath into a flat list of (x,y) points (for calligraphic outlining
+    of curved node paths). Uses QPainterPath.pointAtPercent across the whole path length."""
+    pts = []
+    n = max(2, int(1.0 / step))
+    for i in range(n + 1):
+        q = pp.pointAtPercent(i / n)
+        pts.append((q.x(), q.y()))
+    return pts
 
 
 def node_svg_d(o):
@@ -847,15 +858,99 @@ def _fx_image(path, w, h, color, blur, pad):
     small = base.scaled(max(1, W // f), max(1, H // f), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
     return small.scaled(W, H, Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
 
+# ---------------------------------------------------------------- Pressure Studio (profiles)
+# A profile shapes a brush stroke's width along its length. Presets are stored by name;
+# 'Custom' carries control points [(pos0..1, scale0..1), …] defining a width-multiplier curve.
+PROFILE_PRESETS = {
+    'Constant':    [(0.0, 1.0), (1.0, 1.0)],
+    'Taper End':   [(0.0, 1.0), (1.0, 0.0)],
+    'Taper Start': [(0.0, 0.0), (1.0, 1.0)],
+    'Taper Both':  [(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)],
+    'Bulge':       [(0.0, 0.6), (0.5, 1.0), (1.0, 0.6)],
+}
+PROFILE_NAMES = ['Constant', 'Taper End', 'Taper Start', 'Taper Both', 'Bulge', 'Custom']
+
+def profile_points(profile):
+    """The control-point list [(pos,scale),…] for a profile descriptor (a preset name str,
+    or a dict {'name':…, 'pts':[…]} where a 'Custom' name uses its own pts)."""
+    if not profile:
+        return PROFILE_PRESETS['Constant']
+    if isinstance(profile, str):
+        return PROFILE_PRESETS.get(profile, PROFILE_PRESETS['Constant'])
+    name = profile.get('name', 'Constant')
+    if name == 'Custom':
+        cp = profile.get('pts') or []
+        return cp if len(cp) >= 2 else PROFILE_PRESETS['Constant']
+    return PROFILE_PRESETS.get(name, PROFILE_PRESETS['Constant'])
+
+def profile_value(cp, t):
+    """Linear-interpolate the multiplier curve `cp` (sorted by pos) at position t in 0..1."""
+    cp = sorted(cp, key=lambda q: q[0])
+    if t <= cp[0][0]: return cp[0][1]
+    if t >= cp[-1][0]: return cp[-1][1]
+    for i in range(len(cp) - 1):
+        (p0, s0), (p1, s1) = cp[i], cp[i + 1]
+        if p0 <= t <= p1:
+            f = (t - p0) / (p1 - p0) if p1 > p0 else 0.0
+            return s0 + (s1 - s0) * f
+    return cp[-1][1]
+
+def profile_widths(base_widths, profile):
+    """Multiply each per-point width by the profile curve's value at that point's normalised
+    arc-length position along the stroke. Returns a new width list (same length)."""
+    n = len(base_widths)
+    if n == 0:
+        return []
+    cp = profile_points(profile)
+    if n == 1:
+        return [base_widths[0] * profile_value(cp, 0.0)]
+    return [base_widths[i] * profile_value(cp, i / (n - 1)) for i in range(n)]
+
+
+# ---------------------------------------------------------------- calligraphic strokes
+def calligraphic_outline(path_pts, sw, nib_angle):
+    """A filled QPainterPath ribbon emulating a flat calligraphy nib held at `nib_angle`
+    degrees. Walk the polyline; at each point offset by ±half-width perpendicular to the
+    tangent, where the half-width scales with |sin(tangent − nib)| (thin when the path runs
+    along the nib, thick across it). Builds one closed outline (forward edge + reverse edge).
+    A small floor keeps the thin parts hairline-visible rather than vanishing."""
+    pts = [(float(x), float(y)) for x, y in (path_pts or [])]
+    n = len(pts)
+    pp = QPainterPath()
+    if n < 2:
+        return pp
+    nib = math.radians(nib_angle)
+    half = max(0.5, sw) / 2.0
+    floor = 0.12   # fraction of half-width kept at the thinnest, so the nib never disappears
+    def tangent(i):
+        if i == 0: a, b = pts[0], pts[1]
+        elif i == n - 1: a, b = pts[n - 2], pts[n - 1]
+        else: a, b = pts[i - 1], pts[i + 1]
+        return math.atan2(b[1] - a[1], b[0] - a[0])
+    left, right = [], []
+    for i in range(n):
+        x, y = pts[i]; tg = tangent(i)
+        w = half * (floor + (1 - floor) * abs(math.sin(tg - nib)))
+        nx, ny = -math.sin(tg), math.cos(tg)   # unit normal to the tangent
+        left.append((x + nx * w, y + ny * w)); right.append((x - nx * w, y - ny * w))
+    poly = left + right[::-1]
+    pp.addPolygon(QPolygonF([QPointF(px, py) for px, py in poly])); pp.closeSubpath()
+    return pp
+
+
 def draw_brush(p, o):
     """A variable-width ink ribbon from a brush object's points + per-point widths
     (the 'pressure' is faked from pointer speed when drawn). Each segment quad and each
     round join is filled separately so overlaps stay solid (a single winding-fill path
-    would leave lattice holes where sub-paths cancel)."""
+    would leave lattice holes where sub-paths cancel). A pressure profile (o['profile'])
+    reshapes the stored widths live when set."""
     pts = o.get('pts') or []; ws = o.get('widths') or []
     n = len(pts)
     if n == 0:
         return
+    prof = o.get('profile')
+    if prof and ws:
+        ws = profile_widths(ws, prof)
     col = QColor(o.get('stroke') or o.get('fill') or '#1f2a30')
     p.setPen(Qt.NoPen); p.setBrush(col)
     def wat(i): return max(1.0, ws[i] if i < len(ws) else (ws[-1] if ws else 6.0))
@@ -1589,7 +1684,12 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
         p.save(); p.translate(o['x'], o['y']); p.drawPath(quickshape_path(o['shape'], o['w'], o['h'], o.get('qp'))); p.restore()
     elif t == 'nodes':
         pp = node_painter_path(o)
-        if o.get('closed') and o.get('fill'):
+        if o.get('linestyle') == 'calligraphic' and not (o.get('closed') and o.get('fill')):
+            samp = _flatten_painterpath(pp)
+            rib = calligraphic_outline(samp, o.get('sw', 2), o.get('nib_angle', 45))
+            p.save(); p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('stroke') or '#1f2a30'))
+            p.drawPath(rib); p.restore()
+        elif o.get('closed') and o.get('fill'):
             p.drawPath(pp)
         else:
             p.setBrush(Qt.NoBrush); p.drawPath(pp)
@@ -1613,7 +1713,11 @@ def _paint_object_body(p, o, selected=False, skip_text=False):
         draw_connector(p, o, _PAINT_OBJS)
     elif t in ('line', 'path', 'poly'):
         poly = QPolygonF([QPointF(x, y) for x, y in o['pts']])
-        if o.get('fill') and len(o['pts']) > 2:
+        if o.get('linestyle') == 'calligraphic' and not (o.get('closed') and o.get('fill')):
+            rib = calligraphic_outline(o['pts'], o.get('sw', 2), o.get('nib_angle', 45))
+            p.save(); p.setPen(Qt.NoPen); p.setBrush(QColor(o.get('stroke') or '#1f2a30'))
+            p.drawPath(rib); p.restore()
+        elif o.get('fill') and len(o['pts']) > 2:
             path = QPainterPath(); path.addPolygon(poly)
             if o.get('closed'): path.closeSubpath()
             p.drawPath(path)
@@ -2321,7 +2425,7 @@ class Canvas(QWidget):
                    stroke=o.get('stroke'), sw=o.get('sw', 2),
                    fill=o.get('fill'), layer=self.obj_layer(o))
         for k in ('shadow', 'glow', 'grad', 'rot', 'opacity', 'blend', 'gid', 'dash', 'arrow',
-                  'agrad', 'reflect', 'feather', 'bevel'):
+                  'agrad', 'reflect', 'feather', 'bevel', 'linestyle', 'nib_angle'):
             if o.get(k) is not None:
                 new[k] = copy.deepcopy(o[k])
         i = self.objs.index(o); self.objs[i] = new
@@ -2506,8 +2610,11 @@ class Canvas(QWidget):
         if self.tool == 'brush':
             self.snapshot()
             self._brush_base = self.sw * 3 + 8
-            self.objs.append(dict(type='brush', pts=[pt], widths=[self._brush_base * 0.45],
-                                  stroke=self.stroke.name(), fill=None, layer=self.active_layer))
+            ob = dict(type='brush', pts=[pt], widths=[self._brush_base * 0.45],
+                      stroke=self.stroke.name(), fill=None, layer=self.active_layer)
+            prof = getattr(self, 'brush_profile', None)
+            if prof: ob['profile'] = copy.deepcopy(prof)
+            self.objs.append(ob)
             self.update(); return
         if self.tool == 'freehand':
             self.snapshot()
@@ -3118,6 +3225,71 @@ class _CutoutView(QWidget):
     def mouseReleaseEvent(self, e): self.dlg._view_release(e)
 
 
+class ProfileCurve(QWidget):
+    """A draggable width-multiplier curve for the Pressure Studio. X = position along the
+    stroke (0..1), Y = width scale (0..1). Drag control points; double-click adds/removes.
+    The top half shows the resulting ink-ribbon shape so the curve reads as a stroke."""
+    def __init__(self, cp):
+        super().__init__()
+        self.cp = [list(q) for q in cp]
+        self.setMinimumSize(300, 170); self.setMouseTracking(True)
+        self.grab = None
+    def set_points(self, cp):
+        self.cp = sorted([list(q) for q in cp], key=lambda q: q[0]); self.update()
+    def points(self):
+        return [(round(p, 4), round(s, 4)) for p, s in sorted(self.cp, key=lambda q: q[0])]
+    def _geo(self):
+        m = 14; w = self.width() - 2 * m; h = self.height() - 2 * m; return m, w, h
+    def _to_px(self, p, s):
+        m, w, h = self._geo(); return QPointF(m + p * w, m + (1 - s) * h)
+    def _from_px(self, x, y):
+        m, w, h = self._geo()
+        return max(0.0, min(1.0, (x - m) / (w or 1))), max(0.0, min(1.0, 1 - (y - m) / (h or 1)))
+    def paintEvent(self, e):
+        q = QPainter(self); q.setRenderHint(QPainter.Antialiasing)
+        q.fillRect(self.rect(), QColor('#1b2228'))
+        m, w, h = self._geo()
+        cp = sorted(self.cp, key=lambda z: z[0])
+        # ribbon preview (mirror the curve about a mid-line)
+        midy = m + h * 0.5
+        top = [QPointF(m + (i / 40) * w, midy - profile_value(cp, i / 40) * h * 0.42) for i in range(41)]
+        bot = [QPointF(m + (i / 40) * w, midy + profile_value(cp, i / 40) * h * 0.42) for i in range(40, -1, -1)]
+        q.setPen(Qt.NoPen); q.setBrush(QColor('#4cc2ff')); q.drawPolygon(QPolygonF(top + bot))
+        # the curve itself + nodes
+        q.setPen(QPen(QColor('#ffd54a'), 2))
+        pts = [self._to_px(p, s) for p, s in cp]
+        for i in range(len(pts) - 1): q.drawLine(pts[i], pts[i + 1])
+        q.setBrush(QColor('#ffffff'))
+        for pt in pts: q.drawEllipse(pt, 4, 4)
+        q.end()
+    def _hit(self, x, y):
+        for i, (p, s) in enumerate(sorted(self.cp, key=lambda z: z[0])):
+            pt = self._to_px(p, s)
+            if (pt.x() - x) ** 2 + (pt.y() - y) ** 2 <= 49:
+                return self.cp.index([p, s])
+        return None
+    def mousePressEvent(self, e):
+        self.grab = self._hit(e.position().x(), e.position().y())
+    def mouseMoveEvent(self, e):
+        if self.grab is None: return
+        p, s = self._from_px(e.position().x(), e.position().y())
+        ends = sorted(self.cp, key=lambda z: z[0])
+        g = self.cp[self.grab]
+        if g is ends[0]: p = 0.0
+        elif g is ends[-1]: p = 1.0
+        g[0], g[1] = p, s; self.update()
+    def mouseReleaseEvent(self, e): self.grab = None
+    def mouseDoubleClickEvent(self, e):
+        x, y = e.position().x(), e.position().y()
+        i = self._hit(x, y)
+        ends = sorted(self.cp, key=lambda z: z[0])
+        if i is not None and self.cp[i] not in (ends[0], ends[-1]) and len(self.cp) > 2:
+            del self.cp[i]
+        else:
+            p, s = self._from_px(x, y); self.cp.append([p, s])
+        self.update()
+
+
 class CutoutStudio(QDialog):
     """Extract the subject of a picture from its background — the DrawPlus Cutout Studio.
 
@@ -3519,10 +3691,28 @@ class Main(QMainWindow):
                 cb.addItem(lbl, k)
         self.ln_a0.activated.connect(lambda _=0: self._set_arrows())
         self.ln_a1.activated.connect(lambda _=0: self._set_arrows())
+        # calligraphic line style
+        self.ln_calli = QCheckBox('Calligraphic nib')
+        self.ln_calli.toggled.connect(self._set_calligraphic)
+        self.ln_nib = QSpinBox(); self.ln_nib.setRange(0, 180); self.ln_nib.setSuffix('°'); self.ln_nib.setValue(45)
+        self.ln_nib.valueChanged.connect(lambda v: self._set_line_prop('nib_angle', int(v)))
         form.addRow('Width:', self.ln_w); form.addRow('Style:', self.ln_dash)
         form.addRow('Start:', self.ln_a0); form.addRow('End:', self.ln_a1)
+        form.addRow('', self.ln_calli); form.addRow('Nib angle:', self.ln_nib)
         v.addLayout(form); v.addStretch(1)
         return sa
+
+    def _set_calligraphic(self, on):
+        o = self.canvas.sel
+        if o is None: return
+        self.canvas.snapshot()
+        for s in self.canvas._selection():
+            if on:
+                s['linestyle'] = 'calligraphic'
+                s.setdefault('nib_angle', int(self.ln_nib.value()))
+            else:
+                s.pop('linestyle', None)
+        self.canvas.update()
 
     def _set_line_prop(self, key, val):
         o = self.canvas.sel
@@ -3773,7 +3963,7 @@ class Main(QMainWindow):
         o = self.canvas.sel
         widgets = [getattr(self, n, None) for n in
                    ('op_slider', 'blend_cb', 'tf_x', 'tf_y', 'tf_w', 'tf_h', 'tf_r',
-                    'ln_w', 'ln_dash', 'font_combo', 'font_size', 'font_bold', 'font_italic')]
+                    'ln_w', 'ln_dash', 'ln_calli', 'ln_nib', 'font_combo', 'font_size', 'font_bold', 'font_italic')]
         for w in widgets:
             if w is not None: w.blockSignals(True)
         try:
@@ -3790,6 +3980,9 @@ class Main(QMainWindow):
                     self.tf_w.setValue(max(1, r.width())); self.tf_h.setValue(max(1, r.height()))
                     self.tf_r.setValue(obj_rot(o))
                 if hasattr(self, 'ln_w'): self.ln_w.setValue(int(o.get('sw', 2)))
+                if hasattr(self, 'ln_calli'):
+                    self.ln_calli.setChecked(o.get('linestyle') == 'calligraphic')
+                    self.ln_nib.setValue(int(o.get('nib_angle', 45)))
                 if hasattr(self, 'font_combo') and o.get('type') == 'text':
                     self.font_combo.setCurrentFamily(o.get('family', 'Noto Sans'))
                     self.font_size.setValue(int(o.get('size', 48)))
@@ -3976,6 +4169,59 @@ class Main(QMainWindow):
         for k in ('shadow', 'glow', 'reflect', 'feather', 'bevel'):
             if not o.get(k): o.pop(k, None)
         self.canvas.update()
+
+    # ---------------------------------------------------------------- Pressure Studio
+    def pressure_studio(self):
+        """Pick a pressure profile for the selected brush stroke(s), or set the default for
+        new strokes. A preset dropdown loads a draggable curve; the curve edits a Custom
+        profile. Applies profile reshaping live (draw_brush multiplies widths by the curve)."""
+        from PySide6.QtWidgets import QFormLayout, QDialogButtonBox, QGroupBox
+        sel = [s for s in self.canvas._selection() if s.get('type') == 'brush']
+        o = sel[0] if sel else None
+        cur = o.get('profile') if o else getattr(self.canvas, 'brush_profile', None)
+        # resolve current profile to (name, control-points)
+        if isinstance(cur, dict):
+            name0 = cur.get('name', 'Constant'); cp0 = profile_points(cur)
+        elif isinstance(cur, str):
+            name0 = cur; cp0 = profile_points(cur)
+        else:
+            name0 = 'Constant'; cp0 = PROFILE_PRESETS['Constant']
+        dlg = QDialog(self); dlg.setWindowTitle('Pressure Studio — stroke width profile')
+        lay = QVBoxLayout(dlg)
+        if not sel:
+            lay.addWidget(QLabel('No brush stroke selected — this sets the default profile '
+                                 'for new brush strokes.'))
+        preset = QComboBox()
+        for nm in PROFILE_NAMES: preset.addItem(nm, nm)
+        preset.setCurrentIndex(PROFILE_NAMES.index(name0) if name0 in PROFILE_NAMES else 0)
+        curve = ProfileCurve(cp0)
+        form = QFormLayout(); form.addRow('Preset:', preset); lay.addLayout(form)
+        lay.addWidget(QLabel('Width along stroke (drag points; double-click adds / removes):'))
+        lay.addWidget(curve)
+        def load_preset(_i=0):
+            nm = preset.currentData()
+            if nm != 'Custom':
+                curve.set_points(PROFILE_PRESETS.get(nm, PROFILE_PRESETS['Constant']))
+        preset.activated.connect(load_preset)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); lay.addWidget(bb)
+        if not dlg.exec(): return
+        nm = preset.currentData()
+        if nm == 'Custom':
+            prof = {'name': 'Custom', 'pts': [list(q) for q in curve.points()]}
+        else:
+            prof = {'name': nm}
+        if sel:
+            self.canvas.snapshot()
+            for s in sel:
+                s['profile'] = copy.deepcopy(prof)
+                if s.get('widths') and s.get('pts'):   # bake nothing — draw_brush applies live
+                    pass
+            self.canvas.update()
+        else:
+            self.canvas.brush_profile = copy.deepcopy(prof)
+        # also remember as the default for new strokes
+        self.canvas.brush_profile = copy.deepcopy(prof)
 
     # ---------------------------------------------------------------- text (artistic)
     def _text_dialog(self, text='Text', family=None, size=48, title='Add Text'):
@@ -4622,6 +4868,7 @@ class Main(QMainWindow):
         e.addAction(self.act('Trans&parency Gradient…', self.transparency_gradient_dialog))
         e.addAction(self.act('&Opacity…', self.opacity_dialog))
         e.addAction(self.act('&Line Style (Dashes & Arrows)…', self.line_style_dialog))
+        e.addAction(self.act('&Pressure Studio (brush profile)…', self.pressure_studio))
         e.addSeparator()
         e.addAction(self.act('Convert to &Curves', self.convert_to_curves, QKeySequence('Ctrl+Shift+C')))
         nm = e.addMenu('&Node')
