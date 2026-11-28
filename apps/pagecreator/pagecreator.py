@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... PAGEdesigner"
 ORG = "justapagecreator"
 EXT = ".pagc"
-VERSION = "1.33-00"
+VERSION = "1.34-00"
 
 
 def _just_dir(kind):
@@ -369,7 +369,8 @@ def uid():
 
 DEF = {
     'text':     dict(w=320, h=120, font='Noto Sans', size=16, color='#2b2b2b', html='<p>Type your text here. Frame text wraps inside the frame.</p>',
-                     align='left', lh=1.5, pad=8, fill='', stroke='#333333', strokeW=0, radius=0, bold=False, italic=False, underline=False),
+                     align='left', lh=1.5, pad=8, fill='', stroke='#333333', strokeW=0, radius=0, bold=False, italic=False, underline=False,
+                     cols=1, colgap=16),
     'artistic': dict(w=300, h=54, font='Noto Sans', size=40, color='#1f2a30', html='<p>Artistic Text</p>', align='left', lh=1.15,
                      bold=True, italic=False, underline=False, fill='', stroke='#333333', strokeW=0, radius=0),
     'shape':    dict(w=200, h=140, shape='rect', fill='#9fc3d6', stroke='#2b3a42', strokeW=0, radius=0, dash='solid'),
@@ -843,6 +844,30 @@ def _pick(seq, key, salt=0):
     # 37 is prime and bigger than every list below, so a step of it never
     # lands back on the same entry — three cards on one page read as three.
     return seq[(sum(ord(c) for c in key) + salt * 37) % len(seq)]
+
+# Greeking copy for Insert ▸ Fill with Placeholder Text (F5) — classic lorem ipsum.
+LOREM_SENTENCES = [
+    "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua.",
+    "Ut enim ad minim veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.",
+    "Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur.",
+    "Excepteur sint occaecat cupidatat non proident, sunt in culpa qui officia deserunt mollit anim id est laborum.",
+    "Sed ut perspiciatis unde omnis iste natus error sit voluptatem accusantium doloremque laudantium, totam rem aperiam.",
+    "Nemo enim ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit, sed quia consequuntur magni dolores.",
+    "Neque porro quisquam est, qui dolorem ipsum quia dolor sit amet, consectetur, adipisci velit.",
+    "Quis autem vel eum iure reprehenderit qui in ea voluptate velit esse quam nihil molestiae consequatur.",
+    "At vero eos et accusamus et iusto odio dignissimos ducimus qui blanditiis praesentium voluptatum deleniti.",
+    "Et harum quidem rerum facilis est et expedita distinctio nam libero tempore, cum soluta nobis est eligendi.",
+]
+
+def lorem_html(paragraphs=3, sentences=4, salt=0):
+    """Return `paragraphs` of lorem-ipsum as <p> HTML blocks."""
+    out = []
+    i = salt
+    for _ in range(max(1, paragraphs)):
+        s = [LOREM_SENTENCES[i % len(LOREM_SENTENCES)] for i in range(i, i + max(1, sentences))]
+        i += max(1, sentences)
+        out.append('<p>' + ' '.join(s) + '</p>')
+    return ''.join(out)
 
 SERIF_TAGLINE = [
     'Made properly, made to last', 'Everything in one place', 'Good work, close to home',
@@ -2306,8 +2331,24 @@ def paint_obj(p, o, site, page, hide_text=False, edit=True):
                 last = idx == len(chain) - 1
                 overflow = doc.size().height() > offset + (h - 2 * pad) + 1
             else:
-                excl = wrap_exclusions(o, site, page, pad) if (t == 'text' and page is not None) else []
-                if excl:
+                cols = int(head.get('cols', 1)) if t == 'text' else 1
+                excl = wrap_exclusions(o, site, page, pad) if (t == 'text' and page is not None and cols <= 1) else []
+                if cols > 1:
+                    # Newspaper columns: flow one document down column 1, then 2… by
+                    # clipping each column rect and translating the doc up by a column's height.
+                    gap = head.get('colgap', 16)
+                    colw = max(10, (w - 2 * pad - (cols - 1) * gap) / cols)
+                    colh = max(1.0, h - 2 * pad)
+                    doc.setTextWidth(colw)
+                    p.save(); p.setClipRect(r)
+                    for ci in range(cols):
+                        cx = pad + ci * (colw + gap)
+                        p.save(); p.setClipRect(QRectF(cx, pad, colw, colh))
+                        p.translate(cx, pad - ci * colh)
+                        doc.documentLayout().draw(p, ctx); p.restore()
+                    p.restore()
+                    last, overflow = True, doc.size().height() > cols * colh + 1
+                elif excl:
                     p.save(); p.setClipRect(r)
                     draw_wrapped_text(p, doc, w - 2 * pad, pad, excl, head.get('color', '#000'))
                     p.restore()
@@ -3015,10 +3056,13 @@ a.obj{color:inherit;text-decoration:none}
 def esc(s): return H.escape(str(s), quote=True)
 
 def text_css(o):
-    return (f"font-family:{css_font(o.get('font', SANS))};font-size:{o.get('size', 16)}px;color:{o.get('color', '#222')};"
-            f"text-align:{o.get('align', 'left')};font-weight:{700 if o.get('bold') else 400};"
-            f"font-style:{'italic' if o.get('italic') else 'normal'};text-decoration:{'underline' if o.get('underline') else 'none'};"
-            f"line-height:{o.get('lh', 1.4)};")
+    s = (f"font-family:{css_font(o.get('font', SANS))};font-size:{o.get('size', 16)}px;color:{o.get('color', '#222')};"
+         f"text-align:{o.get('align', 'left')};font-weight:{700 if o.get('bold') else 400};"
+         f"font-style:{'italic' if o.get('italic') else 'normal'};text-decoration:{'underline' if o.get('underline') else 'none'};"
+         f"line-height:{o.get('lh', 1.4)};")
+    if o.get('type') == 'text' and int(o.get('cols', 1)) > 1:
+        s += f"column-count:{int(o['cols'])};column-gap:{o.get('colgap', 16)}px;"
+    return s
 
 def box_css(o):
     s = ''
@@ -7000,7 +7044,9 @@ class MainWindow(QMainWindow):
                                          ('address', 'Address'), ('website', 'Website'), ('all', 'All contact details'))]
         menu('&Insert', [a['newpage'], a['pagenum'], a['placepdf'],
                          self.act('Picture from &Library…', lambda: self.picture_from_library(), None,
-                                  ['insert-image', 'image-x-generic', 'folder-pictures']), None] + ins + [None,
+                                  ['insert-image', 'image-x-generic', 'folder-pictures']),
+                         self.act('Fill with &Placeholder Text', lambda: self.fill_placeholder_text(), 'F5',
+                                  ['insert-text', 'text-field', 'edit-paste']), None] + ins + [None,
                          self.act('&Asset…', lambda: self.insert_asset_dialog(), None, ['insert-object', 'star-shape', 'shapes']),
                          self.act('&Chart…', lambda: self.chart_dialog(), None, ['office-chart-bar', 'x-office-spreadsheet', 'view-statistics']),
                          self.act('&QR Code…', lambda: self.qr_dialog(), None, ['view-barcode-qr', 'insert-barcode', 'view-barcode']),
@@ -7013,7 +7059,9 @@ class MainWindow(QMainWindow):
                     a['list_lowerroman'], a['list_upperroman'], None, a['list_none']]
         style_acts = [self.act(n, lambda _=False, n=n: self.apply_text_style(n), None, None) for n in TEXT_STYLE_PRESETS]
         menu('F&ormat', [a['bold'], a['italic'], a['underline'], None, a['aleft'], a['acenter'], a['aright'], a['ajust'],
-                         None, ('Text Styles', style_acts), ('Lists / Bullets', list_sub), None,
+                         None, ('Text Styles', style_acts), ('Lists / Bullets', list_sub),
+                         self.act('Text Frame &Columns…', lambda: self.text_columns_dialog(), None,
+                                  ['view-split-left-right', 'format-text-columns', 'view-column']), None,
                          self.act('&Replace Colour…', lambda: self.replace_colour_dialog(), None, ['color-picker', 'gtk-select-color', 'preferences-desktop-color']),
                          self.act('&Picture Fill…', lambda: self.bitmap_fill_dialog(), None, ['insert-image', 'fill-color', 'view-preview']),
                          self.act('Remove Picture Fill', lambda: self.clear_fill_image(), None, None),
@@ -8386,6 +8434,46 @@ class MainWindow(QMainWindow):
         o['x'] = self.view.snap(max(0, c.x() - o['w'] / 2)); o['y'] = self.view.snap(max(0, c.y() - o['h'] / 2))
         self.add_object(o)
         self.hint(f'Added a Buy Me a Coffee button → {url}. Drag it where you like; the link is saved for next time.')
+
+    def fill_placeholder_text(self):
+        """Fill the selected (or being-edited) text frame with lorem-ipsum greeking —
+        PagePlus's F5 'fill with placeholder text'."""
+        if self.editor: self.finish_edit()
+        objs = [o for o in self.sel_objs() if o['type'] in ('text', 'artistic') and not o.get('locked')]
+        if not objs:
+            QMessageBox.information(self, APP, 'Select a text frame first, then Fill with Placeholder Text (F5).')
+            return
+        self.commit()
+        for o in objs:
+            if o['type'] == 'artistic':
+                o['html'] = '<p>Your heading here</p>'
+            else:
+                pad = o.get('pad', 8); size = max(6, o.get('size', 16)); lh = float(o.get('lh', 1.4) or 1.4)
+                lines = max(1, int((o['h'] - 2 * pad) / (size * lh)))
+                cols = max(1, int(o.get('cols', 1)))
+                paras = max(1, round(lines * cols / 4))
+                o['html'] = lorem_html(paras, 4, salt=sum(ord(c) for c in o['id']))
+        self.refresh()
+        self.hint('Filled with placeholder text. Type to replace it, or press F5 again for more.')
+
+    def text_columns_dialog(self):
+        """Split the selected text frame(s) into newspaper columns (PagePlus frame columns)."""
+        objs = [o for o in self.sel_objs() if o['type'] == 'text' and not o.get('locked')]
+        if not objs:
+            QMessageBox.information(self, APP, 'Select a text frame first, then set its columns.')
+            return
+        cur = int(objs[0].get('cols', 1))
+        n, ok = QInputDialog.getInt(self, 'Text Frame Columns', 'Number of columns:', cur, 1, 6)
+        if not ok: return
+        gap = int(objs[0].get('colgap', 16))
+        if n > 1:
+            g, ok2 = QInputDialog.getInt(self, 'Text Frame Columns', 'Gap between columns (px):', gap, 0, 200)
+            if ok2: gap = g
+        self.commit()
+        for o in objs:
+            o['cols'] = n; o['colgap'] = gap
+        self.refresh()
+        self.hint(f'Text frame set to {n} column' + ('' if n == 1 else 's') + '.')
 
     def insert_contact(self, field):
         """Drop a text frame showing a contact detail from Site Properties.
