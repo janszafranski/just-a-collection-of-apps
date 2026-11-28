@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.24-00"
+VERSION = "1.25-00"
 
 
 # ===================================================================== font grouping
@@ -4202,6 +4202,117 @@ def seo_head(site, page, img):
     head = '\n'.join(out)
     return title, (head + '\n' if head else '')
 
+def head_extra(site):
+    """Site-wide custom <head> injection (v1.25): raw custom head code + GA4 gtag.
+    Appended at the very end of every page's <head>. Returns '' when nothing set
+    so unconfigured sites publish unchanged.
+
+    - site['head_code']  : free-text RAW HTML (scripts, meta, verification tags) —
+                           injected verbatim, by design (the user owns their site).
+    - site['analytics_id']: a GA4 measurement id ("G-XXXX"); emits the standard
+                           gtag.js snippet. The id is sanitised to [A-Za-z0-9-]
+                           before it is ever interpolated into the markup, so a
+                           hostile/garbled id can't break out of the attribute."""
+    out = []
+    ga = re.sub(r'[^A-Za-z0-9-]', '', (site.get('analytics_id') or '').strip())
+    if ga:
+        out.append(
+            f'<script async src="https://www.googletagmanager.com/gtag/js?id={ga}"></script>\n'
+            f'<script>window.dataLayer=window.dataLayer||[];function gtag(){{dataLayer.push(arguments);}}'
+            f'gtag("js",new Date());gtag("config","{ga}");</script>')
+    raw = (site.get('head_code') or '').strip()
+    if raw:
+        out.append(raw)                          # RAW HTML, intentionally not escaped
+    head = '\n'.join(out)
+    return (head + '\n') if head else ''
+
+def cookie_banner_html(site):
+    """Self-contained cookie-consent banner (v1.25), injected before </body> on
+    every page when site['cookie_consent']['enabled']. No external libraries: a
+    fixed dark bar + Accept button + inline script that hides it and records the
+    choice in localStorage['cc_ok'] so it stays dismissed on later visits.
+    Returns '' when disabled."""
+    cc = site.get('cookie_consent') or {}
+    if not cc.get('enabled'): return ''
+    text = esc(cc.get('text') or 'We use cookies to make this site work and to understand how it is used.')
+    btn = esc(cc.get('button') or 'Accept')
+    link = (cc.get('link') or '').strip()
+    pos = 'top' if cc.get('pos') == 'top' else 'bottom'
+    edge = 'top:0' if pos == 'top' else 'bottom:0'
+    linkhtml = f' <a href="{esc(link)}" style="color:#9fd3ff">Privacy</a>' if link else ''
+    return (
+        f'<div id="cc-banner" style="position:fixed;left:0;right:0;{edge};z-index:2147483000;'
+        f'display:none;background:#1b1f24;color:#eef1f4;padding:14px 18px;'
+        f'font:14px/1.5 system-ui,-apple-system,Segoe UI,Arial,sans-serif;'
+        f'box-shadow:0 0 20px rgba(0,0,0,.4)">'
+        f'<div style="max-width:960px;margin:0 auto;display:flex;flex-wrap:wrap;'
+        f'align-items:center;gap:12px;justify-content:space-between">'
+        f'<span style="flex:1 1 260px">{text}{linkhtml}</span>'
+        f'<button id="cc-ok" style="flex:0 0 auto;cursor:pointer;border:0;border-radius:6px;'
+        f'background:#2a7d6b;color:#fff;padding:9px 20px;font:inherit;font-weight:600">{btn}</button>'
+        f'</div></div>'
+        f'<script>(function(){{var b=document.getElementById("cc-banner");'
+        f'if(!b)return;try{{if(localStorage.getItem("cc_ok")){{return;}}}}catch(e){{}}'
+        f'b.style.display="block";document.getElementById("cc-ok").onclick=function(){{'
+        f'try{{localStorage.setItem("cc_ok","1");}}catch(e){{}}b.style.display="none";}};}})();</script>')
+
+def protect_gate(site, page):
+    """Basic access control for a protected page (v1.25). NOT real security: the
+    full HTML (and so all page content) is downloadable by anyone — a client-side
+    JS gate only DETERS CASUAL ACCESS, it does not keep a determined visitor out.
+    We make that honest in the UI and in the emitted comment too.
+
+    The password is never shipped in plaintext: we embed a SHA-256 hex of
+    (salt + ':' + password) and compare against it in the browser via SubtleCrypto
+    (with a tiny non-crypto fallback for non-secure contexts). On a match the real
+    page content is revealed and the unlock is remembered in sessionStorage.
+
+    Returns (head_css, overlay_html) to inject; ('','') when the page isn't
+    protected. page_html hides the content with a body class until unlocked."""
+    pr = page.get('protect') or {}
+    pw = pr.get('password') or ''
+    if not pr.get('enabled') or not pw: return '', ''
+    salt = hashlib.sha256((site.get('name', '') + '|' + page.get('id', '') + '|cc-salt').encode('utf-8')).hexdigest()[:16]
+    want = hashlib.sha256((salt + ':' + pw).encode('utf-8')).hexdigest()
+    hint = esc(pr.get('hint') or '')
+    key = 'pg_' + hashlib.sha256((page.get('id', '') + want).encode('utf-8')).hexdigest()[:12]
+    hinthtml = f'<p id="pg-hint" style="color:#8a93a0;font-size:13px;margin:4px 0 0">{hint}</p>' if hint else ''
+    css = ('<style>body.pg-locked>.pf-wrap,body.pg-locked>.pf-page{filter:blur(8px);'
+           'pointer-events:none;user-select:none}</style>')
+    # NOTE: client-side gate only — HTML is downloadable, this deters casual access, not real security.
+    overlay = (
+        f'<div id="pg-gate" style="position:fixed;inset:0;z-index:2147483600;'
+        f'background:#11151a;display:flex;align-items:center;justify-content:center;'
+        f'font:15px/1.5 system-ui,-apple-system,Segoe UI,Arial,sans-serif">'
+        f'<form id="pg-form" style="background:#1b1f24;color:#eef1f4;padding:28px 26px;'
+        f'border-radius:12px;max-width:340px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.5)">'
+        f'<h2 style="margin:0 0 6px;font-size:18px">This page is protected</h2>'
+        f'<p style="margin:0 0 14px;color:#9aa4b0;font-size:13px">Enter the password to view it.</p>'
+        f'<input id="pg-pw" type="password" autofocus style="width:100%;box-sizing:border-box;'
+        f'padding:11px 12px;border-radius:7px;border:1px solid #333b45;background:#0e1217;'
+        f'color:#fff;font:inherit">'
+        f'<p id="pg-err" style="color:#e8766a;font-size:13px;margin:8px 0 0;display:none">Wrong password.</p>'
+        f'{hinthtml}'
+        f'<button type="submit" style="margin-top:16px;width:100%;cursor:pointer;border:0;'
+        f'border-radius:7px;background:#2a7d6b;color:#fff;padding:11px;font:inherit;font-weight:600">Unlock</button>'
+        f'</form></div>'
+        f'<script>/* Basic access control only — the page HTML is downloadable, so this'
+        f' deters casual access, NOT a real secret. */(function(){{'
+        f'var SALT="{salt}",WANT="{want}",KEY="{key}";'
+        f'function reveal(){{var g=document.getElementById("pg-gate");if(g)g.remove();'
+        f'document.body.classList.remove("pg-locked");}}'
+        f'try{{if(sessionStorage.getItem(KEY)==="1"){{reveal();return;}}}}catch(e){{}}'
+        f'function h(s){{if(window.crypto&&crypto.subtle){{return crypto.subtle.digest("SHA-256",'
+        f'new TextEncoder().encode(s)).then(function(b){{return Array.from(new Uint8Array(b))'
+        f'.map(function(x){{return x.toString(16).padStart(2,"0");}}).join("");}});}}'
+        f'var h2=5381;for(var i=0;i<s.length;i++)h2=((h2<<5)+h2+s.charCodeAt(i))>>>0;'
+        f'return Promise.resolve("fb"+h2.toString(16));}}'  # fallback hash tagged "fb" — won't match SHA-256 WANT
+        f'var f=document.getElementById("pg-form");f.addEventListener("submit",function(ev){{'
+        f'ev.preventDefault();var v=document.getElementById("pg-pw").value;'
+        f'h(SALT+":"+v).then(function(hh){{if(hh===WANT){{try{{sessionStorage.setItem(KEY,"1");}}catch(e){{}}'
+        f'reveal();}}else{{document.getElementById("pg-err").style.display="block";}}}});}});}})();</script>')
+    return css, overlay
+
 def page_html(site, page, img):
     m = next((x for x in site['masters'] if x['id'] == page['master']), site['masters'][0])
     objs = [o for o in page_objects(site, page) if not o.get('hidden')]
@@ -4349,6 +4460,15 @@ def page_html(site, page, img):
     # seo_head preserves the old auto word-derived description as its fallback,
     # so an unconfigured site publishes the same meta description as before.
     seo_title, seo = seo_head(site, page, img)
+    # v1.25 publish-time injections, computed once and threaded into both templates:
+    #   headx  = site-wide custom head code + GA4 gtag (end of <head>)
+    #   cookie = cookie-consent banner + script (before </body>)
+    #   gate_css / gate   = per-page basic-access-control overlay (css in <head>, overlay before </body>)
+    #   body_cls = " class=\"pg-locked\"" so a protected page starts hidden until unlocked
+    headx = head_extra(site)
+    cookie = cookie_banner_html(site)
+    gate_css, gate = protect_gate(site, page)
+    body_cls = ' class="pg-locked"' if gate else ''
     bgpic = f' url({img(site["bgimage"])}) top left repeat' if site.get('bgimage') in site.get('assets', {}) else ''
     # Feed auto-discovery: one <link rel="alternate"> per News Feed hub so browsers
     # and readers find the RSS without hunting for the icon. Emitted on every page,
@@ -4483,16 +4603,16 @@ def page_html(site, page, img):
         return (f'<!doctype html>\n<html lang="en-GB">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="{viewport}">\n'
                 f'<meta name="color-scheme" content="light">\n'
                 f'<title>{esc(seo_title)}</title>\n{seo}{feedlinks}<meta name="generator" content="{APP} {VERSION}">\n'
-                f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n{scale_js}\n</body>\n</html>\n')
+                f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n{gate_css}{headx}</head>\n<body{body_cls}>\n'
+                f'<div class="pf-wrap">\n<div class="pf-page">\n{body}\n</div>\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n{scale_js}\n{cookie}\n{gate}\n</body>\n</html>\n')
     # --- Static publish (default, fixed width) ----------------------------
     css = (f'body{{background:{site.get("bg") or bg}{bgpic}}}\n.pf-page{{width:{site["width"]}px;height:{Hh}px;background:{bg}}}\n'
            + '\n'.join(rules) + smooth_css + ('\n' + extras_css if extras_css else ''))
     return (f'<!doctype html>\n<html lang="en-GB">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width={site["width"]}">\n'
             f'<meta name="color-scheme" content="light">\n'
             f'<title>{esc(seo_title)}</title>\n{seo}<meta name="generator" content="{APP} {VERSION}">\n'
-            f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n</head>\n<body>\n'
-            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n</body>\n</html>\n')
+            f'{flink}<link rel="stylesheet" href="style.css">\n<style>\n{css}\n</style>\n{gate_css}{headx}</head>\n<body{body_cls}>\n'
+            f'<div class="pf-page">\n{body}\n</div>\n{lightbox}\n{anim_js}\n{extras_js}\n{cookie}\n{gate}\n</body>\n</html>\n')
 
 WEBSAFE_FONTS = {'arial', 'helvetica', 'helvetica neue', 'times new roman', 'times', 'georgia',
                  'courier new', 'courier', 'verdana', 'tahoma', 'trebuchet ms', 'segoe ui',
@@ -11770,8 +11890,28 @@ class MainWindow(QMainWindow):
         bgc = [p.get('bg', '')]
         bgb = ColorButton(p.get('bg') or self.master_of(p).get('bg'), lambda c: (bgc.__setitem__(0, c), bgb.setIcon(swatch_icon(c or self.master_of(p).get('bg'), 18))), 'Page background', allow_none=True)
         bgb.setToolTip('Choose None to use the master page background')
+        # v1.25 basic access control. Holds the protect dict; the button text reflects
+        # whether it's on. HONEST label: this is NOT real security (see protect_gate).
+        prot = [dict(p.get('protect') or {})]
+        def _prot_label():
+            return 'Protected (password set)' if (prot[0].get('enabled') and prot[0].get('password')) else 'Not protected'
+        protb = QPushButton('Protect this page…  —  ' + _prot_label())
+        def _prot_dlg():
+            d = prot[0]
+            pw = QLineEdit(d.get('password', '')); pw.setPlaceholderText('Leave blank to turn protection off')
+            hint = QLineEdit(d.get('hint', '')); hint.setPlaceholderText('Password hint shown on the gate (optional)')
+            note = QLabel('Basic access control only: the page is gated with a password prompt in the '
+                          'browser. It deters casual access — it is NOT real security, because the page '
+                          'content is still downloadable. Don’t use it for genuine secrets.')
+            note.setWordWrap(True); note.setStyleSheet('color:#b06a1e')
+            od = form_dialog(self, 'Protect this page', [('Password:', pw), ('Hint:', hint)], note)
+            if od.exec():
+                p2 = pw.text()
+                prot[0] = dict(enabled=bool(p2), password=p2, hint=hint.text().strip()) if p2 else {}
+                protb.setText('Protect this page…  —  ' + _prot_label())
+        protb.clicked.connect(_prot_dlg)
         dlg = form_dialog(self, 'Page Properties', [('Page name:', title), ('File name:', file), ('Master page:', mas), ('Height:', hh),
-                                                     ('Published date:', date), ('Background:', bgb), ('', nav)])
+                                                     ('Published date:', date), ('Background:', bgb), ('', nav), ('Access:', protb)])
         if not dlg.exec(): return
         fn = re.sub(r'[^A-Za-z0-9._-]+', '-', file.text().strip()) or slug(title.text(), set())
         if not fn.lower().endswith(('.html', '.htm')): fn += '.html'
@@ -11780,6 +11920,8 @@ class MainWindow(QMainWindow):
         self.commit()
         p.update(title=title.text().strip() or p['title'], file=fn, master=mas.currentData(), nav=nav.isChecked(),
                  height=hh.value() or None, bg=bgc[0], date=date.text().strip())
+        if prot[0].get('password'): p['protect'] = prot[0]          # v1.25: keep only when set, stay byte-stable
+        else: p.pop('protect', None)
         self.refresh()
 
     def site_props(self):
@@ -12994,6 +13136,43 @@ class MainWindow(QMainWindow):
         from PySide6.QtWidgets import QCheckBox as _QCheckBox
         smooth = _QCheckBox('Smooth scrolling — anchor jumps glide instead of snapping')
         smooth.setChecked(bool(self.site.get('smooth'))); dl.addWidget(smooth)
+        # v1.25 site-wide publish options: cookie banner, custom head code + GA, each a
+        # tick plus an "Options…" button (same pattern as the add-ons below). Edits are
+        # held in `tmp` so re-ticking the box doesn't lose them.
+        cook = _QCheckBox('Cookie-consent banner on every page')
+        cook.setChecked(bool((self.site.get('cookie_consent') or {}).get('enabled')))
+        head = _QCheckBox('Custom head code / Google Analytics')
+        head.setChecked(bool((self.site.get('head_code') or '').strip() or (self.site.get('analytics_id') or '').strip()))
+        tmp25 = {'cookie_consent': dict(self.site.get('cookie_consent') or {}),
+                 'head_code': self.site.get('head_code') or '', 'analytics_id': self.site.get('analytics_id') or ''}
+        def _cc_opts():
+            from PySide6.QtWidgets import QComboBox as _C
+            d = tmp25['cookie_consent']
+            txt = QLineEdit(d.get('text', '')); txt.setPlaceholderText('We use cookies to make this site work…')
+            btn = QLineEdit(d.get('button', '')); btn.setPlaceholderText('Accept')
+            lnk = QLineEdit(d.get('link', '')); lnk.setPlaceholderText('https://… privacy policy (optional)')
+            pos = _C(); pos.addItems(['Bottom of page', 'Top of page']); pos.setCurrentIndex(1 if d.get('pos') == 'top' else 0)
+            od = form_dialog(self, 'Cookie-consent banner',
+                             [('Banner text:', txt), ('Button label:', btn), ('Privacy link:', lnk), ('Position:', pos)],
+                             QLabel('Shown once; the visitor’s choice is remembered in their browser. No external scripts.'))
+            if od.exec():
+                tmp25['cookie_consent'] = dict(enabled=True, text=txt.text().strip(), button=btn.text().strip(),
+                                               link=lnk.text().strip(), pos='top' if pos.currentIndex() == 1 else 'bottom')
+                cook.setChecked(True)
+        def _head_opts():
+            ga = QLineEdit(tmp25['analytics_id']); ga.setPlaceholderText('G-XXXXXXXXXX (optional)')
+            hc = QPlainTextEdit(tmp25['head_code']); hc.setMinimumHeight(140)
+            hc.setPlaceholderText('Raw HTML injected into every page’s <head> — scripts, meta, verification tags…')
+            od = form_dialog(self, 'Custom head code & Analytics',
+                             [('Google Analytics measurement ID (G-…):', ga),
+                              ('Custom head code (scripts, meta, verification tags):', hc)],
+                             QLabel('Head code is inserted verbatim (raw HTML). The Analytics ID emits the standard '
+                                    'gtag.js snippet. Only add code from sources you trust.'))
+            if od.exec():
+                tmp25['analytics_id'] = ga.text().strip(); tmp25['head_code'] = hc.toPlainText()
+                head.setChecked(True)
+        for cb, fn in ((cook, _cc_opts), (head, _head_opts)):
+            r = _QHBoxLayout(); r.addWidget(cb, 1); ob = _QPushButton('Options…'); ob.clicked.connect(fn); r.addWidget(ob); dl.addLayout(r)
         # Site-wide add-ons (v1.18): back-to-top, snow, custom scrollbar. Each a tick plus a
         # small "Options…" button; stored as site[...] dicts (None/absent = off).
         from PySide6.QtWidgets import QHBoxLayout as _QHBoxLayout, QPushButton as _QPushButton
@@ -13040,6 +13219,13 @@ class MainWindow(QMainWindow):
         if dlg.exec() != QDialog.Accepted: return
         self.site['responsive'] = rb_resp.isChecked()
         self.site['smooth'] = smooth.isChecked()
+        # v1.25 options. Cookie consent keeps its text/link under the enabled flag.
+        cc = tmp25['cookie_consent']; cc['enabled'] = cook.isChecked()
+        self.site['cookie_consent'] = cc if cook.isChecked() else {**cc, 'enabled': False}
+        # Head code / GA only stored when the box is ticked; cleared when off so an
+        # unconfigured site publishes unchanged.
+        self.site['head_code'] = tmp25['head_code'] if head.isChecked() else ''
+        self.site['analytics_id'] = tmp25['analytics_id'] if head.isChecked() else ''
         self.site['backtotop'] = tmp['backtotop'] if btt.isChecked() else None
         self.site['snow'] = tmp['snow'] if snow.isChecked() else None
         self.site['scrollbar'] = tmp['scrollbar'] if sbar.isChecked() else None
