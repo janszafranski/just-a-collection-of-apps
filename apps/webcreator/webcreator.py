@@ -38,7 +38,7 @@ except ImportError:
 APP = "just a... WEBcreator"
 ORG = "justawebcreator"
 EXT = ".webc"
-VERSION = "1.25-00"
+VERSION = "1.26-00"
 
 
 # ===================================================================== font grouping
@@ -555,6 +555,7 @@ SHARE_NETS = [  # id, label, button colour, share address ({u} = page address, {
     ('whatsapp', 'WhatsApp', '#1f9e57', 'https://wa.me/?text={t}%20{u}'),
     ('bluesky', 'Bluesky', '#1185fe', 'https://bsky.app/intent/compose?text={t}%20{u}'),
     ('reddit', 'Reddit', '#e0461b', 'https://www.reddit.com/submit?url={u}&title={t}'),
+    ('pinterest', 'Pinterest', '#e60023', 'https://pinterest.com/pin/create/button/?url={u}&description={t}'),
     ('threads', 'Threads', '#000000', 'https://www.threads.net/intent/post?text={t}%20{u}'),
     ('email', 'Email', '#5a6872', 'mailto:?subject={t}&body={u}'),
 ]
@@ -1260,6 +1261,90 @@ def pixmap_for(site, key):
         pm = QPixmap(); pm.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
         _PIX[key] = pm
     return _PIX[key]
+
+
+# ---- image watermarking on publish (WebPlus "Watermarking") -----------------
+# site['watermark'] = {enabled, kind:'text'|'image', text, src:<asset key of logo>,
+#   pos:'br'|'bl'|'tr'|'tl'|'center'|'tile', opacity:0..100, scale:0..100, color:'#hex'}.
+# Applied ONLY to the published copies on disk (never to site['assets']); the caller
+# feeds in a decoded QImage and we return a NEW watermarked QImage (leaving the input
+# untouched). We skip tiny/icon art by size so logos/buttons aren't stamped — see
+# watermark_applies(). Text paints with drawText; image paints the scaled logo.
+
+WATERMARK_MIN = 200  # size heuristic: only stamp "real" photos whose min(w,h) >= this
+
+def watermark_applies(img):
+    """True only for content-sized images — skip icons, buttons, small generated art."""
+    return img is not None and not img.isNull() and min(img.width(), img.height()) >= WATERMARK_MIN
+
+def _wm_logo_image(wm, site):
+    """Decode the logo asset (if any) referenced by wm['src'] into a QImage, else None."""
+    if not site: return None
+    src = (site.get('assets', {}) or {}).get(wm.get('src'))
+    if not src or ',' not in src: return None
+    im = QImage()
+    im.loadFromData(QByteArray.fromBase64(src.split(',', 1)[1].encode()))
+    return None if im.isNull() else im
+
+def apply_watermark(img, wm, site=None):
+    """Composite the configured watermark onto a copy of QImage `img`; return the copy.
+    Never mutates the input. `site` is needed only to resolve an image/logo watermark's
+    asset. Positions: tl/tr/bl/br corners, center, or tile (repeat across the image)."""
+    if img is None or img.isNull() or not wm or not wm.get('enabled'):
+        return img
+    out = img.convertToFormat(QImage.Format_ARGB32)          # a fresh editable copy
+    W, H = out.width(), out.height()
+    opacity = max(0.0, min(1.0, wm.get('opacity', 55) / 100.0))
+    pos = wm.get('pos', 'br'); margin = max(8, int(min(W, H) * 0.03))
+    p = QPainter(out); p.setRenderHint(QPainter.Antialiasing); p.setRenderHint(QPainter.SmoothPixmapTransform)
+    p.setOpacity(opacity)
+    try:
+        if wm.get('kind') == 'image':
+            logo = _wm_logo_image(wm, site)
+            if logo is None or logo.isNull():
+                p.end(); return out                           # nothing to stamp
+            scale = max(1, min(100, int(wm.get('scale', 25)))) / 100.0
+            tw = max(1, int(W * scale)); th = max(1, int(logo.height() * tw / max(1, logo.width())))
+            stamp = logo.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            tw, th = stamp.width(), stamp.height()
+            if pos == 'tile':
+                step_x = tw + margin; step_y = th + margin; y = margin
+                while y < H:
+                    x = margin
+                    while x < W:
+                        p.drawImage(x, y, stamp); x += step_x
+                    y += step_y
+            else:
+                x, y = _wm_xy(pos, W, H, tw, th, margin)
+                p.drawImage(x, y, stamp)
+        else:  # text watermark
+            text = (wm.get('text') or '').strip() or '© '
+            col = QColor(wm.get('color', '#ffffff')); col.setAlpha(255)
+            p.setPen(col)
+            f = QFont('Arial'); scale = max(1, min(100, int(wm.get('scale', 25)))) / 100.0
+            # font height scales with the image: scale% maps ~1.5%..30% of min dimension
+            px = max(10, int(min(W, H) * (0.015 + scale * 0.12))); f.setPixelSize(px); f.setBold(True)
+            p.setFont(f); fm = p.fontMetrics()
+            tw = fm.horizontalAdvance(text); th = fm.height()
+            if pos == 'tile':
+                step_x = tw + margin * 3; step_y = th + margin * 3; y = margin + fm.ascent()
+                while y < H + th:
+                    x = margin
+                    while x < W:
+                        p.drawText(x, y, text); x += step_x
+                    y += step_y
+            else:
+                x, y = _wm_xy(pos, W, H, tw, th, margin)
+                p.drawText(x, y + fm.ascent(), text)
+    finally:
+        if p.isActive(): p.end()
+    return out
+
+def _wm_xy(pos, W, H, tw, th, margin):
+    """Top-left pixel for a tw×th stamp placed in corner/center `pos`."""
+    x = margin if pos in ('tl', 'bl') else (W - tw - margin if pos in ('tr', 'br') else (W - tw) // 2)
+    y = margin if pos in ('tl', 'tr') else (H - th - margin if pos in ('bl', 'br') else (H - th) // 2)
+    return max(0, x), max(0, y)
 
 
 # ---- in-app picture adjustments (PhotoPlus-style, via Pillow) ----
@@ -4697,6 +4782,17 @@ def publish_site(site, folder):
             stem, ext2 = os.path.splitext(name); name = f'{stem}-{key[:6]}{ext2}'
         os.makedirs(os.path.join(folder, sub), exist_ok=True)
         blob = base64.b64decode(src.split(',', 1)[1])
+        # Watermark the PUBLISHED copy only (never site['assets']): decode the photo,
+        # composite the mark, re-encode to the SAME format. Applies to real content
+        # photos (min(w,h) >= 200px) — skips tiny icons, SVGs and non-image files.
+        wm = site.get('watermark') or {}
+        if wm.get('enabled') and mt and mt.group(1) not in ('svg+xml', 'gif'):
+            _im = QImage(); _im.loadFromData(blob)
+            if watermark_applies(_im):
+                _marked = apply_watermark(_im, wm, site)
+                _fmt = {'jpg': 'JPEG', 'jpeg': 'JPEG', 'png': 'PNG', 'webp': 'WEBP'}.get(ext, 'PNG')
+                _ba = QByteArray(); _bf = QBuffer(_ba); _bf.open(QIODevice.WriteOnly)
+                if _marked.save(_bf, _fmt): blob = bytes(_ba)
         dest = os.path.join(folder, name)
         try:
             with open(dest, 'rb') as fh: same = (fh.read() == blob)
@@ -4805,6 +4901,51 @@ def publish_site(site, folder):
     publish_site.last_stats = {'pages_total': pages_total, 'pages_changed': pages_changed,
                                'changed_files': changed_files}
     return written
+
+
+# ---- FTP / FTPS publish (WebPlus "Publish to host") -------------------------
+# We upload a already-published folder tree to a web host via Python's stdlib
+# ftplib (plain FTP or FTPS/TLS). No SFTP/SSH (that needs paramiko) — the dialog
+# refuses SFTP with a clear note. The walker is factored out so it is testable
+# with a mock FTP object: it walks `local_root`, creates each remote dir with
+# mkd and sends each file with storbinary, under `remote_dir`.
+
+def ftp_upload_tree(ftp, local_root, remote_dir='', progress=None):
+    """Upload every file under `local_root` to `ftp` beneath `remote_dir`,
+    creating directories as needed. `ftp` is any object exposing mkd/cwd/
+    storbinary (ftplib.FTP/FTP_TLS or a mock). `progress(done, total, relpath)`
+    is called per file. Returns the sorted list of remote paths uploaded."""
+    remote_dir = (remote_dir or '').strip().strip('/')
+    # Gather files first so we can report a total and upload deterministically.
+    files = []
+    for root, _dirs, names in os.walk(local_root):
+        for nm in sorted(names):
+            full = os.path.join(root, nm)
+            rel = os.path.relpath(full, local_root).replace(os.sep, '/')
+            files.append((full, rel))
+    files.sort(key=lambda t: t[1])
+    made = set(); sent = []
+    def ensure_dir(path):
+        # mkd each ancestor once; ignore "already exists" errors from the server.
+        parts = [p for p in path.split('/') if p]
+        cur = ''
+        for part in parts:
+            cur = (cur + '/' + part) if cur else part
+            if cur in made: continue
+            made.add(cur)
+            try: ftp.mkd(cur)
+            except Exception: pass   # dir already there (550) — harmless
+    if remote_dir: ensure_dir(remote_dir)
+    total = len(files)
+    for i, (full, rel) in enumerate(files, 1):
+        remote = (remote_dir + '/' + rel) if remote_dir else rel
+        d = remote.rsplit('/', 1)[0] if '/' in remote else ''
+        if d: ensure_dir(d)
+        with open(full, 'rb') as fh:
+            ftp.storbinary('STOR ' + remote, fh)
+        sent.append(remote)
+        if progress: progress(i, total, rel)
+    return sorted(sent)
 
 # ----------------------------------------------------------------------------
 # Importing an existing website folder
@@ -13134,6 +13275,7 @@ class MainWindow(QMainWindow):
                       'narrow screens, so visitors see the full layout without side-scrolling.')
         note.setWordWrap(True); note.setStyleSheet('color:gray'); dl.addWidget(note)
         from PySide6.QtWidgets import QCheckBox as _QCheckBox
+        from PySide6.QtWidgets import QHBoxLayout as _QHBoxLayout, QPushButton as _QPushButton
         smooth = _QCheckBox('Smooth scrolling — anchor jumps glide instead of snapping')
         smooth.setChecked(bool(self.site.get('smooth'))); dl.addWidget(smooth)
         # v1.25 site-wide publish options: cookie banner, custom head code + GA, each a
@@ -13171,7 +13313,45 @@ class MainWindow(QMainWindow):
             if od.exec():
                 tmp25['analytics_id'] = ga.text().strip(); tmp25['head_code'] = hc.toPlainText()
                 head.setChecked(True)
-        for cb, fn in ((cook, _cc_opts), (head, _head_opts)):
+        # v1.26 watermarking: stamp every published PHOTO (min 200px) with text or a
+        # logo. Settings live in site['watermark']; held in tmp25 so Options… survives
+        # a re-tick. Only the published copies are marked — site['assets'] stay clean.
+        wmk = _QCheckBox('Watermark published photos')
+        wmk.setChecked(bool((self.site.get('watermark') or {}).get('enabled')))
+        tmp25['watermark'] = dict(self.site.get('watermark') or {})
+        def _wm_opts():
+            from PySide6.QtWidgets import QComboBox as _C, QSpinBox as _S
+            d = tmp25['watermark']
+            kind = _C(); kind.addItems(['Text', 'Image / logo']); kind.setCurrentIndex(1 if d.get('kind') == 'image' else 0)
+            txt = QLineEdit(d.get('text', '')); txt.setPlaceholderText('© Your Name')
+            col = [d.get('color', '#ffffff')]; colb = ColorButton(col[0], lambda c: col.__setitem__(0, c or '#ffffff'), 'Text colour')
+            # logo picker (reuse the OG-image pattern)
+            logo = [d.get('src') or '']
+            lgb = _QPushButton(self.site.get('assetnames', {}).get(logo[0], 'Choose logo…') if logo[0] else 'Choose logo…')
+            def pick_logo():
+                path, _ = QFileDialog.getOpenFileName(self, 'Watermark logo', os.path.expanduser('~/Pictures'),
+                                                      'Pictures (*.png *.jpg *.jpeg *.gif *.webp)')
+                uri = self.picture_uri(path) if path else None
+                if uri:
+                    k = add_asset(self.site, uri); self.site.setdefault('assetnames', {})[k] = os.path.basename(path)
+                    logo[0] = k; lgb.setText(os.path.basename(path))
+            lgb.clicked.connect(pick_logo)
+            pos = _C(); _poslist = ['br', 'bl', 'tr', 'tl', 'center', 'tile']
+            pos.addItems(['Bottom right', 'Bottom left', 'Top right', 'Top left', 'Centre', 'Tiled (repeat)'])
+            pos.setCurrentIndex(_poslist.index(d.get('pos', 'br')) if d.get('pos', 'br') in _poslist else 0)
+            op = _S(); op.setRange(5, 100); op.setSuffix(' %'); op.setValue(int(d.get('opacity', 55)))
+            sc = _S(); sc.setRange(5, 100); sc.setSuffix(' %'); sc.setValue(int(d.get('scale', 25)))
+            od = form_dialog(self, 'Watermark',
+                             [('Watermark:', kind), ('Text:', txt), ('Text colour:', colb),
+                              ('Logo image:', lgb), ('Position:', pos), ('Opacity:', op), ('Size:', sc)],
+                             QLabel('Only real photos (at least 200px on the short side) are stamped; '
+                                    'icons and small graphics are left alone. Your originals are never changed.'))
+            if od.exec():
+                tmp25['watermark'] = dict(enabled=True, kind='image' if kind.currentIndex() == 1 else 'text',
+                                          text=txt.text(), color=col[0], src=logo[0] or None,
+                                          pos=_poslist[pos.currentIndex()], opacity=op.value(), scale=sc.value())
+                wmk.setChecked(True)
+        for cb, fn in ((cook, _cc_opts), (head, _head_opts), (wmk, _wm_opts)):
             r = _QHBoxLayout(); r.addWidget(cb, 1); ob = _QPushButton('Options…'); ob.clicked.connect(fn); r.addWidget(ob); dl.addLayout(r)
         # Site-wide add-ons (v1.18): back-to-top, snow, custom scrollbar. Each a tick plus a
         # small "Options…" button; stored as site[...] dicts (None/absent = off).
@@ -13226,6 +13406,9 @@ class MainWindow(QMainWindow):
         # unconfigured site publishes unchanged.
         self.site['head_code'] = tmp25['head_code'] if head.isChecked() else ''
         self.site['analytics_id'] = tmp25['analytics_id'] if head.isChecked() else ''
+        # Watermark: store the dict with the final enabled flag; off = keep settings but disabled.
+        wmd = tmp25['watermark']; wmd['enabled'] = wmk.isChecked()
+        self.site['watermark'] = wmd
         self.site['backtotop'] = tmp['backtotop'] if btt.isChecked() else None
         self.site['snow'] = tmp['snow'] if snow.isChecked() else None
         self.site['scrollbar'] = tmp['scrollbar'] if sbar.isChecked() else None
@@ -13359,6 +13542,19 @@ class MainWindow(QMainWindow):
         h2.addWidget(gb1); h2.addWidget(gb2); h2.addStretch(); v2.addLayout(h2)
         root.addWidget(g2)
 
+        # --- FTP / FTPS to your own web host ---
+        gf = QGroupBox('3.  FTP / FTPS  —  upload to your own web host')
+        vf = QVBoxLayout(gf)
+        tf = QLabel('If your host gave you FTP details (host, username, password), upload the site '
+                    'straight to it from here — great for traditional hosting (cPanel, shared hosting, etc.). '
+                    'FTPS (TLS) is supported for a secure connection; SFTP/SSH is not.')
+        tf.setWordWrap(True); tf.setTextFormat(Qt.RichText); vf.addWidget(tf)
+        hf = QHBoxLayout()
+        fb1 = QPushButton('Upload via FTP…')
+        fb1.clicked.connect(lambda: self.publish_ftp(folder))
+        hf.addWidget(fb1); hf.addStretch(); vf.addLayout(hf)
+        root.addWidget(gf)
+
         # --- Cloudflare Pages (alternative) ---
         g3 = QGroupBox('3.  Cloudflare Pages  —  another free option')
         v3 = QVBoxLayout(g3)
@@ -13387,6 +13583,91 @@ class MainWindow(QMainWindow):
         root.addWidget(bb)
         dlg.show(); dlg.raise_(); dlg.activateWindow()
         dlg.exec()
+
+    def publish_ftp(self, folder):
+        """Collect FTP/FTPS connection details, then upload the published `folder`
+        tree to the host via ftplib. Settings (minus the password unless the user
+        opts to remember it) persist in QSettings. SFTP is refused with a note."""
+        s = self.settings
+        dlg = QDialog(self); dlg.setWindowTitle('Upload via FTP'); dlg.setMinimumWidth(460)
+        v = QVBoxLayout(dlg); form = QFormLayout(); v.addLayout(form)
+        proto = QComboBox(); proto.addItems(['FTP (plain)', 'FTPS (TLS/SSL)', 'SFTP (SSH)'])
+        proto.setCurrentIndex(int(s.value('ftp/proto', 0) or 0))
+        host = QLineEdit(s.value('ftp/host', '') or ''); host.setPlaceholderText('ftp.example.com')
+        port = QSpinBox(); port.setRange(1, 65535); port.setValue(int(s.value('ftp/port', 21) or 21))
+        user = QLineEdit(s.value('ftp/user', '') or '')
+        pw = QLineEdit(s.value('ftp/pw', '') or ''); pw.setEchoMode(QLineEdit.Password)
+        rdir = QLineEdit(s.value('ftp/dir', '') or ''); rdir.setPlaceholderText('/public_html  (blank = home)')
+        passive = QCheckBox('Passive mode (recommended)'); passive.setChecked(s.value('ftp/passive', 'true') != 'false')
+        remember = QCheckBox('Remember password'); remember.setChecked(bool(s.value('ftp/pw', '')))
+        form.addRow('Protocol:', proto); form.addRow('Host:', host); form.addRow('Port:', port)
+        form.addRow('Username:', user); form.addRow('Password:', pw); form.addRow('Remote folder:', rdir)
+        v.addWidget(passive); v.addWidget(remember)
+        note = QLabel(''); note.setWordWrap(True); note.setStyleSheet('color:#c0392b'); v.addWidget(note)
+        # Plain FTP uses 21, FTPS implicit sometimes 990 — leave port to the user; just
+        # warn when SFTP is picked (we don't do SSH) and offer the FTPS/FTP alternatives.
+        def on_proto(i):
+            if i == 2:
+                note.setText('SFTP (SSH) is not supported here — only FTP and FTPS (TLS). '
+                             'Pick FTP or FTPS, or use your host’s file manager for SFTP.')
+            else:
+                note.setText('')
+        proto.currentIndexChanged.connect(on_proto); on_proto(proto.currentIndex())
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.button(QDialogButtonBox.Ok).setText('Upload')
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if dlg.exec() != QDialog.Accepted: return
+        if proto.currentIndex() == 2:
+            QMessageBox.information(self, APP, 'SFTP (SSH) is not supported. Only FTP and FTPS (TLS) '
+                                    'can be used to upload from here.')
+            return
+        # Persist settings (password only if asked to remember).
+        s.setValue('ftp/proto', proto.currentIndex()); s.setValue('ftp/host', host.text().strip())
+        s.setValue('ftp/port', port.value()); s.setValue('ftp/user', user.text().strip())
+        s.setValue('ftp/dir', rdir.text().strip()); s.setValue('ftp/passive', 'true' if passive.isChecked() else 'false')
+        s.setValue('ftp/pw', pw.text() if remember.isChecked() else '')
+        if not host.text().strip():
+            QMessageBox.warning(self, APP, 'Please enter the host name.'); return
+        self._do_ftp_upload(folder, proto.currentIndex() == 1, host.text().strip(), port.value(),
+                            user.text().strip(), pw.text(), rdir.text().strip(), passive.isChecked())
+
+    def _do_ftp_upload(self, folder, use_tls, host, port, user, pw, rdir, passive):
+        """Open the connection and upload the tree behind a progress dialog."""
+        import ftplib
+        from PySide6.QtWidgets import QProgressDialog
+        total = sum(len(f) for _r, _d, f in os.walk(folder)) or 1
+        prog = QProgressDialog('Connecting…', 'Cancel', 0, total, self)
+        prog.setWindowTitle(APP); prog.setWindowModality(Qt.WindowModal); prog.setMinimumDuration(0)
+        prog.setValue(0); prog.show(); QApplication.processEvents()
+        ftp = None
+        try:
+            ftp = (ftplib.FTP_TLS() if use_tls else ftplib.FTP())
+            ftp.connect(host, int(port or 21), timeout=30)
+            ftp.login(user, pw)
+            if use_tls:
+                try: ftp.prot_p()      # secure the data channel too
+                except Exception: pass
+            ftp.set_pasv(bool(passive))
+            cancelled = {'v': False}
+            def on_progress(done, tot, rel):
+                prog.setLabelText(f'Uploading {rel}…'); prog.setMaximum(tot); prog.setValue(done)
+                QApplication.processEvents()
+                if prog.wasCanceled(): cancelled['v'] = True; raise RuntimeError('cancelled')
+            sent = ftp_upload_tree(ftp, folder, rdir, progress=on_progress)
+            prog.close()
+            self.hint(f'Uploaded {len(sent)} file(s) via {"FTPS" if use_tls else "FTP"}.')
+            QMessageBox.information(self, APP, f'Upload finished — {len(sent)} file(s) sent to {esc(host)}.')
+        except RuntimeError:
+            prog.close(); self.hint('FTP upload cancelled.')
+        except Exception as ex:
+            prog.close()
+            QMessageBox.warning(self, APP, f'FTP upload failed:\n{ex}')
+        finally:
+            if ftp is not None:
+                try: ftp.quit()
+                except Exception:
+                    try: ftp.close()
+                    except Exception: pass
 
     # ------------------------------------------------------------ updates
     def update_repo(self):
