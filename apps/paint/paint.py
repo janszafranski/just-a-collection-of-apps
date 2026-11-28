@@ -23,7 +23,7 @@ except ImportError:
 
 APP = "just a... PAINTcanvas"
 ORG = "justapaint"
-VERSION = "1.23-00"
+VERSION = "1.24-00"
 
 
 # ===================================================================== font grouping
@@ -2056,6 +2056,96 @@ def adj_colorbalance(cr, mg, yb):
         return _merge_a(p, Image.fromarray(a.astype('uint8'), 'RGB'))
     return f
 
+def adj_shadow_highlight(shadow_amt, highlight_amt, radius=30, mid=0):
+    """PhotoPlus-style Shadow/Highlight: lift shadows and recover highlights independently,
+    each gated by a luminance mask so only the matching tonal zone moves.
+      L  = luma/255 (0..1).  shadow_mask = (1-L)^k, highlight_mask = L^k  (k=2, soft zones).
+      When `radius`>0 the masks are Gaussian-blurred so the correction follows local tonal
+      regions (the signature local/adaptive behaviour) rather than a flat per-pixel curve.
+      shadow_amt (0..100):  out += a_s * shadow_mask * (255 - L*255)      -> brightens darks,
+                            scaled by the headroom so near-white shadows barely move.
+      highlight_amt (0..100): out -= a_h * highlight_mask * (L*255)        -> pulls brights down.
+      mid (-100..100): optional midtone-contrast term, S-curve about 128 weighted by 4L(1-L).
+    All in float then clipped 0..255; alpha preserved via _merge_a."""
+    a_s = max(0.0, float(shadow_amt)) / 100.0
+    a_h = max(0.0, float(highlight_amt)) / 100.0
+    m = float(mid) / 100.0
+    r = max(0.0, float(radius))
+
+    def f(p):
+        rgb = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        L = _luma(rgb) / 255.0                                  # 0..1 luminance
+        shadow_mask = (1.0 - L) ** 2
+        highlight_mask = L ** 2
+        if r > 0:                                               # local tonal-zone masks
+            shadow_mask = _np.asarray(Image.fromarray((shadow_mask * 255).astype('uint8'), 'L')
+                                      .filter(ImageFilter.GaussianBlur(r)), _np.float32) / 255.0
+            highlight_mask = _np.asarray(Image.fromarray((highlight_mask * 255).astype('uint8'), 'L')
+                                         .filter(ImageFilter.GaussianBlur(r)), _np.float32) / 255.0
+        out = rgb.copy()
+        out += (a_s * shadow_mask * (255.0 - L * 255.0))[..., None]      # lift shadows
+        out -= (a_h * highlight_mask * (L * 255.0))[..., None]           # recover highlights
+        if abs(m) > 1e-6:                                                # midtone contrast
+            mid_w = 4.0 * L * (1.0 - L)                                  # peaks at mid grey
+            out += (m * mid_w * (L * 255.0 - 128.0))[..., None]
+        out = _np.clip(out, 0, 255).astype('uint8')
+        return _merge_a(p, Image.fromarray(out, 'RGB'))
+    return f
+
+
+# Hue-family centres (degrees) for Selective Colour. Neutrals/whites/blacks are value-gated.
+SELECTIVE_RANGES = ['Reds', 'Yellows', 'Greens', 'Cyans', 'Blues', 'Magentas',
+                    'Whites', 'Neutrals', 'Blacks']
+_SELECTIVE_HUE = {'Reds': 0, 'Yellows': 60, 'Greens': 120,
+                  'Cyans': 180, 'Blues': 240, 'Magentas': 300}
+
+def adj_selective_color(color_range, c, m, y, k):
+    """PhotoPlus-style Selective Colour: nudge one colour family by CMYK percentages.
+    `color_range` is one of SELECTIVE_RANGES. c/m/y/k are -100..100 (relative mode).
+      Hue families (Reds..Magentas): per-pixel membership = triangular falloff of the HSV
+        hue distance to the family centre (full within ±30°, zero by ±60°), gated by
+        saturation*value so grey/near-black pixels don't count as a colour.
+      Whites: membership = high value AND low saturation.  Blacks: low value.
+        Neutrals: low saturation across the midtones.
+      CMYK mapping (subtractive, applied scaled by membership w, relative to headroom):
+        cyan+   darkens Red   : R -= c * w * R
+        magenta+ darkens Green: G -= m * w * G
+        yellow+ darkens Blue  : B -= y * w * B
+        black+  darkens all   : RGB -= k * w * RGB     (negatives lighten toward 255)
+    Clamped 0..255; alpha preserved."""
+    cc, mm, yy, kk = (float(c) / 100.0, float(m) / 100.0, float(y) / 100.0, float(k) / 100.0)
+
+    def f(p):
+        rgb = _np.asarray(p.convert('RGB')).astype(_np.float32)
+        hsv = _np.asarray(p.convert('HSV')).astype(_np.float32)
+        H = hsv[..., 0] * 360.0 / 255.0                         # hue degrees 0..360
+        S = hsv[..., 1] / 255.0
+        V = hsv[..., 2] / 255.0
+        if color_range in _SELECTIVE_HUE:
+            centre = _SELECTIVE_HUE[color_range]
+            d = _np.abs(((H - centre + 180.0) % 360.0) - 180.0)        # circular hue distance
+            w = _np.clip(1.0 - (d - 30.0) / 30.0, 0.0, 1.0)            # full ≤30°, 0 by 60°
+            w = w * S * V                                              # only real, lit colour
+        elif color_range == 'Whites':
+            w = _np.clip((V - 0.6) / 0.4, 0.0, 1.0) * _np.clip(1.0 - S / 0.3, 0.0, 1.0)
+        elif color_range == 'Blacks':
+            w = _np.clip(1.0 - V / 0.4, 0.0, 1.0)
+        else:                                                          # Neutrals
+            w = _np.clip(1.0 - S / 0.35, 0.0, 1.0) * (4.0 * V * (1.0 - V))
+        out = rgb.copy()
+        def shift(ch, amt):                                            # subtractive nudge on one channel
+            if amt >= 0:  return -amt * w * out[..., ch]               # darken toward 0
+            return -amt * w * (255.0 - out[..., ch])                   # lighten toward 255
+        out[..., 0] += shift(0, cc)
+        out[..., 1] += shift(1, mm)
+        out[..., 2] += shift(2, yy)
+        if abs(kk) > 1e-6:
+            for ch in range(3):
+                out[..., ch] += shift(ch, kk)
+        out = _np.clip(out, 0, 255).astype('uint8')
+        return _merge_a(p, Image.fromarray(out, 'RGB'))
+    return f
+
 # ---- filters ----
 def flt_gaussian(r):  return lambda p: p.filter(ImageFilter.GaussianBlur(max(0.1, r)))
 def flt_unsharp(r):   return lambda p: p.filter(ImageFilter.UnsharpMask(radius=max(0.1, r), percent=160))
@@ -3827,6 +3917,74 @@ class ChannelMixerDialog(QDialog):
     def _apply(self):
         try:
             self.canvas.img = self.canvas._apply_to(self.base, adj_channelmixer(self._params()))
+        except Exception:
+            self.canvas.img = self.base.copy()
+        self.canvas.update()
+
+    def accept(self):
+        self.canvas.push_undo_layer(self.active_idx, self.base); super().accept()
+
+    def reject(self):
+        self.canvas.img = self.base; self.canvas._fit(); super().reject()
+
+
+class SelectiveColorDialog(QDialog):
+    """Adjust ▸ Selective Colour (PhotoPlus-style). A colour-range combo picks the hue family
+    (or Whites/Neutrals/Blacks); four C/M/Y/K sliders (-100..100) nudge just that family. The
+    C/M/Y/K values are stored per range so switching ranges keeps each family's edit. Live,
+    selection-aware preview like ChannelMixerDialog; feeds adj_selective_color."""
+    def __init__(self, win):
+        super().__init__(win)
+        self.win = win; self.canvas = win.canvas
+        self.setWindowTitle('Selective Colour'); self.setMinimumWidth(360)
+        self.active_idx = self.canvas.active
+        self.base = self.canvas.img.copy()
+        self.vals = {r: {'c': 0, 'm': 0, 'y': 0, 'k': 0} for r in SELECTIVE_RANGES}
+        v = QVBoxLayout(self)
+        row = QHBoxLayout(); row.addWidget(QLabel('Colours:'))
+        self.range_cb = QComboBox(); self.range_cb.addItems(SELECTIVE_RANGES)
+        self.range_cb.currentIndexChanged.connect(self._reload)
+        row.addWidget(self.range_cb, 1); v.addLayout(row)
+        form = QFormLayout(); v.addLayout(form)
+        self.sliders = {}       # 'c'/'m'/'y'/'k' -> (QSlider, QLabel)
+        for key, label in (('c', 'Cyan:'), ('m', 'Magenta:'), ('y', 'Yellow:'), ('k', 'Black:')):
+            s = QSlider(Qt.Horizontal); s.setRange(-100, 100)
+            val = QLabel(); val.setMinimumWidth(46); val.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            s.valueChanged.connect(lambda _=0, k=key: self._slider_changed(k))
+            rw = QHBoxLayout(); rw.addWidget(s, 1); rw.addWidget(val)
+            holder = QWidget(); holder.setLayout(rw); holder.setMinimumWidth(250)
+            form.addRow(label, holder); self.sliders[key] = (s, val)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); v.addWidget(bb)
+        self._reload()
+
+    def _cur_range(self):
+        return SELECTIVE_RANGES[self.range_cb.currentIndex()]
+
+    def _reload(self):
+        self._loading = True
+        d = self.vals[self._cur_range()]
+        for k, (s, val) in self.sliders.items():
+            s.setValue(int(d[k])); val.setText(f'{int(d[k])}')
+        self._loading = False
+        self._apply()
+
+    def _slider_changed(self, key):
+        if getattr(self, '_loading', False): return
+        s, val = self.sliders[key]
+        self.vals[self._cur_range()][key] = s.value(); val.setText(f'{s.value()}')
+        self._apply()
+
+    def _apply(self):
+        """Compose every range that has a non-zero edit so the preview shows them all."""
+        try:
+            def build(p):
+                out = p
+                for r, d in self.vals.items():
+                    if any(d.values()):
+                        out = adj_selective_color(r, d['c'], d['m'], d['y'], d['k'])(out)
+                return out
+            self.canvas.img = self.canvas._apply_to(self.base, build)
         except Exception:
             self.canvas.img = self.base.copy()
         self.canvas.update()
@@ -5724,6 +5882,8 @@ class Main(QMainWindow):
         adj.addAction(self.act('&Threshold…', self.dlg_threshold))
         adj.addAction(self.act('&Posterize…', self.dlg_posterize))
         adj.addAction(self.act('&Gradient Map…', self.dlg_gradientmap))
+        adj.addAction(self.act('S&hadow / Highlight…', self.dlg_shadow_highlight))
+        adj.addAction(self.act('Selective Colo&ur…', self.dlg_selective_color))
         adj.addSeparator()
         adj.addAction(self.act('Auto &Contrast', lambda: self.canvas.apply_region(adj_autocontrast)))
         adj.addAction(self.act('&Equalize', lambda: self.canvas.apply_region(adj_equalize)))
@@ -6105,6 +6265,20 @@ class Main(QMainWindow):
     def dlg_gradientmap(self):
         if self._need_pil():
             GradientMapDialog(self).exec()
+
+    def dlg_shadow_highlight(self):
+        if self._need_pil():
+            AdjustDialog(self, 'Shadow / Highlight',
+                         [('shadow', 'Lighten shadows:', 0, 100, 0, 1.0),
+                          ('highlight', 'Recover highlights:', 0, 100, 0, 1.0),
+                          ('radius', 'Radius:', 0, 200, 30, 1.0),
+                          ('mid', 'Midtone contrast:', -100, 100, 0, 1.0)],
+                         lambda v: adj_shadow_highlight(v['shadow'], v['highlight'],
+                                                        v['radius'], v['mid'])).exec()
+
+    def dlg_selective_color(self):
+        if self._need_pil():
+            SelectiveColorDialog(self).exec()
 
     def dlg_smooth_skin(self):
         """Open the Smooth Skin portrait-retouch studio (live preview on the canvas)."""
