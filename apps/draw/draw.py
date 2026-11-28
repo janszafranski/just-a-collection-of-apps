@@ -16,7 +16,7 @@ try:
     from PySide6.QtGui import (QImage, QPainter, QPen, QColor, QBrush, QPixmap, QAction, QIcon,
                                QKeySequence, QFont, QFontMetricsF, QPainterPath, QActionGroup, QPolygonF,
                                QLinearGradient, QRadialGradient, QPdfWriter, QPageSize, QPageLayout, QTransform)
-    from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings, QMarginsF, QBuffer, QByteArray
+    from PySide6.QtCore import Qt, QPoint, QPointF, QRect, QRectF, QSize, QSettings, QMarginsF, QBuffer, QByteArray, QTimer, QSizeF
     from PySide6.QtSvg import QSvgGenerator
     from PySide6.QtPrintSupport import QPrinter, QPrintDialog
 except ImportError:
@@ -26,7 +26,7 @@ except ImportError:
 
 APP = "just a... DRAWmaster"
 ORG = "justadrawmaster"
-VERSION = "1.16-00"
+VERSION = "1.17-00"
 
 
 # ===================================================================== font grouping
@@ -3463,6 +3463,52 @@ def rgba_to_qimage(arr):
     return QImage(arr.tobytes(), w, h, w * 4, QImage.Format_RGBA8888).copy()
 
 
+# ---------------------------------------------------------------- PhotoLab (ported from PAGEcreator)
+try:
+    from PIL import Image as _PILImage, ImageEnhance as _PILEnh
+    _HAS_PIL = True
+except Exception:
+    _HAS_PIL = False
+
+def _q2pil(qi):
+    """QImage → PIL RGBA Image."""
+    qi = qi.convertToFormat(QImage.Format_RGBA8888)
+    w, h = qi.width(), qi.height()
+    ba = qi.constBits().tobytes() if hasattr(qi.constBits(), 'tobytes') else bytes(qi.constBits())
+    return _PILImage.frombytes('RGBA', (w, h), ba[:w * h * 4], 'raw', 'RGBA')
+
+def _pil2q(im):
+    """PIL Image → QImage (RGBA)."""
+    im = im.convert('RGBA')
+    return QImage(im.tobytes('raw', 'RGBA'), im.width, im.height, QImage.Format_RGBA8888).copy()
+
+def apply_photolab(pil, params):
+    src = pil if pil.mode == 'RGBA' else pil.convert('RGBA')
+    a = src.split()[3]
+    rgb = src.convert('RGB')
+    def f(v): return max(0.05, 1.0 + v / 100.0)          # enhance factor from a ±% value
+    b = params.get('brightness', 0); c = params.get('contrast', 0)
+    s = params.get('saturation', 0); sh = params.get('sharpness', 0)
+    temp = params.get('temperature', 0); hue = params.get('hue', 0)
+    if b: rgb = _PILEnh.Brightness(rgb).enhance(f(b))
+    if c: rgb = _PILEnh.Contrast(rgb).enhance(f(c))
+    if s: rgb = _PILEnh.Color(rgb).enhance(f(s))
+    if sh: rgb = _PILEnh.Sharpness(rgb).enhance(f(sh))
+    if temp:
+        # warm/cool: at ±100 shift R/B channels by ±~0.3× around 1.0
+        rf = 1.0 + 0.3 * temp / 100.0; bf = 1.0 - 0.3 * temp / 100.0
+        R, G, B = rgb.split()
+        R = R.point(lambda px: min(255, int(px * rf)))
+        B = B.point(lambda px: min(255, int(px * bf)))
+        rgb = _PILImage.merge('RGB', (R, G, B))
+    if hue:
+        h, sv, vv = rgb.convert('HSV').split()
+        d = int(round(hue * 255 / 360.0)) % 256
+        h = h.point(lambda px: (px + d) % 256)
+        rgb = _PILImage.merge('HSV', (h, sv, vv)).convert('RGB')
+    return _PILImage.merge('RGBA', rgb.split() + (a,))
+
+
 def _box_blur(a, r):
     """Separable box blur of a float32 (H, W) array, radius r (no SciPy needed)."""
     import numpy as np
@@ -3992,6 +4038,88 @@ class CutoutStudio(QDialog):
         self.accept()
 
 
+class PhotoLabDialog(QDialog):
+    """PhotoLab (ported from PAGEcreator): live Brightness/Contrast/Saturation/Sharpness/
+    Warmth/Hue sliders over a before/after preview. OK → self.params holds the chosen
+    adjustment; the caller runs apply_photolab() once at full resolution."""
+    SLIDERS = [('brightness', 'Brightness', -100, 100), ('contrast', 'Contrast', -100, 100),
+               ('saturation', 'Saturation', -100, 100), ('sharpness', 'Sharpness', -100, 200),
+               ('temperature', 'Warmth', -100, 100), ('hue', 'Hue', -180, 180)]
+    PREV_MAX = 320  # preview working size (full-res is applied only on OK)
+
+    def __init__(self, parent, qimage):
+        super().__init__(parent)
+        self.setWindowTitle('PhotoLab — Adjust Picture')
+        self.params = {k: 0 for k, _, _, _ in self.SLIDERS}
+        w, h = qimage.width(), qimage.height()
+        s = min(1.0, self.PREV_MAX / max(1, max(w, h)))
+        if s < 1.0:
+            qimage = qimage.scaled(max(1, int(w * s)), max(1, int(h * s)),
+                                   Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._before_q = qimage.convertToFormat(QImage.Format_ARGB32)
+        self._prev_pil = _q2pil(self._before_q) if _HAS_PIL else None
+
+        root = QVBoxLayout(self)
+        pics = QHBoxLayout(); root.addLayout(pics)
+        bcol = QVBoxLayout(); acol = QVBoxLayout(); pics.addLayout(bcol); pics.addLayout(acol)
+        self._before_lbl = QLabel(); self._before_lbl.setAlignment(Qt.AlignCenter)
+        self._after_lbl = QLabel(); self._after_lbl.setAlignment(Qt.AlignCenter)
+        self._before_lbl.setPixmap(QPixmap.fromImage(self._before_q))
+        bcol.addWidget(QLabel('<b>Before</b>', alignment=Qt.AlignCenter)); bcol.addWidget(self._before_lbl, 1)
+        acol.addWidget(QLabel('<b>After</b>', alignment=Qt.AlignCenter)); acol.addWidget(self._after_lbl, 1)
+
+        grid = QGridLayout(); root.addLayout(grid)
+        self._sl = {}; self._val = {}
+        for row, (key, name, lo, hi) in enumerate(self.SLIDERS):
+            grid.addWidget(QLabel(name), row, 0)
+            sl = QSlider(Qt.Horizontal); sl.setRange(lo, hi); sl.setValue(0); sl.setMinimumWidth(220)
+            vl = QLabel('0'); vl.setMinimumWidth(34); vl.setAlignment(Qt.AlignRight)
+            sl.valueChanged.connect(lambda v, k=key, l=vl: self._on_slide(k, v, l))
+            grid.addWidget(sl, row, 1); grid.addWidget(vl, row, 2)
+            self._sl[key] = sl; self._val[key] = vl
+
+        self._timer = QTimer(self); self._timer.setSingleShot(True); self._timer.setInterval(90)
+        self._timer.timeout.connect(self._render_preview)
+
+        br = QHBoxLayout(); root.addLayout(br)
+        reset = QPushButton('Reset'); reset.clicked.connect(self._reset); br.addWidget(reset); br.addStretch(1)
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept); bb.rejected.connect(self.reject); br.addWidget(bb)
+        if not _HAS_PIL:
+            bb.button(QDialogButtonBox.Ok).setEnabled(False)
+            self._after_lbl.setText('Pillow not available')
+        self._render_preview()
+
+    def _on_slide(self, key, v, lbl):
+        self.params[key] = v; lbl.setText(str(v)); self._timer.start()
+
+    def _reset(self):
+        for k, sl in self._sl.items(): sl.setValue(0)
+
+    def _render_preview(self):
+        if not _HAS_PIL or self._prev_pil is None: return
+        try:
+            out = apply_photolab(self._prev_pil, self.params)
+            self._after_lbl.setPixmap(QPixmap.fromImage(_pil2q(out)))
+        except Exception:
+            self._after_lbl.setText('—')
+
+    def is_identity(self):
+        return not any(self.params.values())
+
+
+# PDF publishing profiles (ported from PAGEcreator). Tuple: (label, img_cap_px, conformance).
+# img_cap: down-rasterise embedded image objects to this longest-edge on export (None = leave full).
+# conformance: advisory tag written into the PDF Title/Creator for the PDF/X-style profiles.
+# These are HONEST approximations — no real CMYK conversion or embedded ICC; a RIP does the real work.
+PDF_PROFILES = {
+    'web':   ('Web / screen (RGB, images down-scaled)', 1600, ''),
+    'print': ('Print (high quality, vector)',           None, ''),
+    'x1a':   ('PDF/X-1a-style (press-ready)',           None, 'PDF/X-1a:2001 (approx — CMYK intent, no embedded ICC)'),
+    'x3':    ('PDF/X-3-style (press-ready)',            None, 'PDF/X-3:2002 (approx — no embedded ICC)'),
+}
+
+
 class Main(QMainWindow):
     TOOLS = [('select', 'Select', '⬚'), ('node', 'Node (edit curves)', '⌇'),
              ('freehand', 'Freehand', '✎'), ('brush', 'Brush (pressure)', '🖌'), ('pen', 'Pen (Bézier curves)', '✐'),
@@ -4005,6 +4133,7 @@ class Main(QMainWindow):
         super().__init__()
         self.settings = QSettings(ORG, 'DRAWmaster')
         self.path = None
+        self._pdf_profile = 'print'
         self.canvas = Canvas(self)
         self.load_bundled_fonts()
         sa = QScrollArea(); sa.setWidget(self.canvas); sa.setAlignment(Qt.AlignCenter)
@@ -4555,6 +4684,8 @@ class Main(QMainWindow):
         self.fx_btn.clicked.connect(self.effects_dialog); top.addWidget(self.fx_btn)
         self.grad_btn = QPushButton('Gradient…'); self.grad_btn.setToolTip('Linear or radial gradient fill for the selected shape')
         self.grad_btn.clicked.connect(self.gradient_dialog); top.addWidget(self.grad_btn)
+        self.photolab_btn = QPushButton('PhotoLab…'); self.photolab_btn.setToolTip('PhotoLab — brightness/contrast/colour adjustments for the selected picture')
+        self.photolab_btn.clicked.connect(self.photolab); top.addWidget(self.photolab_btn)
         self.cutout_btn = QPushButton('Cutout…'); self.cutout_btn.setToolTip('Cutout Studio — remove the background from the selected picture')
         self.cutout_btn.clicked.connect(self.cutout_studio); top.addWidget(self.cutout_btn)
         self.trace_btn = QPushButton('AutoTrace…'); self.trace_btn.setToolTip('AutoTrace / Vectorise — trace the selected picture into editable vector paths')
@@ -4903,6 +5034,32 @@ class Main(QMainWindow):
         _IMG_CACHE.pop(o.get('src', ''), None)
         o['src'] = uri
         self.canvas.update(); self.statusBar().showMessage('Cutout applied.', 4000)
+
+    def photolab(self):
+        """Open PhotoLab on the selected picture; apply the full-res adjustment on OK,
+        writing the result back as a new data-URI src (same mechanism as cutout_studio)."""
+        if not _HAS_PIL:
+            QMessageBox.information(self, APP, 'PhotoLab needs the Pillow library '
+                                   '(e.g. sudo pacman -S python-pillow). Or use Edit in PAINTcanvas.')
+            return
+        o = self._selected_image('open PhotoLab')
+        if o is None: return
+        qi = obj_image(o)
+        if qi.isNull():
+            QMessageBox.warning(self, APP, 'Could not read that picture.'); return
+        dlg = PhotoLabDialog(self, qi)
+        if not dlg.exec() or dlg.is_identity(): return
+        try:
+            import base64
+            out = _pil2q(apply_photolab(_q2pil(qi), dlg.params))   # full-res, once
+            ba = QByteArray(); buf = QBuffer(ba); buf.open(QBuffer.WriteOnly); out.save(buf, 'PNG'); buf.close()
+            uri = 'data:image/png;base64,' + bytes(ba.toBase64()).decode()
+            self.canvas.snapshot()
+            _IMG_CACHE.pop(o.get('src', ''), None)
+            o['src'] = uri
+            self.canvas.update(); self.statusBar().showMessage('PhotoLab adjustment applied.', 4000)
+        except Exception as ex:
+            QMessageBox.warning(self, APP, f'Could not apply PhotoLab:\n{ex}')
 
     def replace_image(self):
         """Swap the selected picture's source for another file, keeping its frame."""
@@ -5354,29 +5511,71 @@ class Main(QMainWindow):
     # ---------------------------------------------------------------- PDF & print
     def export_pdf(self):
         """Write a vector PDF at the canvas size, painting through paint_object so text
-        stays text and shapes stay paths."""
+        stays text and shapes stay paths. A publishing Profile (web/print/PDF-X-style) tunes
+        image handling and records an advisory conformance tag (see PDF_PROFILES)."""
+        # Profile picker dialog
+        prof = QComboBox()
+        for k, (lbl, *_r) in PDF_PROFILES.items(): prof.addItem(lbl, k)
+        prof.setCurrentIndex(max(0, prof.findData(self._pdf_profile)))
+        dlg = QDialog(self); dlg.setWindowTitle('Export PDF')
+        v = QVBoxLayout(dlg)
+        fl = QFormLayout(); fl.addRow('Profile:', prof); v.addLayout(fl)
+        v.addWidget(QLabel('Web down-scales embedded pictures to keep the file small.\n'
+                           'Print keeps full-resolution vector output (the default).\n'
+                           'The PDF/X-style profiles tag the file for prepress (approximate — no\n'
+                           'embedded ICC and no true CMYK conversion; a RIP/preflight does the real work).'))
+        bb = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        bb.accepted.connect(dlg.accept); bb.rejected.connect(dlg.reject); v.addWidget(bb)
+        if not dlg.exec(): return
+        profile = prof.currentData(); self._pdf_profile = profile
         start = (os.path.splitext(self.path)[0] if self.path else os.path.join(_just_dir('docs'), 'drawing')) + '.pdf'
         path, _ = QFileDialog.getSaveFileName(self, 'Export PDF', start, 'PDF (*.pdf)')
         if not path: return
         if not path.lower().endswith('.pdf'): path += '.pdf'
-        self._paint_pdf(path)
+        self._paint_pdf(path, profile)
         _justapps_recent('draw', path); self.statusBar().showMessage(f'Exported {path}', 4000)
 
-    def _paint_pdf(self, path):
-        from PySide6.QtCore import QSizeF
+    def _paint_pdf(self, path, profile='print'):
         W, H = self.canvas.W, self.canvas.H
-        w = QPdfWriter(path); w.setResolution(96)
-        # page size given in points (1 pt = 1/72"); treat canvas px as points at 72dpi so the
-        # PDF page matches the canvas dimensions. ExactMatch keeps the exact W×H.
-        psize = QPageSize(QSizeF(W, H), QPageSize.Point, '', QPageSize.ExactMatch)
-        layout = QPageLayout(psize, QPageLayout.Portrait, QMarginsF(0, 0, 0, 0))
-        w.setPageLayout(layout)
-        p = QPainter(w); p.setRenderHint(QPainter.Antialiasing)
-        # device is in dots at w.resolution() dpi; points→dots factor keeps 1 canvas px = 1 pt
-        dpr = w.resolution() / 72.0
-        p.scale(dpr, dpr)
-        self.canvas.render_to(p)
-        p.end()
+        lbl, img_cap, conf = PDF_PROFILES.get(profile, PDF_PROFILES['print'])
+        # Web profile: temporarily override the decoded-image cache with down-scaled copies so
+        # the exported file stays small. The originals in the object model are untouched; the
+        # cache entries are restored afterwards.
+        saved = {}
+        if img_cap:
+            for o in self.canvas.objs:
+                if o.get('type') != 'image': continue
+                src = o.get('src', '')
+                if not src or src in saved: continue
+                qi = obj_image(o)
+                if not qi.isNull() and max(qi.width(), qi.height()) > img_cap:
+                    saved[src] = _IMG_CACHE.get(src)
+                    _IMG_CACHE[src] = qi.scaled(img_cap, img_cap, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        try:
+            w = QPdfWriter(path); w.setResolution(96)
+            # Record the profile in the PDF metadata. The conformance string for the PDF/X-style
+            # profiles is advisory only — a prepress operator / RIP reads it; it is NOT real PDF/X.
+            try:
+                w.setCreator(f'{APP} {VERSION}' + ((' — ' + conf) if conf else ''))
+                tag = lbl + ((' — ' + conf) if conf else '')
+                w.setTitle((os.path.splitext(os.path.basename(path))[0] or 'Drawing') + f'  [{tag}]')
+            except Exception:
+                pass
+            # page size given in points (1 pt = 1/72"); treat canvas px as points at 72dpi so the
+            # PDF page matches the canvas dimensions. ExactMatch keeps the exact W×H.
+            psize = QPageSize(QSizeF(W, H), QPageSize.Point, '', QPageSize.ExactMatch)
+            layout = QPageLayout(psize, QPageLayout.Portrait, QMarginsF(0, 0, 0, 0))
+            w.setPageLayout(layout)
+            p = QPainter(w); p.setRenderHint(QPainter.Antialiasing)
+            # device is in dots at w.resolution() dpi; points→dots factor keeps 1 canvas px = 1 pt
+            dpr = w.resolution() / 72.0
+            p.scale(dpr, dpr)
+            self.canvas.render_to(p)
+            p.end()
+        finally:
+            for src, old in saved.items():
+                if old is None: _IMG_CACHE.pop(src, None)
+                else: _IMG_CACHE[src] = old
 
     def print_drawing(self):
         """Print the drawing via the system print dialog, using the same vector paint path."""
@@ -5438,6 +5637,7 @@ class Main(QMainWindow):
         tm.addAction(self.act('&Detach Text from Path', self.detach_text_from_path))
         pm = m.addMenu('&Picture')
         pm.addAction(self.act('&Insert Picture…', self.import_image))
+        pm.addAction(self.act('&PhotoLab…', self.photolab))
         pm.addAction(self.act('&Cutout Studio…', self.cutout_studio))
         pm.addAction(self.act('&AutoTrace / Vectorise…', self.auto_trace))
         pm.addAction(self.act('&Replace Picture…', self.replace_image))
