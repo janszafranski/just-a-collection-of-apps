@@ -33,7 +33,7 @@ except ImportError:
 
 APP = "just a... MOVIEeditor"
 ORG = "justamovieeditor"
-VERSION = "1.2-00"
+VERSION = "1.3-00"
 
 
 # ===================================================================== font grouping
@@ -220,6 +220,80 @@ BLEND_MODES = ['normal', 'multiply', 'screen', 'overlay', 'darken', 'lighten',
 # title animations
 TEXT_ANIMS = [('none', 'None'), ('fade', 'Fade in & out'), ('slideL', 'Slide in from left'),
               ('slideR', 'Slide in from right'), ('slideU', 'Rise up')]
+# rolling / crawling credits (title scroll modes)
+SCROLL_MODES = [('none', 'None (static)'), ('roll', 'Roll (bottom → top credits)'),
+                ('crawl', 'Crawl (right → left)')]
+
+# ----------------------------------------------------------------- export presets
+# Each preset -> (friendly label, container ext, ffmpeg arg list, optional forced height).
+# The arg list replaces the libx264/CRF video args in the final mux; height=None keeps
+# the chosen export size, otherwise it forces size (and we ignore CRF for bitrate presets).
+def export_args(preset, crf):
+    """Pure function: ffmpeg video-encode args + container ext for an export preset.
+    Returned as (ext, [video args]); audio is always AAC elsewhere (or libopus for webm)."""
+    p = preset
+    if p == 'webm':
+        return '.webm', ['-c:v', 'libvpx-vp9', '-b:v', '0', '-crf', str(crf),
+                         '-c:a', 'libopus', '-b:a', '160k']
+    if p == 'mov':
+        return '.mov', ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
+                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']
+    if p == 'mkv':
+        return '.mkv', ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
+                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']
+    if p == 'youtube':
+        return '.mp4', ['-c:v', 'libx264', '-preset', 'medium', '-b:v', '8M',
+                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '384k']
+    if p == 'instagram':
+        return '.mp4', ['-c:v', 'libx264', '-preset', 'medium', '-b:v', '5M',
+                        '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '256k']
+    # default — MP4 / H.264 CRF (matches the original export path)
+    return '.mp4', ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(crf),
+                    '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-b:a', '192k']
+
+
+# export presets -> (key, label, forced export height or None, forced square or None)
+EXPORT_PRESETS = [
+    ('mp4', 'MP4 / H.264 (default)', None, False),
+    ('webm', 'WebM / VP9', None, False),
+    ('mov', 'QuickTime MOV', None, False),
+    ('mkv', 'Matroska MKV', None, False),
+    ('youtube', 'YouTube 1080p', 1080, False),
+    ('instagram', 'Instagram square 1080', 1080, True),
+]
+
+
+def freeze_hold(clip):
+    """Seconds of last-frame hold requested for this clip (0 if none)."""
+    fz = clip.get('freeze')
+    if isinstance(fz, dict):
+        return max(0.0, float(fz.get('hold', 0) or 0))
+    return max(0.0, float(fz or 0))
+
+
+def freeze_vf(clip, dur):
+    """Freeze-frame fragment: hold the last frame for 'hold' extra seconds via tpad.
+    'dur' is the clip's full timeline length (already includes the hold); returns
+    (filter-fragment or '', body-length) where body = dur - hold feeds the input."""
+    hold = freeze_hold(clip)
+    if hold <= 0:
+        return '', dur
+    body = max(0.05, dur - hold)
+    return f"tpad=stop_mode=clone:stop_duration={hold:.3f}", body
+
+
+def scroll_title_expr(mode, xbase, ybase, W, H, dur, speed=0):
+    """Rolling/crawling credits: return (x_expr, y_expr) overriding the static position.
+    'auto' speed (0) crosses the whole frame exactly once over the clip duration.
+    roll scrolls bottom→top; crawl scrolls right→left."""
+    d = max(0.1, float(dur))
+    if mode == 'roll':
+        spd = float(speed) if speed else (H + 160) / d   # px/sec, +margin so text clears
+        return xbase, f"h-{spd:.3f}*t"
+    if mode == 'crawl':
+        spd = float(speed) if speed else (W + 160) / d
+        return f"w-{spd:.3f}*t", ybase
+    return xbase, ybase
 
 
 def _ff_path(p):
@@ -425,13 +499,16 @@ def new_clip(src, kind, info=None):
         'blend': 'normal',  # overlay blend mode
         'pip': None,  # {'x':.., 'y':.., 'scale':.., optional 'to':{x,y,scale}} picture-in-picture
         'color': '#3366cc',  # used when kind == 'color'
+        'reverse': False,   # play this clip backwards (buffers the whole clip in ffmpeg)
+        'freeze': None,     # {'hold': seconds} — hold the last frame for N extra seconds
         'text': None,
     }
     if kind == 'text':
         c['dur'] = DEFAULT_TITLE_DUR; c['src_dur'] = DEFAULT_TITLE_DUR
         c['text'] = {'content': 'Your title here', 'size': 64, 'color': '#ffffff',
                      'bg': '#000000', 'x': 'center', 'y': 'center', 'box': False,
-                     'bold': False, 'italic': False, 'outline': 0, 'anim': 'none'}
+                     'bold': False, 'italic': False, 'outline': 0, 'anim': 'none',
+                     'scroll': 'none', 'scroll_speed': 0}
     return c
 
 
@@ -470,13 +547,16 @@ class RenderWorker(QThread):
     progress = Signal(int, str)   # percent, message
     done = Signal(bool, str)      # ok, message/path
 
-    def __init__(self, proj, outpath, preview=False, out_h=None, crf=20, parent=None):
+    def __init__(self, proj, outpath, preview=False, out_h=None, crf=20,
+                 preset='mp4', square=False, parent=None):
         super().__init__(parent)
         self.proj = proj
         self.outpath = outpath
         self.preview = preview
         self.out_h = out_h      # export resolution override (height); width scales to keep AR
         self.crf = crf          # x264 quality for the final encode (lower = better)
+        self.preset = preset    # export format/preset key (see export_args)
+        self.square = square    # force a square frame (social presets)
         self._cancel = False
 
     def cancel(self):
@@ -510,6 +590,9 @@ class RenderWorker(QThread):
         elif self.out_h and self.out_h != H:
             W = max(160, int(round(W * self.out_h / H)) // 2 * 2)
             H = int(self.out_h) // 2 * 2
+        if self.square and not self.preview:   # social square presets (e.g. Instagram 1080²)
+            side = (self.out_h or H) // 2 * 2
+            W = H = max(160, side)
         return W, H, FPS
 
     def _vf_fit(self, W, H):
@@ -528,7 +611,9 @@ class RenderWorker(QThread):
     # -- normalise one base-track clip to a WxH@fps segment --------------------
     def _norm_segment(self, clip, idx, tmp, W, H, FPS):
         out = os.path.join(tmp, f'seg{idx}.mp4')
-        dur = max(0.05, float(clip['dur']))
+        dur = max(0.05, float(clip['dur']))   # full timeline length (incl. any freeze hold)
+        # freeze: tpad holds the last frame; the input only supplies the body (dur - hold)
+        frz, src_dur = freeze_vf(clip, dur)
         speed = float(clip.get('speed', 1.0) or 1.0)
         extra = clip_extra_vf(clip)
         crop = crop_vf(clip) if clip['kind'] in ('video', 'image') else None
@@ -541,6 +626,11 @@ class RenderWorker(QThread):
         if speed != 1.0 and clip['kind'] in ('video',):
             vf += f",setpts=PTS/{speed:.4f}"
         vf += f",fps={FPS},format=yuv420p"
+        if clip.get('reverse') and clip['kind'] in ('video', 'image', 'color'):
+            vf += ",reverse"
+        # freeze-frame: hold the last frame for N extra seconds (grows the clip length)
+        if frz:
+            vf += ',' + frz
         fi, fo = float(clip.get('fade_in', 0)), float(clip.get('fade_out', 0))
         if fi > 0:
             vf += f",fade=t=in:st=0:d={fi:.3f}"
@@ -548,14 +638,14 @@ class RenderWorker(QThread):
             vf += f",fade=t=out:st={max(0,dur-fo):.3f}:d={fo:.3f}"
         kind = clip['kind']
         if kind == 'color':
-            args = ['-f', 'lavfi', '-t', f'{dur:.3f}',
+            args = ['-f', 'lavfi', '-t', f'{src_dur:.3f}',
                     '-i', f"color=c={clip.get('color','#3366cc')}:s={W}x{H}:r={FPS}", '-vf', vf]
         elif kind == 'image':
             kb = clip.get('kenburns')
             if kb:
                 # Ken Burns: zoompan over the clip duration, with an optional pan direction
                 z = float(kb.get('zoom', 1.3))
-                frames = max(1, int(dur * FPS))
+                frames = max(1, int(src_dur * FPS))
                 zexpr = f"min(zoom+{(z-1)/frames:.6f},{z})"
                 pan = kb.get('pan', 'in')
                 # x/y expressions pan across the over-scanned frame as it zooms
@@ -577,19 +667,23 @@ class RenderWorker(QThread):
                 if extra:
                     vf += ',' + ','.join(extra)
                 vf += ",format=yuv420p"
+                if clip.get('reverse'):
+                    vf += ",reverse"
+                if frz:
+                    vf += ',' + frz
                 if fi > 0:
                     vf += f",fade=t=in:st=0:d={fi:.3f}"
                 if fo > 0:
                     vf += f",fade=t=out:st={max(0,dur-fo):.3f}:d={fo:.3f}"
-            args = ['-loop', '1', '-t', f'{dur:.3f}', '-i', clip['src'], '-vf', vf]
+            args = ['-loop', '1', '-t', f'{src_dur:.3f}', '-i', clip['src'], '-vf', vf]
         elif kind == 'text':
             txt = clip['text']
             bg = txt.get('bg') or '#000000'
-            args = ['-f', 'lavfi', '-t', f'{dur:.3f}', '-i', f"color=c={bg}:s={W}x{H}:r={FPS}",
-                    '-vf', self._drawtext_vf(txt, W, H, t0=0.0, dur=dur)]
+            args = ['-f', 'lavfi', '-t', f'{src_dur:.3f}', '-i', f"color=c={bg}:s={W}x{H}:r={FPS}",
+                    '-vf', self._drawtext_vf(txt, W, H, t0=0.0, dur=src_dur)]
         else:  # video
             ss = float(clip.get('in', 0))
-            src_t = dur * speed  # at 2× speed we consume twice the source for the same output
+            src_t = src_dur * speed  # at 2× speed we consume twice the source for the same output
             args = ['-ss', f'{ss:.3f}', '-t', f'{src_t:.3f}', '-i', clip['src'], '-vf', vf]
         preset = 'ultrafast'
         self._run_ff(args + ['-an', '-c:v', 'libx264', '-preset', preset, '-pix_fmt', 'yuv420p',
@@ -616,6 +710,13 @@ class RenderWorker(QThread):
             x_expr = f"if(lt({T},{AD}),w+(({xbase})-w)*({T}/{AD}),{xbase})"
         elif anim == 'slideU':
             y_expr = f"if(lt({T},{AD}),h+(({ybase})-h)*({T}/{AD}),{ybase})"
+        # rolling / crawling credits override the static position with a time ramp.
+        # (uses local clip time T so overlay-track titles scroll from their own start)
+        scroll = txt.get('scroll', 'none')
+        if scroll in ('roll', 'crawl'):
+            spd = float(txt.get('scroll_speed', 0) or 0)
+            sx, sy = scroll_title_expr(scroll, xbase, ybase, W, H, d, spd)
+            x_expr = sx.replace('*t', f'*{T}'); y_expr = sy.replace('*t', f'*{T}')
         parts = [f"drawtext=fontfile='{_ff_path(font)}'", f"text='{content}'", f"fontsize={size}",
                  f"fontcolor=#{col}", f"x='{x_expr}'", f"y='{y_expr}'"]
         if alpha_expr:
@@ -652,16 +753,25 @@ class RenderWorker(QThread):
             self.progress.emit(90, 'Finishing the movie…')
             final = self.outpath
             os.makedirs(os.path.dirname(final) or '.', exist_ok=True)
-            # preview copies (fast); export re-encodes at the chosen quality (CRF)
-            venc = (['-c:v', 'copy'] if self.preview else
-                    ['-c:v', 'libx264', '-preset', 'medium', '-crf', str(self.crf), '-pix_fmt', 'yuv420p'])
+            # preview copies (fast); export re-encodes per the chosen format/preset.
+            # export_args returns both video + audio codec args; '+faststart' is only
+            # meaningful for MP4/MOV so apply it conditionally.
+            _ext, enc = export_args(self.preset, self.crf)
+            faststart = ['-movflags', '+faststart'] if self.outpath.lower().endswith(('.mp4', '.mov')) else []
+            if self.preview:
+                venc, aenc = ['-c:v', 'copy'], ['-c:a', 'aac', '-b:a', '192k']
+                faststart = ['-movflags', '+faststart']
+            else:
+                # split enc into its video args (up to the first -c:a) and audio args
+                ai = enc.index('-c:a')
+                venc, aenc = enc[:ai], enc[ai:]
             if audio:
                 self._run_ff(['-i', composited, '-i', audio, '-map', '0:v:0', '-map', '1:a:0',
-                              *venc, '-c:a', 'aac', '-b:a', '192k',
-                              '-t', f'{total:.3f}', '-movflags', '+faststart', final])
+                              *venc, *aenc,
+                              '-t', f'{total:.3f}', *faststart, final])
             else:
                 self._run_ff(['-i', composited, '-an', *venc,
-                              '-t', f'{total:.3f}', '-movflags', '+faststart', final])
+                              '-t', f'{total:.3f}', *faststart, final])
             self.progress.emit(100, 'Done')
             return final
         finally:
@@ -837,10 +947,17 @@ class RenderWorker(QThread):
             vol, fi, fo = float(c.get('volume', 1.0)), float(c.get('fade_in', 0)), float(c.get('fade_out', 0))
             speed = float(c.get('speed', 1.0) or 1.0)
             pan = float(c.get('pan', 0.0) or 0.0)
-            inputs += ['-ss', f'{ss:.3f}', '-t', f'{dur*speed:.3f}', '-i', c['src']]
+            hold = freeze_hold(c)
+            body = max(0.05, dur - hold)   # audio only exists for the body; the hold is silent
+            inputs += ['-ss', f'{ss:.3f}', '-t', f'{body*speed:.3f}', '-i', c['src']]
             chain = f"[{i}:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo"
+            if c.get('reverse'):
+                chain += ',areverse'
             if speed != 1.0:
                 chain += ',' + atempo_chain(speed)
+            if hold > 0:
+                # pad with silence so the frozen tail stays in sync with the video
+                chain += f",apad=pad_dur={hold:.3f}"
             if vol != 1.0:
                 chain += f",volume={vol:.3f}"
             if pan:  # -1 full left .. +1 full right
@@ -1182,9 +1299,20 @@ class ClipDialog(QDialog):
             ta = t.get('anim', 'none')
             self.tanim.setCurrentIndex(max(0, [k for k, _ in TEXT_ANIMS].index(ta) if ta in dict(TEXT_ANIMS) else 0))
             form.addRow('Animation', self.tanim)
+            self.tscroll = QComboBox()
+            for k, lbl in SCROLL_MODES:
+                self.tscroll.addItem(lbl, k)
+            cs = t.get('scroll', 'none')
+            self.tscroll.setCurrentIndex(max(0, [k for k, _ in SCROLL_MODES].index(cs) if cs in dict(SCROLL_MODES) else 0))
+            form.addRow('Scroll (credits)', self.tscroll)
+            self.tscroll_speed = QDoubleSpinBox(); self.tscroll_speed.setRange(0, 2000)
+            self.tscroll_speed.setValue(float(t.get('scroll_speed', 0) or 0))
+            self.tscroll_speed.setSuffix(' px/s  (0 = auto, one pass)')
+            form.addRow('Scroll speed', self.tscroll_speed)
 
         self.dur = QDoubleSpinBox(); self.dur.setRange(0.1, 3600); self.dur.setDecimals(2)
-        self.dur.setValue(clip['dur']); self.dur.setSuffix(' s')
+        # the Duration field is the clip body; any freeze hold is added on top of it
+        self.dur.setValue(max(0.1, clip['dur'] - freeze_hold(clip))); self.dur.setSuffix(' s')
         form.addRow('Duration', self.dur)
         self.start = QDoubleSpinBox(); self.start.setRange(0, 36000); self.start.setDecimals(2)
         self.start.setValue(clip['start']); self.start.setSuffix(' s')
@@ -1222,6 +1350,13 @@ class ClipDialog(QDialog):
             form.addRow('Saturation', self.satur)
             self.rotate = QDoubleSpinBox(); self.rotate.setRange(-180, 180); self.rotate.setValue(clip.get('rotate', 0.0)); self.rotate.setSuffix('°')
             form.addRow('Rotate', self.rotate)
+            self.reverse = QCheckBox('Play this clip backwards')
+            self.reverse.setChecked(bool(clip.get('reverse')))
+            self.reverse.setToolTip('Reverse buffers the whole clip in memory — best for short clips.')
+            form.addRow('Reverse', self.reverse)
+            self.freeze = QDoubleSpinBox(); self.freeze.setRange(0, 60); self.freeze.setSingleStep(0.5)
+            self.freeze.setValue(freeze_hold(clip)); self.freeze.setSuffix(' s  (hold last frame)')
+            form.addRow('Freeze frame', self.freeze)
 
         if clip['kind'] in ('video', 'image'):
             self.crop_on = QCheckBox('Crop this clip'); self.crop_on.setChecked(bool(clip.get('crop')))
@@ -1311,6 +1446,14 @@ class ClipDialog(QDialog):
         c = self.clip
         c['dur'] = self.dur.value(); c['start'] = self.start.value()
         c['fade_in'] = self.fi.value(); c['fade_out'] = self.fo.value()
+        if c['kind'] in ('video', 'image', 'color'):
+            c['reverse'] = self.reverse.isChecked()
+            # freeze grows the clip's timeline length: dur = body + hold. The Duration
+            # field above is the body the user set, so add the hold on top of it.
+            new_hold = self.freeze.value()
+            c['freeze'] = {'hold': new_hold} if new_hold > 0 else None
+            if new_hold > 0:
+                c['dur'] = self.dur.value() + new_hold
         if c['kind'] in ('video', 'audio'):
             c['volume'] = self.vol.value(); c['pan'] = self.pan.value(); c['speed'] = self.speed.value()
         if c['kind'] == 'color':
@@ -1336,6 +1479,7 @@ class ClipDialog(QDialog):
             t['x'] = self.halign.currentText(); t['y'] = self.valign.currentText(); t['box'] = self.box.isChecked()
             t['bold'] = self.bold.isChecked(); t['italic'] = self.italic.isChecked()
             t['outline'] = self.outline.value(); t['anim'] = self.tanim.currentData()
+            t['scroll'] = self.tscroll.currentData(); t['scroll_speed'] = self.tscroll_speed.value()
             c['name'] = t['content'][:24] or 'Title'
         if c['kind'] in ('video', 'image'):
             if self.pip_on.isChecked():
@@ -1461,7 +1605,8 @@ class Main(QMainWindow):
         self._act(fm, 'Save As…', self.save_project_as, QKeySequence('Ctrl+Shift+S'))
         fm.addSeparator()
         self._act(fm, 'Import media…', self.import_media, QKeySequence('Ctrl+I'))
-        self._act(fm, 'Export movie (MP4)…', self.export_movie, QKeySequence('Ctrl+E'))
+        self._act(fm, 'Export movie…', self.export_movie, QKeySequence('Ctrl+E'))
+        self._act(fm, 'Save frame as image…', self.save_frame, QKeySequence('Ctrl+Shift+F'))
         fm.addSeparator()
         self._act(fm, 'Quit', self.close, QKeySequence.Quit)
 
@@ -1874,11 +2019,8 @@ class Main(QMainWindow):
                     hits.append((ti, c))
         return hits
 
-    def refresh_still(self):
-        """Render a representative still frame for the current playhead into the preview."""
-        if self.video.isVisible():
-            return
-        W, H = 480, 270
+    def _compose_still(self, W, H, border=True):
+        """Composite the frame at the current playhead (base clip + titles) into a QImage."""
         img = QImage(W, H, QImage.Format_RGB32); img.fill(QColor('#000'))
         p = QPainter(img)
         t = self.timeline.playhead
@@ -1890,13 +2032,40 @@ class Main(QMainWindow):
             frame = self._frame_pixmap(base, t - base['start'], W, H)
             if frame is not None:
                 p.drawPixmap(0, 0, frame)
-        # draw title text clips
         for ti, c in hits:
             if c['kind'] == 'text':
                 self._paint_title(p, c['text'], W, H)
-        p.setPen(QColor('#445')); p.drawRect(0, 0, W - 1, H - 1)
+        if border:
+            p.setPen(QColor('#445')); p.drawRect(0, 0, W - 1, H - 1)
         p.end()
-        self.still.setPixmap(QPixmap.fromImage(img))
+        return img
+
+    def refresh_still(self):
+        """Render a representative still frame for the current playhead into the preview."""
+        if self.video.isVisible():
+            return
+        self.still.setPixmap(QPixmap.fromImage(self._compose_still(480, 270)))
+
+    def save_frame(self):
+        """Save the frame at the current playhead to a PNG/JPEG via a file dialog."""
+        if project_duration(self.proj) < 0.01:
+            QMessageBox.information(self, 'Save frame', 'Add some clips to the timeline first.')
+            return
+        W, H = int(self.proj['width']), int(self.proj['height'])
+        img = self._compose_still(W, H, border=False)
+        t = self.timeline.playhead
+        base = os.path.splitext(os.path.basename(self.path))[0] if self.path else 'movie'
+        start = os.path.join(_just_dir('pics'), f'{base}-frame-{t:.2f}s.png')
+        path, _ = QFileDialog.getSaveFileName(self, 'Save frame as image', start,
+                                              'PNG image (*.png);;JPEG image (*.jpg)')
+        if not path:
+            return
+        if not os.path.splitext(path)[1]:
+            path += '.png'
+        if img.save(path):
+            self.statusBar().showMessage(f'Saved frame to {path}', 6000)
+        else:
+            QMessageBox.warning(self, 'Save frame', 'Could not save the image to:\n' + path)
 
     def _frame_pixmap(self, clip, offset, W, H):
         if clip['kind'] == 'image':
@@ -1966,6 +2135,10 @@ class Main(QMainWindow):
         res.addItem('SD — 480p (small file)', 480); res.addItem('Match project', self.proj['height'])
         res.setCurrentIndex(1)
         form.addRow('Size', res)
+        fmt = QComboBox()
+        for k, lbl, _h, _sq in EXPORT_PRESETS:
+            fmt.addItem(lbl, k)
+        form.addRow('Format / preset', fmt)
         qual = QComboBox()
         qual.addItem('Best quality (larger file)', 18); qual.addItem('Good (recommended)', 20)
         qual.addItem('Smaller file', 24); qual.setCurrentIndex(1)
@@ -1975,14 +2148,22 @@ class Main(QMainWindow):
         if dlg.exec() != QDialog.Accepted:
             return
         out_h, crf = res.currentData(), qual.currentData()
+        preset = fmt.currentData()
+        pmeta = next((m for m in EXPORT_PRESETS if m[0] == preset), EXPORT_PRESETS[0])
+        if pmeta[2]:            # preset forces its own export height (e.g. YouTube/Instagram 1080)
+            out_h = pmeta[2]
+        square = pmeta[3]
+        ext, _args = export_args(preset, crf)
         base = os.path.splitext(os.path.basename(self.path))[0] if self.path else 'movie'
-        start = os.path.join(_just_dir('pics'), base + '.mp4')
-        path, _ = QFileDialog.getSaveFileName(self, 'Export movie', start, 'MP4 video (*.mp4)')
+        start = os.path.join(_just_dir('pics'), base + ext)
+        label = f'{ext[1:].upper()} video (*{ext})'
+        path, _ = QFileDialog.getSaveFileName(self, 'Export movie', start, label)
         if not path:
             return
-        if not path.lower().endswith('.mp4'):
-            path += '.mp4'
-        self._render_to(path, preview=False, then=self._export_done, out_h=out_h, crf=crf)
+        if not path.lower().endswith(ext):
+            path += ext
+        self._render_to(path, preview=False, then=self._export_done,
+                        out_h=out_h, crf=crf, preset=preset, square=square)
 
     def _export_done(self, ok, path):
         if ok:
@@ -1992,7 +2173,7 @@ class Main(QMainWindow):
         else:
             QMessageBox.warning(self, 'Export failed', path)
 
-    def _render_to(self, out, preview, then, out_h=None, crf=20):
+    def _render_to(self, out, preview, then, out_h=None, crf=20, preset='mp4', square=False):
         if self.render_worker and self.render_worker.isRunning():
             QMessageBox.information(self, 'Busy', 'A render is already in progress.')
             return
@@ -2000,7 +2181,8 @@ class Main(QMainWindow):
         dlg = QProgressDialog('Rendering…', 'Cancel', 0, 100, self)
         dlg.setWindowTitle('Rendering' if not preview else 'Building preview')
         dlg.setWindowModality(Qt.WindowModal); dlg.setMinimumDuration(0); dlg.setValue(0)
-        w = RenderWorker(self.proj, out, preview=preview, out_h=out_h, crf=crf)
+        w = RenderWorker(self.proj, out, preview=preview, out_h=out_h, crf=crf,
+                         preset=preset, square=square)
         self.render_worker = w
         w.progress.connect(lambda pct, msg: (dlg.setValue(pct), dlg.setLabelText(msg)))
         dlg.canceled.connect(w.cancel)
